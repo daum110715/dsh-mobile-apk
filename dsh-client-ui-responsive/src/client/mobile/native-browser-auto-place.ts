@@ -20,6 +20,7 @@ export interface NativeBrowserPlacementOptions {
 /** One workspace per Session; HMR disposes attachments, never native workspace contents. */
 export class NativeBrowserPlacement {
   private readonly workspaces = new Map<SessionId, NativeBrowserSession>()
+  private readonly ordered = new Set<SessionId>()
   private readonly pending = new Map<SessionId, Map<string, TabId>>()
   private timer: number | undefined
   private disposed = false
@@ -29,13 +30,18 @@ export class NativeBrowserPlacement {
   /** @param session - owning Session. @returns stable native adapter for that Session. */
   for(session: SessionId): NativeBrowserSession {
     if (this.disposed) throw new Error('browser-placement-disposed')
+    if (this.workspaces.has(session)) this.ordered.add(session)
     let workspace = this.workspaces.get(session)
     if (workspace === undefined) {
       workspace = new NativeBrowserSession(session)
       this.workspaces.set(session, workspace)
+      this.ordered.add(session)
     }
     return workspace
   }
+
+  /** Session ids with a workspace, in first-use order (bounded by the reconciliation itself). */
+  workspaceSessions(): SessionId[] { return [...this.ordered] }
 
   /** Start discovery without expanding another Session or a collapsed column. */
   attach(): () => void {
@@ -52,6 +58,7 @@ export class NativeBrowserPlacement {
     if (this.timer !== undefined) window.clearInterval(this.timer)
     for (const workspace of this.workspaces.values()) workspace.dispose()
     this.workspaces.clear()
+    this.ordered.clear()
     this.pending.clear()
     document.documentElement.removeAttribute(BROWSER_PENDING_ATTR)
   }
@@ -115,6 +122,18 @@ export class NativeBrowserPlacement {
       } catch (_sidebarOperationRefused) {
         workspace.reportFailure('browser-sidebar-operation-refused')
         if (session === mounted) mountedPending = true
+      }
+      // A session with no layout occurrence, native tab, or pending placement can no longer
+      // produce work; keep it out of the next poll instead of refreshing it forever.
+      if (!this.options.sessions().includes(session)
+        && !this.options.tabs().some(tab => tab.sessionId === session)
+        && workspace.getSnapshot().tabs.length === 0
+        && (this.pending.get(session)?.size ?? 0) === 0
+        && session !== mounted) {
+        workspace.dispose()
+        this.workspaces.delete(session)
+        this.ordered.delete(session)
+        this.pending.delete(session)
       }
     }
     if (mountedPending) document.documentElement.setAttribute(BROWSER_PENDING_ATTR, 'true')
