@@ -1349,7 +1349,7 @@ class MainActivity : ComponentActivity() {
   private fun scheduleEngineAuthRecovery(rejectedUrl: String) {
     if (userClosedEngine || isFinishing || isDestroyed) return
     if (!pageUiActive) { pendingAuthRejectedUrl = rejectedUrl; return }
-    if (engineAuthReloadAttempts >= ENGINE_AUTH_RELOAD_MAX || !engineAuthRecoveryInFlight.compareAndSet(false, true)) return
+    if (engineAuthReloadAttempts > ENGINE_AUTH_RELOAD_MAX || !engineAuthRecoveryInFlight.compareAndSet(false, true)) return
     Thread {
       try {
         val availability = engineManager.probeAvailability()
