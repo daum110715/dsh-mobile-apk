@@ -329,7 +329,7 @@ internal class RepairToolsFs(
     val size = file.length()
     val buffer = ByteArray(max + 1)
     val read = FileInputStream(file).use { input ->
-      if (offset < size) input.channel.position(offset)
+      input.channel.position(offset)
       var count = 0
       while (count < buffer.size) {
         val n = input.read(buffer, count, buffer.size - count)

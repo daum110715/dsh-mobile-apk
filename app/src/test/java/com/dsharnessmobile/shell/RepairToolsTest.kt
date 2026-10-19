@@ -77,6 +77,16 @@ class RepairToolsTest {
   }
 
   @Test
+  fun exactEndIsEmptyAndOffsetsPastEndAreRejected() {
+    val file = File(runtime, "offset-fixture.txt").apply { writeText("hello") }
+    val end = fs.read(file.absolutePath, 5, 20)
+    assertEquals("", end.getString("content"))
+    assertEquals(0, end.getInt("readBytes"))
+    assertEquals("bad-offset", failure { fs.read(file.absolutePath, 6, 20) }.getString("error"))
+    assertEquals("hello", file.readText())
+  }
+
+  @Test
   fun fileAccessOutsideRuntimeAndPublicDiagnosticsIsRefused() {
     val outside = File(base, "outside.txt").apply { writeText("private"); }
     val failure = failure { fs.read(outside.absolutePath, 0, 10) }
