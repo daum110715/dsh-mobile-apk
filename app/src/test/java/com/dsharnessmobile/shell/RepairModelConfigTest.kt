@@ -161,4 +161,13 @@ class RepairModelConfigTest {
     assertEquals("deepseek", route.thinkingFormat)
     assertTrue(route.requiresReasoningContentOnAssistantMessages)
   }
+  @Test
+  fun diagnosticStringDoesNotIncludeCredentialsOrHeaders() {
+    val route = RepairModelConnection("fixture", "Fixture", "Model", "model-fixture", "https://api.invalid", "openai-completions",
+      "fixture-private-key", headers = mapOf("Authorization" to "fixture-private-header"))
+    val diagnostic = route.toString()
+    assertTrue(diagnostic.contains("model-fixture"))
+    assertTrue(!diagnostic.contains("fixture-private-key"))
+    assertTrue(!diagnostic.contains("fixture-private-header"))
+  }
 }

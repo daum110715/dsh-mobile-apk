@@ -22,6 +22,8 @@ internal data class RepairModelConnection(
   /** Selects the provider's safe multi-turn representation for tool results. */
   val toolHistoryMode: String? = null,
 ) {
+  override fun toString(): String = "RepairModelConnection(provider=$provider, model=$model, credentials=redacted)"
+
   /** Compact label for the picker; the header itself stays icon-only. */
   val label: String get() = modelLabel + " · " + providerLabel
 
