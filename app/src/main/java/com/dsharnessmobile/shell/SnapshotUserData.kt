@@ -135,6 +135,7 @@ internal object SnapshotUserData {
       "未找到 exports/config/" + target.name + "；请先导出当前活动配置，再编辑并导入（旧 settings.yaml 不会覆盖已迁移的 profile）"
     }
     require(target.isFile && !Files.isSymbolicLink(target.toPath())) { "活动配置尚未生成，请等待引擎初始化后再导入" }
+    validateImportedConfiguration(source, target)
     replaceConfiguration(target, File(target.parentFile, target.name + ".import-backup"))
     replaceConfiguration(source, target)
     return target
