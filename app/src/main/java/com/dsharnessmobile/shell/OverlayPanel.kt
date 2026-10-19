@@ -134,19 +134,24 @@ class OverlayPanel(private val svc: OverlayService) {
       "ready" -> {
         eventsClientId = value.optString("clientId", "")
         generationId++
-        // 宽限期 3s：重发即续命；未被重发的旧条目判为过期（断线窗口内被结清的事件
-        // 永远收不到 cancel，这里是对账兜底）。
-        val stale = pendingApprovals.keys + pendingQuestions.keys
+        // Reconcile only cards from an older generation. The old code captured every pending
+        // id and used a fixed 3s window; a cold engine re-sending later made a waiting card
+        // vanish while the engine still waited forever (#426 item 6).
+        val stale = (pendingApprovals.keys + pendingQuestions.keys).filter {
+          OverlayPendingPolicy.staleAfterReconnect(generationId, pendingGen[it] ?: 0)
+        }
         svc.main.postDelayed({
           var dropped = false
           for (id in stale) {
-            if ((pendingApprovals.containsKey(id) || pendingQuestions.containsKey(id)) && (pendingGen[id] ?: 0) < generationId) {
+            if (OverlayPendingPolicy.staleAfterReconnect(generationId, pendingGen[id] ?: 0) &&
+              (pendingApprovals.containsKey(id) || pendingQuestions.containsKey(id))) {
               pendingApprovals.remove(id); pendingQuestions.remove(id); pendingGen.remove(id)
               dropped = true
             }
           }
+          if (dropped) NotifyProbe.log(svc.applicationContext, "dsh-overlay", "pending cards dropped after reconnect (generation=" + generationId + ")")
           if (dropped) onPendingChanged()
-        }, 3_000)
+        }, RECONNECT_GRACE_MS)
       }
       "waterfall" -> {
         val event = value.optString("event")
@@ -1014,6 +1019,7 @@ class OverlayPanel(private val svc: OverlayService) {
     val outcomeJson = JSONObject().put("kind", "result").put("value", outcome)
     postEventResult(a.eventId, outcomeJson) { accepted ->
       if (accepted) {
+        NotifySuppressQueue.settleInteractive(svc.applicationContext, a.eventId)
         // 0.13.8 G1-4（缺陷 B-5）：受理语义与移除分离——HTTP 200 只代表已提交；
         // 卡片保留（引擎 cancel / turn-end 收敛），15s 兜底防引擎无回执。
         val entry = pendingApprovals[a.eventId]
@@ -1037,6 +1043,13 @@ class OverlayPanel(private val svc: OverlayService) {
   /** 提问作答：answers 按 questions 原序配对（协议硬约束）；单选 custom 与 selected 互斥。
    *  0.1.2-rc.1：selected 由旧协议的单 label 字符串改为 label 数组。 */
   private fun respondQuestion(qe: PendingQuestion) {
+    val unanswered = OverlayPendingPolicy.firstUnanswered(qe.items, qSingle, multiSel, qCustom)
+    if (unanswered >= 0) {
+      qPage = unanswered
+      renderPendingCard(true)
+      svc.flashStatus("第 " + (unanswered + 1) + " 题还没有作答")
+      return
+    }
     val arr = org.json.JSONArray()
     for (i in 0 until qe.items.length()) {
       val item = qe.items.optJSONObject(i) ?: continue
@@ -1053,6 +1066,7 @@ class OverlayPanel(private val svc: OverlayService) {
     val outcomeJson = JSONObject().put("kind", "result").put("value", value)
     postEventResult(qe.eventId, outcomeJson) { accepted ->
       if (accepted) {
+        NotifySuppressQueue.settleInteractive(svc.applicationContext, qe.eventId)
         // 0.13.8 G1-4：受理 ≠ 移除，等引擎 cancel/turn-end 收敛（同 respondApproval）
         val entry = pendingQuestions[qe.eventId]
         if (entry != null) {
@@ -1080,6 +1094,7 @@ class OverlayPanel(private val svc: OverlayService) {
     )
     postEventResult(qe.eventId, outcomeJson) { accepted ->
       if (accepted) {
+        NotifySuppressQueue.settleInteractive(svc.applicationContext, qe.eventId)
         // 0.13.8 G1-4：rejected 亦由引擎 cancel 收敛（同上）
         val entry = pendingQuestions[qe.eventId]
         if (entry != null) {
@@ -1441,6 +1456,9 @@ internal data class PendingApproval(val eventId: String, val agentId: String, va
 
 /** AI 提问待处理项（$events waterfall 帧投影，request.questions 原始 JSONArray）。 */
 internal data class PendingQuestion(val eventId: String, val agentId: String, val items: org.json.JSONArray, var submittedAt: Long = 0L)
+
+/** Reconnect grace: allows a cold engine to re-send still-waiting cards without discarding them. */
+internal const val RECONNECT_GRACE_MS = 30_000L
 
 // ── 待答卡/审批卡的常量（顶层：纯判据函数与 UI 代码共用同一份真源）──────────────────
 
