@@ -49,7 +49,8 @@ afterEach(async () => {
 describe('useShellState（ST-09）', () => {
   it('对象值按结构判等（忽略键顺序），同值轮询不触发重渲染', async () => {
     let swap = false
-    const getter = () => (swap ? { b: 2, a: { d: 4, c: 3 } } : { a: { c: 3, d: 4 }, b: 2 })
+    let snapshot = { a: { c: 3, d: 4 }, b: 2 }
+    const getter = () => (swap ? { ...snapshot } : snapshot)
     const renders = { count: 0 }
     vi.useFakeTimers()
     host = document.createElement('div')
@@ -66,7 +67,16 @@ describe('useShellState（ST-09）', () => {
     expect(sameShellState({ a: [1, 2] }, { a: [1, 2] })).toBe(true)
     expect(sameShellState({ a: [1, 2] }, { a: [2, 1] })).toBe(false)
     expect(sameShellState({ a: 1 }, { a: 2 })).toBe(false)
-    expect(sameShellState({ a: undefined }, {})).toBe(false)
+    expect(sameShellState({ a: null }, {})).toBe(false)
+  })
+
+  it('不可序列化与循环引用保守判为变化，不抛栈溢出', () => {
+    const cycle: Record<string, unknown> = {}
+    cycle.self = cycle
+    expect(() => sameShellState(cycle, cycle)).not.toThrow()
+    expect(sameShellState(cycle, { self: {} })).toBe(false)
+    expect(sameShellState({ n: 1n }, { n: 1n })).toBe(false)
+    expect(sameShellState(new Date(0), new Date(0))).toBe(true)
   })
 
   it('挂载时读一次真源', async () => {

@@ -22,29 +22,17 @@ export interface ShellStateOptions {
  * 壳侧状态是否值得提交给 React。
  *
  * 轮询 getter 多数会从 JSON 桥重新组装对象，同值对象每次引用都不同；只比较引用会让
- * 设置页每两秒全量重渲染。这里按 JSON 值递归比较，数组保持顺序，对象忽略键顺序。
- * 不支持的运行时值（函数、symbol、循环引用等）退化为引用比较，避免把未知值误判为相同。
+ * 设置页每两秒全量重渲染。这里只比较可被桥传输的 JSON 值；无法序列化或包含循环引用时
+ * 返回 false，允许调用方按新值提交（最坏是多渲染一次，不会漏掉真实更新）。
  */
 export function sameShellState(prev: unknown, next: unknown): boolean {
   if (Object.is(prev, next)) return true
-  if (prev === null || next === null || typeof prev !== 'object' || typeof next !== 'object') return false
-  if (Array.isArray(prev) !== Array.isArray(next)) return false
-  if (Array.isArray(prev) && Array.isArray(next)) {
-    if (prev.length !== next.length) return false
-    for (let i = 0; i < prev.length; i += 1) {
-      if (!sameShellState(prev[i], next[i])) return false
-    }
-    return true
+  try {
+    return JSON.stringify(prev) === JSON.stringify(next)
+  } catch {
+    // 循环引用、BigInt 等不可传输值：保守地视为变化，避免错误地吞掉更新。
+    return false
   }
-  const a = prev as Record<string, unknown>
-  const b = next as Record<string, unknown>
-  const keys = Object.keys(a)
-  if (keys.length !== Object.keys(b).length) return false
-  for (const key of keys) {
-    if (!Object.prototype.hasOwnProperty.call(b, key)) return false
-    if (!sameShellState(a[key], b[key])) return false
-  }
-  return true
 }
 
 /**
