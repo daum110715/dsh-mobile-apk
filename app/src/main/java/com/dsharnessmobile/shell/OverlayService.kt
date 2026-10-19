@@ -188,9 +188,16 @@ class OverlayService : Service() {
 
   override fun onCreate() {
     super.onCreate()
-    instance = this
     wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    buildRoot()
+    if (!OverlayAttachedPolicy.continueAfterBuild(buildRoot())) {
+      // buildRoot has already withdrawn any partially attached window. Do not expose this
+      // service as enabled or start watchers, probes and MUX for an instance with no visible
+      // control. The explicit start path can create a fresh service later (#428 item 16).
+      instance = null
+      stopSelf()
+      return
+    }
+    instance = this
     live.startWatcher()
     probeEngine()
     scheduleProbe()
@@ -243,7 +250,7 @@ class OverlayService : Service() {
 
   // ── 窗口构建 ──────────────────────────────────────────────────────
 
-  private fun buildRoot() {
+  private fun buildRoot(): Boolean {
     val dp = resources.displayMetrics.density
     val ballSize = ballSizeDp
     val haloSize = haloSizeDp
@@ -332,14 +339,14 @@ class OverlayService : Service() {
       haloView = null
       rootView = null
       ballAttached = false
-      stopSelf()
-      return
+      return false
     }
     attachBallTouch(ball)
     // 键盘顶起面板：由独立面板窗口的系统 ADJUST_PAN 原生实现（showPanel 注释）。
     // 球窗口收不到 IME insets（与键盘零相交的窗口系统不派发，实测 bottom=0 visible=false），
     // 旧自监听方案已废。
     emitFrame()
+    return true
   }
 
   // ── 展开/收起（200ms 渐显；无 spring 动画——0.14.1 块I 起贴边 spring 亦已删除） ──

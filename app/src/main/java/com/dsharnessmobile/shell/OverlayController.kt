@@ -85,7 +85,11 @@ object OverlayController {
    * 维护的 @Volatile 引用（可靠；若某 ROM 上不可用，按退化口径 偏好 && canDrawOverlays 登记差异）。
    */
   fun isEnabled(context: Context): Boolean =
-    enabledPref(context) && canDrawOverlays(context) && OverlayService.instance != null
+    OverlayAttachedPolicy.readyForLifecycle(
+      preference = enabledPref(context),
+      permission = canDrawOverlays(context),
+      attached = OverlayService.instance?.ballAttached == true,
+    )
 
   /** 桥入口：持久化 + 启停；未授 overlay 权限时把偏好回落 false 并引导一次。返回当前是否已启动。 */
   fun setEnabled(context: Context, enable: Boolean): Boolean {
