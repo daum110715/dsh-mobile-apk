@@ -931,7 +931,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
       // 先判在场再读：缺席视同「需要刷新」。
       val existingSkill = if (skillFile.isFile) skillFile.readText() else null
       if (existingSkill?.trim() != PHONE_CONTROL_SKILL.trim()) {
-        skillFile.writeText(PHONE_CONTROL_SKILL)
+        replaceFileDurably(skillFile, PHONE_CONTROL_SKILL.toByteArray(Charsets.UTF_8))
         Log.i(TAG, "phone-control SKILL refreshed")
       }
       // 0.13.8 #130/V2 P1-11：标准组合的 skill-filesystem 行没有 config——预设自带的
@@ -950,7 +950,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
             "      - !!js \"process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))\""
           val patched = text.replace(anchor, injected)
           if (patched != text) {
-            composition.writeText(patched)
+            replaceFileDurably(composition, patched.toByteArray(Charsets.UTF_8))
             Log.i(TAG, "phone-control preset: customSkillDirs injected into skill-filesystem row")
           } else {
             Log.w(TAG, "phone-control preset: skill-filesystem anchor not found; customSkillDirs not injected")
@@ -966,12 +966,13 @@ class EngineManager(private val context: Context, private val pickToken: String?
         Log.w(TAG, "phone-control preset skipped: shipped standard composition absent at " + shipped.absolutePath)
         return
       }
-      File(dir, "agent.cordis.yml").writeText(shipped.readText())
-      File(dir, "preset.yml").writeText(
+      val compositionFile = File(dir, "agent.cordis.yml")
+      replaceFileDurably(compositionFile, shipped.readBytes())
+      val presetText =
         "name: 手机操控\n" +
           "description: 以无障碍语义树 / DOM 快照驱动的手机操控预设：dump → 按 ref 点击或输入 → 校验 → 再 dump；禁止盲点坐标。\n" +
-          "order: 50\n",
-      )
+          "order: 50\n"
+      replaceFileDurably(File(dir, "preset.yml"), presetText.toByteArray(Charsets.UTF_8))
       Log.i(TAG, "phone-control preset seeded -> " + dir.absolutePath)
     } catch (t: Throwable) {
       Log.w(TAG, "phone-control preset seeding failed", t)

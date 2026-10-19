@@ -58,4 +58,26 @@ class EngineManagerWriteSafetyTest {
       root.deleteRecursively()
     }
   }
+
+  @Test
+  fun phoneControlPresetUsesDurableReplacementForEveryManagedFile() {
+    val source = listOf(
+      File("src/main/java/com/dsharnessmobile/shell/EngineManager.kt"),
+      File("app/src/main/java/com/dsharnessmobile/shell/EngineManager.kt"),
+    ).first { it.isFile }.readText()
+    val seed = source.substringAfter("private fun seedPhoneControlPreset(")
+      .substringBefore("fun ensurePrivateDshData()")
+    val code = seed.lineSequence().filterNot {
+      val line = it.trimStart()
+      line.startsWith("//") || line.startsWith("*")
+    }.joinToString("\n")
+
+    assertTrue("managed SKILL.md must not be truncated in place", code.contains("replaceFileDurably(skillFile"))
+    assertTrue("existing agent.cordis.yml injection must publish atomically", code.contains("replaceFileDurably(composition"))
+    assertTrue("first presets seed must publish the composition atomically", code.contains("replaceFileDurably(compositionFile"))
+    assertTrue("preset.yml must be published atomically", code.contains("replaceFileDurably(File(dir, \"preset.yml\")"))
+    listOf("skillFile.writeText", "composition.writeText", "agent.cordis.yml\").writeText").forEach {
+      assertTrue("in-place write remains: " + it, !code.contains(it))
+    }
+  }
 }
