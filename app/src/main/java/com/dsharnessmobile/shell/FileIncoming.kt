@@ -200,22 +200,22 @@ object FileIncoming {
    * onTaskRemoved 的 cleanupTmp 仍保留（进程被系统回收时的即时全清礼仪）。
    */
   fun sweepExpired(context: Context) {
-    try {
-      val dir = tmpWorkspace(context)
-      val now = System.currentTimeMillis()
-      val list = dir.listFiles() ?: return
-      var removed = 0
-      for (f in list) {
-        if (f.name == SESSIONS_ENTRY) continue // 引擎侧队列元数据：由 claim 消费删除
-        val last = f.lastModified()
-        if (last > 0 && now - last > TTL_MS) {
-          if (f.delete() || !f.exists()) removed++
+    synchronized(pendingLock) {
+      if (!workspaceWipeAllowed(activeCopies.get(), activeDeliveries.get())) {
+        LogCollector.log("dsh-file-open", "temp workspace TTL sweep skipped (copy/delivery in flight)")
+        return
+      }
+      try {
+        val dir = tmpWorkspace(context)
+        val now = System.currentTimeMillis()
+        val pending = pendingPaths(context) ?: return
+        val queued = queuedSessionPaths(context) ?: return
+        val removed = sweepWorkspace(dir, pending, queued, now, TTL_MS)
+        if (removed > 0) {
+          LogCollector.log("dsh-file-open", "temp workspace TTL sweep removed $removed expired file(s)")
         }
+      } catch (_: Exception) {
       }
-      if (removed > 0) {
-        LogCollector.log("dsh-file-open", "temp workspace TTL sweep removed $removed expired file(s)")
-      }
-    } catch (_: Exception) {
     }
   }
 
@@ -250,24 +250,53 @@ object FileIncoming {
     }
   }
 
-  /** 待发清单里的路径（未受理来件的绝对路径）；读不到 = 空（fail-soft）。 */
-  private fun pendingPaths(context: Context): List<String> = try {
-    pendingFile(context).readLines().map { it.trim() }.filter { it.isNotEmpty() }
-  } catch (_: Exception) {
-    emptyList()
+  /** Same protection rules for the TTL pass; manifest itself is never deleted by age. */
+  internal fun ttlDeletions(
+    entries: List<String>,
+    pendingPaths: List<String>,
+    queuedPaths: List<String> = emptyList(),
+  ): List<String> = cleanupDeletions(entries, pendingPaths, queuedPaths)
+
+  /** Apply the TTL policy to a real directory. Null references mean unreadable: skip deletion. */
+  internal fun sweepWorkspace(
+    dir: File,
+    pendingPaths: List<String>?,
+    queuedPaths: List<String>?,
+    now: Long,
+    ttlMs: Long,
+  ): Int {
+    if (pendingPaths == null || queuedPaths == null) return 0
+    val list = dir.listFiles() ?: return 0
+    val deletions = ttlDeletions(list.map { it.name }, pendingPaths, queuedPaths).toSet()
+    var removed = 0
+    for (file in list) {
+      if (file.name !in deletions || file.isDirectory) continue
+      val last = file.lastModified()
+      if (last > 0 && now - last > ttlMs && file.delete()) removed++
+    }
+    return removed
   }
 
+  /** null = read failure. Callers that delete files must skip the pass rather than assume empty. */
+  private fun pendingPaths(context: Context): List<String>? = readPending(pendingFile(context))
+
   /** Engine queue records whose source file must survive task removal until the browser claims it. */
-  private fun queuedSessionPaths(context: Context): List<String> {
-    val dir = File(tmpWorkspace(context), SESSIONS_ENTRY)
+  private fun queuedSessionPaths(context: Context): List<String>? =
+    readQueuedSessionPaths(File(tmpWorkspace(context), SESSIONS_ENTRY))
+
+  /** null = the queue exists but cannot be fully read; callers must not delete on null. */
+  internal fun readQueuedSessionPaths(dir: File): List<String>? {
+    if (!dir.exists()) return emptyList()
     return try {
-      dir.listFiles { file -> file.isFile && file.name.endsWith(".json") }
-        ?.mapNotNull { file ->
-          try { org.json.JSONObject(file.readText()).optString("path").takeIf { it.isNotBlank() } } catch (_: Exception) { null }
-        }
-        ?: emptyList()
+      val files = dir.listFiles { file -> file.isFile && file.name.endsWith(".json") } ?: return null
+      val result = mutableListOf<String>()
+      for (file in files) {
+        val record = try { org.json.JSONObject(file.readText()) } catch (_: Exception) { return null }
+        record.optString("path").takeIf { it.isNotBlank() }?.let { result += it }
+      }
+      result
     } catch (_: Exception) {
-      emptyList()
+      null
     }
   }
 
@@ -276,23 +305,27 @@ object FileIncoming {
    *  FX-211.2 起**投递/重试在途时同样让路**，且任何仍被待发清单或 `.sessions` 草稿队列引用的来件与三个元数据条目
    *  一律不删（残余内容交给下次 TTL 清扫）。 */
   fun cleanupTmp(context: Context) {
-    if (!workspaceWipeAllowed(activeCopies.get(), activeDeliveries.get())) {
-      LogCollector.log("dsh-file-open", "temp workspace clean skipped (copy/delivery in flight)")
-      return
-    }
-    try {
-      val dir = tmpWorkspace(context)
-      val entries = dir.listFiles()?.map { it.name } ?: emptyList()
-      val deletions = cleanupDeletions(entries, pendingPaths(context), queuedSessionPaths(context))
-      var removed = 0
-      for (name in deletions) {
-        if (File(dir, name).delete()) removed++
+    synchronized(pendingLock) {
+      if (!workspaceWipeAllowed(activeCopies.get(), activeDeliveries.get())) {
+        LogCollector.log("dsh-file-open", "temp workspace clean skipped (copy/delivery in flight)")
+        return
       }
-      LogCollector.log(
-        "dsh-file-open",
-        "temp workspace cleaned (task removed ritual; removed=" + removed + " kept=" + (entries.size - removed) + ")",
-      )
-    } catch (_: Exception) {
+      try {
+        val dir = tmpWorkspace(context)
+        val entries = dir.listFiles()?.map { it.name } ?: emptyList()
+        val pending = pendingPaths(context) ?: return
+        val queued = queuedSessionPaths(context) ?: return
+        val deletions = cleanupDeletions(entries, pending, queued)
+        var removed = 0
+        for (name in deletions) {
+          if (File(dir, name).delete()) removed++
+        }
+        LogCollector.log(
+          "dsh-file-open",
+          "temp workspace cleaned (task removed ritual; removed=" + removed + " kept=" + (entries.size - removed) + ")",
+        )
+      } catch (_: Exception) {
+      }
     }
   }
 
