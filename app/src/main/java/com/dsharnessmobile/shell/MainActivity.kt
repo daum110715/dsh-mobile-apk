@@ -505,11 +505,13 @@ class MainActivity : ComponentActivity() {
    * 把 id 送进去、并在送不进去时**说话**（不静默）。
    */
   private var pendingNotifySession: String? = null
+  private var notifyRouteRetries = 0
 
   private fun consumeNotifyRoute(intent: Intent?) {
     val session = intent?.getStringExtra(NotifyCenter.EXTRA_TARGET_SESSION).orEmpty()
     if (session.isEmpty()) return
     pendingNotifySession = session
+    notifyRouteRetries = 0
     deliverNotifyRoute()
   }
 
@@ -524,29 +526,37 @@ class MainActivity : ComponentActivity() {
   internal fun deliverNotifyRoute() {
     val session = pendingNotifySession ?: return
     if (!pageUiActive || !webViewReady || webView.visibility != android.view.View.VISIBLE) return
-    pendingNotifySession = null
     val script = "(() => { try { return (typeof window.__dshOpenSession === 'function') && window.__dshOpenSession(" +
       jsString(session) + ") === true } catch (e) { return false } })()"
     try {
       val generation = pageRecovery.generation
       webView.evaluateJavascript(script) { raw ->
-        if (!pageRecovery.accepts(generation)) { pendingNotifySession = session; return@evaluateJavascript }
-        if (raw?.trim() != "true") {
-          // 落点失败必须可见：会话可能已被删除，或页面还没装好会话视图。
-          notifyRouteFailed()
-        }
+        if (!pageRecovery.accepts(generation) || pendingNotifySession != session) return@evaluateJavascript
+        if (raw?.trim() == "true") {
+          pendingNotifySession = null
+          notifyRouteRetries = 0
+        } else retryNotifyRoute(session)
       }
     } catch (t: Throwable) {
       Log.w("dsh-notify", "notify route failed: " + t.message)
-      notifyRouteFailed()
+      retryNotifyRoute(session)
     }
+  }
+
+  private fun retryNotifyRoute(session: String) {
+    if (pendingNotifySession != session) return
+    if (notifyRouteRetries++ < 3) {
+      webView.postDelayed({
+        if (pendingNotifySession == session && pageUiActive && !isFinishing && !isDestroyed) deliverNotifyRoute()
+      }, 500)
+    } else notifyRouteFailed()
   }
 
   private fun notifyRouteFailed() {
     runOnUiThread {
       if (!pageUiActive) return@runOnUiThread
       try {
-        Toast.makeText(this, "无法打开对应的会话（可能已被删除）——请从会话列表手动选择", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "会话页面暂未就绪，请稍后重试或从会话列表选择 / Session view is not ready. Retry or use the session list.", Toast.LENGTH_LONG).show()
       } catch (_: Throwable) {
       }
     }
