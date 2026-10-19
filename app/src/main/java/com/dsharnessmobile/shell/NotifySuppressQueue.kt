@@ -175,11 +175,13 @@ object NotifySuppressQueue {
     val root = JSONObject(raw)
     require(root.getInt("version") == 1) { "unsupported deferred journal" }
     val pending = root.getJSONArray("pending")
-    require(pending.length() <= MAX_PENDING) { "oversize deferred journal" }
     val entries = (0 until pending.length()).map { i ->
       val p = pending.getJSONObject(i)
       Pending(p.getString("key"), requireNotNull(NotifyStore.parseEntry(p.getJSONObject("entry").toString())), p.getLong("at"))
     }
+    val interactiveCount = entries.count { interactive(it.entry) }
+    val ordinaryCount = entries.size - interactiveCount
+    require(ordinaryCount <= MAX_PENDING && interactiveCount <= MAX_INTERACTIVE) { "oversize deferred journal" }
     val done = root.getJSONObject("settled")
     require(done.length() <= MAX_SETTLED) { "oversize deferred settlements" }
     return entries to done.keys().asSequence().associateWith { done.getLong(it) }
@@ -222,7 +224,10 @@ object NotifySuppressQueue {
       val done = settled.keys().asSequence().mapNotNull { key ->
         try { key to settled.getLong(key) } catch (_: Exception) { null }
       }.toMap()
-      Salvage(entries, done, damaged, (entries.size - MAX_PENDING).coerceAtLeast(0))
+      val interactiveCount = entries.count { interactive(it.entry) }
+      val ordinaryCount = entries.size - interactiveCount
+      Salvage(entries, done, damaged, (ordinaryCount - MAX_PENDING).coerceAtLeast(0) +
+        (interactiveCount - MAX_INTERACTIVE).coerceAtLeast(0))
     } catch (_: Exception) {
       Salvage(emptyList(), emptyMap(), 1, 0)
     }

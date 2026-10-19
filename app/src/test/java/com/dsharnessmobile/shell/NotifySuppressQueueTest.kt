@@ -144,6 +144,20 @@ class NotifySuppressQueueTest {
   }
 
   @Test
+  fun nineDistinctWaitingQuestionsSurviveStrictDecodeAfterRestart() {
+    val q = List(9) { i ->
+      NotifySuppressQueue.Pending("retry:q$i", NotifyEntry(kind = "question", eventId = "q$i", title = "question $i"), i.toLong())
+    }
+    val raw = NotifySuppressQueue.encodeJournal(q, emptyMap())
+    val strict = NotifySuppressQueue.readJournal(raw)
+    assertTrue("a legitimate interactive journal must not be treated as corrupt on restart", strict is NotifySuppressQueue.JournalRead.Valid)
+    val (decoded, settled) = NotifySuppressQueue.decodeJournal(raw)
+    assertEquals(9, decoded.size)
+    assertEquals(9, decoded.map { it.entry.eventId }.toSet().size)
+    assertTrue(settled.isEmpty())
+  }
+
+  @Test
   fun captureThenExpectedEventOrderUsesThePureRetirementPredicate() {
     val q = NotifyEntry(kind = "question", eventId = "q-done", title = "waiting")
     val queued = NotifySuppressQueue.Pending("retry:q-done", q, 1_000L)
@@ -186,19 +200,19 @@ class NotifySuppressQueueTest {
   }
 
   @Test
-  fun everySalvagedEntryIsPreservedForBatchedDelivery() {
+  fun interactiveOverflowIsValidAndDeliveredInBoundedBatches() {
     val q = List(NotifySuppressQueue.MAX_PENDING + 4) {
       NotifySuppressQueue.Pending("retry:$it", NotifyEntry(kind = "question", eventId = "q$it"), 1L)
     }
     val raw = NotifySuppressQueue.encodeSalvagedJournal(q, emptyMap())
     val strict = NotifySuppressQueue.readJournal(raw)
-    assertTrue("an oversized journal still needs salvage", strict is NotifySuppressQueue.JournalRead.Invalid)
-    val readBack = NotifySuppressQueue.salvageJournal(raw)
-    assertEquals("no waiting question may be truncated away", q.size, readBack.pending.size)
-    val (batch, expired) = NotifySuppressQueue.takeForFlush(readBack.pending, 2L)
+    assertTrue("waiting questions above the report bound remain valid", strict is NotifySuppressQueue.JournalRead.Valid)
+    val decoded = NotifySuppressQueue.decodeJournal(raw).first
+    assertEquals("no waiting question may be truncated away", q.size, decoded.size)
+    val (batch, expired) = NotifySuppressQueue.takeForFlush(decoded, 2L)
     assertEquals("delivery remains bounded", NotifySuppressQueue.MAX_DELIVER_PER_FLUSH, batch.size)
     assertEquals(0, expired)
-    assertEquals("the remainder stays queued", q.size - batch.size, readBack.pending.size - batch.size)
+    assertEquals("the remainder stays queued", q.size - batch.size, decoded.size - batch.size)
   }
 
   @Test fun corruptOrUnknownJournalIsRetainedUntilBackupGate() {

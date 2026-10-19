@@ -50,7 +50,7 @@ class OverlayWindowFailureContractTest {
 
   @Test
   fun ballAttachFailureDoesNotEscapeOnCreate() {
-    val body = functionBody(source("OverlayService.kt"), "private fun buildRoot()")
+    val body = functionBody(source("OverlayService.kt"), "private fun buildRoot()").replace("\r\n", "\n")
     assertTrue("ball addView must be guarded", body.contains("try {\n      wm.addView(root, params)"))
     assertTrue("failure must be logged", body.contains("ball addView failed"))
     assertTrue("only success publishes the window", body.indexOf("rootView = root") > body.indexOf("wm.addView(root, params)"))

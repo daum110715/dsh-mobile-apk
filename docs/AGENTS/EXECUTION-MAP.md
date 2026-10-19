@@ -709,6 +709,7 @@ sequenceDiagram
 - **#304真源**：preserve settings.yaml.imported，marker属安装不是factory；marker或活web patch已在且无legacy YAML则抑stage factory seed，profile-local marker同理；backup不复活已迁移YAML。pre-spawn仅quarantine已知旧blank模板，不动custom配置。configurationDocument选真实web cordis.patch.yml，活patch缺失不fallback历史/factory；显式export公共副本警告key、import仅同格式先backup再atomic replace。
 - **边界**：runtime库/links完整性与snapshotRefreshing仍为启动前闸门；工厂事务与在线事务共用唯一 journal，不能并发；在线更新仅替换usr，legacy `usr-old` 不作新事务归属证明且不由新路径递归删除；profile清单合并不是任意整树覆盖；UndoGate保留既有known-good护栏。
 - **当前锚点**：[SHA](<dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/SnapshotFingerprintPolicy.kt#L7-L22>)、[fresh/refresh](<dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/EngineManager.kt#L103-L154>)、[recover](<dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/EngineManager.kt#L325>)、[stage/quarantine/active document](<dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/SnapshotUserData.kt#L50-L143>)、[配置桥](<dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/EngineManager.kt#L1218-L1242>)、[客户端失败一次性入口](<dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/UndoGate.kt#L165-L183>)、[点名唯一可拔条目](<dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/PluginMounts.kt#L259-L269>)、[外科拔除入口](<dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/PluginMounts.kt#L470-L471>)。
+- **原子发布面**：`AtomicFileReplace.publish` 在目标已存在时不做先删后改名；保留失败或临时文件发布失败一律返回 false，由调用方保留旧目标并如实回执。决策账本、下载 APK、诊断包与 Linux 资产共用该入口。（`app/src/main/java/com/dsharnessmobile/shell/AtomicFileReplace.kt`）
 - **待外验**：假provider/key跨冷启/换树/rollback/中断保留；坏SHA真实终包拒绝；目标0.2 runtime assets重出/双ABI最终字节与hash。历史尺寸/hash不是本轮测量，未构建不填造。
 - **0.14.6 增量：APK 更新路径与不变量（三条主项 + 两个同族派生项）**（可判据，逐条可查）：
   - **唯一状态机与推进者**：`ApkUpdateController`（`app/src/main/java/com/dsharnessmobile/shell/ApkUpdateAction.kt:228`，Activity 作用域）；
@@ -1038,6 +1039,7 @@ flowchart TD
 - **一句话**：系统级悬浮球与展开面板的全套交互面——常态三窗口生命周期（块J 起隐藏态多一个懒建的召回条窗）、**隐藏/召回**、拖动钳制、状态行/待答卡渲染、应答回流引擎、完成态常驻文案与自动收起。
 - **入口/触发**：
   - 启停：设置页开关（桥 `androidBridge.setOverlayEnabled` → `MainActivity.kt:769` 的 λ）与回前台补启 `MainActivity.kt:306` 经 `OverlayController.setEnabled/ensureStarted`；停：`OverlayController.stop`、`EngineService.kt:70`（划掉后台=完整停机）。
+- 生命周期门：服务是否“已启用”不能只看偏好与权限；`OverlayAttachedPolicy.readyForLifecycle` 还要求至少一个窗口实际挂上。根窗构建失败时 `continueAfterBuild(false)` 阻止发布 instance 与启动 watcher，避免开关为真而屏幕上无球。（`app/src/main/java/com/dsharnessmobile/shell/OverlayAttachedPolicy.kt`）
   - 球手势：球窗 `ACTION_UP` 未移动 → `togglePanel`（`OverlayService.kt:382`）；拖动中每帧钳制并同步光环。
   - 隐藏/召回（块J）：展开面板顶行 `隐藏` 入口（`OverlayPanel.kt:309`）→ `OverlayService.hideBall()`（`OverlayService.kt:415`，收面板 + 球/光环 `removeView` + 建召回条）；点召回条 → `OverlayService.recallBall()`（`OverlayService.kt:436`，收条 + 光环/球按 z 序重新 `addView`）。
   - 数据触发：10s 探活 `scheduleProbe`（`OverlayService.kt:547`）、MuxClient 的 `$events` WS 帧（`OverlayPanel.kt:87`）、FileObserver 的 `.live.ndjson`（`OverlayLiveFeed.kt:28`）。
@@ -1134,6 +1136,7 @@ flowchart TD
   - `app/src/main/java/com/dsharnessmobile/shell/NotifyActionReceiver.kt:51` outcome 闭集 `outcomeFor`；`:82` `onReceive`（只落盘 + 一次快速 flush）
   - `app/src/main/java/com/dsharnessmobile/shell/NotifyDecisionQueue.kt:266` NOT_READY 处置；`:292` `flush`
   - `app/src/main/java/com/dsharnessmobile/shell/NotifySuppressQueue.kt:119` 补投 `flush`；`:153` 自续 tick
+  - `app/src/main/java/com/dsharnessmobile/shell/NotifySuppressQueue.kt`：普通报告上限 8、交互问题/审批上限 256；严格解码分别计数，9 条待答问题跨重启仍是合法日志。坏记录先备份原件才允许改写；待答事件不按 TTL 或报告容量淘汰。
 - **不变量**：
   1. `kind` 是唯一分类权威、六类闭集，未知 kind 显式忽略并记账（`NotifyCenter.kt:550-563`）；`resolve` 只撤提问/审批通知（`:640-648`）。
   2. 渠道 importance 应用不可调高：弹窗类首次必须 HIGH 建，候选 ID 序列是唯一迁移手段，选中项落 `channel.<category>` 后只读映射（`NotifyCenter.kt:370-380`）。违反＝弹窗类永久只能静默，只能换新候选 ID 救。
@@ -1268,6 +1271,7 @@ flowchart TD
 #### P02 管理插件（dsh-android-manage）
 
 - **一句话**：引擎侧 14 个 `android_*` 工具的实现——把模型意图经「屏幕范围门 + 会话档位门」翻译成壳侧无障碍队列 op 或特权 shell 命令，再把壳侧载荷剪枝成紧凑语义清单（含两级披露与「界面未变」快路径）。本块 6 个源文件在协调仓 `plugins/dsh-android-manage/src/` 是权威源，apk 仓为逐字节镜像（本轮 diff 逐文件一致）。
+- **滚动方向**：`android_ui_scroll` 的 `direction` 表示内容移动方向。`contentSwipe` 是手势换算的唯一纯函数，无障碍、壳侧手势与 ADB 三条路径都从它派生，避免授权通道切换后同一方向翻面。（`plugins/dsh-android-manage/src/scroll-direction.ts`）
 - **入口/触发**：
   - 装配期（一次性）：`apply`（`plugins/dsh-android-manage/src/index.ts:2286`）取 `ctx.androidPrivilege`（`inject` 声明在 `:53`，要求 android-bridge 先装配），调用 `tools(ctx, face)`（`:105`）并把返回的 14 个工具逐个 `ctx.tools.register`（`:2295`）。服务缺失时退化为 fail-closed 桩（`:2291`）并 warn（`:2289`）。
   - 运行期（每次调用）：模型发起一次 tool call → 该工具的 `execute(args, exec)`；`exec.agent.session` 是档位判定的会话来源。
@@ -2219,6 +2223,8 @@ app/src/main/java/com/dsharnessmobile/shell/BrowserOverlayPolicy.kt
 app/src/main/java/com/dsharnessmobile/shell/OverlayService.kt
 app/src/main/java/com/dsharnessmobile/shell/OverlayPanel.kt
 app/src/main/java/com/dsharnessmobile/shell/OverlayController.kt
+app/src/main/java/com/dsharnessmobile/shell/OverlayAttachedPolicy.kt
+app/src/main/java/com/dsharnessmobile/shell/OverlayPendingPolicy.kt
 app/src/main/java/com/dsharnessmobile/shell/OverlayReport.kt
 app/src/main/java/com/dsharnessmobile/shell/OverlayLiveFeed.kt
 app/src/main/java/com/dsharnessmobile/shell/OverlayHalo.kt
@@ -2230,6 +2236,7 @@ app/src/main/java/com/dsharnessmobile/shell/NotifyStore.kt
 app/src/main/java/com/dsharnessmobile/shell/NotifyActionReceiver.kt
 app/src/main/java/com/dsharnessmobile/shell/NotifyDecisionQueue.kt
 app/src/main/java/com/dsharnessmobile/shell/NotifySuppressQueue.kt
+app/src/main/java/com/dsharnessmobile/shell/AtomicFileReplace.kt
 app/src/main/java/com/dsharnessmobile/shell/NotifyProbe.kt
 glob:app/src/test/java/com/dsharnessmobile/shell/*.kt
 plugins/dsh-android-bridge/src/index.ts
@@ -2249,6 +2256,7 @@ plugins/dsh-android-manage/src/protocol-v2.ts
 plugins/dsh-android-manage/src/vd-shot.ts
 plugins/dsh-android-manage/src/detail-store.ts
 plugins/dsh-android-manage/src/ime-broadcast.ts
+plugins/dsh-android-manage/src/scroll-direction.ts
 glob:plugins/dsh-android-manage/test/*.test.mjs
 glob:plugins/dsh-android-manage/test/*.mjs
 plugins/dsh-android-browser/src/tools.ts
