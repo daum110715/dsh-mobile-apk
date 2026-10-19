@@ -183,6 +183,37 @@ class SnapshotMigrationPolicyTest {
     } finally { SnapshotFs.deletePath(root) }
   }
 
+  @Test fun importedConfigurationRejectsUnreadableShapeWithoutTouchingLiveFile() {
+    val root = Files.createTempDirectory("reject-broken-config").toFile()
+    try {
+      val live = File(root, "live")
+      val shared = File(root, "shared")
+      val target = put(live, "profiles/web/cordis.patch.yml", "- id: current\n  disabled: false\n")
+      val current = target.readText()
+      val exported = put(shared, "exports/config/cordis.patch.yml", "- id: [unterminated\n")
+
+      assertTrue(runCatching { SnapshotUserData.importConfiguration(live, shared) }.isFailure)
+      assertEquals(current, target.readText())
+      assertFalse(File(target.parentFile, "cordis.patch.yml.import-backup").exists())
+
+      exported.writeText("- id: edited\n  disabled: true\n")
+      assertEquals(target, SnapshotUserData.importConfiguration(live, shared))
+      assertEquals("- id: edited\n  disabled: true\n", target.readText())
+      assertEquals(current, File(target.parentFile, "cordis.patch.yml.import-backup").readText())
+    } finally { SnapshotFs.deletePath(root) }
+  }
+
+  @Test fun legacyYamlImportRejectsBlankAndControlCharacters() {
+    val root = Files.createTempDirectory("reject-damaged-legacy").toFile()
+    try {
+      val live = File(root, "live")
+      val shared = File(root, "shared")
+      val target = put(live, "settings.yaml", "legacy: current\n")
+      val exported = put(shared, "exports/config/settings.yaml", "legacy: bad\u0000value\n")
+      assertTrue(runCatching { SnapshotUserData.importConfiguration(live, shared) }.isFailure)
+      assertEquals("legacy: current\n", target.readText())
+    } finally { SnapshotFs.deletePath(root) }
+  }
   @Test fun rollbackKeepsImportedMarkerAndProviderPatchWhileRestoringFactoryTree() {
     val root = Files.createTempDirectory("migrated-profile-rollback").toFile()
     try {

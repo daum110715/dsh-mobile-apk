@@ -140,6 +140,23 @@ internal object SnapshotUserData {
     return target
   }
 
+  /** Reject empty or control-damaged content before it replaces the active config.
+   * This is a preflight for YAML; the full parser remains the engine's authority. */
+  internal fun validateImportedConfiguration(source: File, target: File) {
+    val text = try { source.readText() } catch (e: Throwable) {
+      throw IllegalArgumentException("导入配置无法读取：" + (e.message ?: e.javaClass.simpleName), e)
+    }
+    require(text.isNotBlank()) { "导入配置为空；活动配置未改变" }
+    require(text.indexOf('\u0000') < 0) { "导入配置包含 NUL 字符；活动配置未改变" }
+    require(target.name.endsWith(".yml") || target.name.endsWith(".yaml")) { "无法识别的配置类型：" + target.name }
+    val parsed = try {
+      org.yaml.snakeyaml.Yaml(org.yaml.snakeyaml.constructor.SafeConstructor(org.yaml.snakeyaml.LoaderOptions()))
+        .load<Any?>(text)
+    } catch (e: Throwable) {
+      throw IllegalArgumentException("导入配置不是合法 YAML；活动配置未改变：" + (e.message ?: e.javaClass.simpleName), e)
+    }
+    require(parsed is List<*> || parsed is Map<*, *>) { "导入配置不是 YAML 映射或序列；活动配置未改变" }
+  }
   private fun replaceConfiguration(source: File, target: File) {
     val temporary = File.createTempFile(".config-", ".tmp", target.parentFile)
     try {

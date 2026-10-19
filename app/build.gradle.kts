@@ -121,6 +121,8 @@ dependencies {
   implementation("androidx.dynamicanimation:dynamicanimation:1.1.0")
   implementation("org.apache.commons:commons-compress:1.28.0")
   implementation("org.tukaani:xz:1.10")
+  // 导入配置必须在覆盖活动文件前做真实 YAML 解析；壳侧其余地方仍保持文本级合并。
+  implementation("org.yaml:snakeyaml:2.2")
   testImplementation("junit:junit:4.13.2")
   // 仪器测试（虚拟屏建屏矩阵）：只用于 P0 探针，不进产品面。
   androidTestImplementation("androidx.test.ext:junit:1.2.1")
