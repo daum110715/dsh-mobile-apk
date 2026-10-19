@@ -6,7 +6,10 @@ import android.media.MediaScannerConnection
 import android.os.Environment
 import android.util.Log
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Owns the embedded Termux environment snapshot: first-launch extraction into
@@ -698,14 +701,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
 
   /** The fingerprint is the transaction commit point, so it is written atomically. */
   private fun writeFingerprint(fingerprint: String) {
-    val target = fingerprintFile()
-    val tmp = File(target.parentFile, target.name + ".tmp")
-    tmp.writeText(fingerprint)
-    SnapshotFs.deletePath(target)
-    if (!tmp.renameTo(target)) {
-      target.writeText(fingerprint)
-      SnapshotFs.deletePath(tmp)
-    }
+    replaceFileDurably(fingerprintFile(), fingerprint.toByteArray(Charsets.UTF_8))
   }
 
   private fun writeOnlineSnapshotIdentity(base: String, archive: String) {
@@ -2684,6 +2680,56 @@ internal fun mirrorLogBounded(src: File, dst: File, limitBytes: Long = MIRROR_LO
     true
   } catch (_: Throwable) {
     false
+  }
+}
+
+/**
+ * Replaces one file with a durable sibling transaction.
+ *
+ * The previous target stays in place until a complete temporary file has been flushed and can be
+ * renamed over it. A failed replace never falls back to truncating the target: for files such as
+ * the snapshot commit fingerprint, the old bytes are valid data, while a half-written direct
+ * replacement turns a retryable write failure into lost state. [replace] is injectable so tests can
+ * prove both the success and failure paths on Windows and Android.
+ */
+internal fun replaceFileDurably(
+  target: File,
+  bytes: ByteArray,
+  replace: (File, File) -> Unit = ::replaceFileAtomically,
+) {
+  val parent = target.parentFile
+    ?: throw IOException("replacement target has no parent: " + target.path)
+  Files.createDirectories(parent.toPath())
+  val temp = Files.createTempFile(parent.toPath(), "." + target.name + ".", ".tmp")
+  var handedOff = false
+  try {
+    FileOutputStream(temp.toFile()).use { out ->
+      out.write(bytes)
+      out.fd.sync()
+    }
+    replace(temp.toFile(), target)
+    handedOff = true
+  } finally {
+    // This invocation owns the unique temp path. Remove it on either success or failure; the
+    // target itself is untouched by this cleanup and no other writer can observe this temp name.
+    if (!handedOff) Files.deleteIfExists(temp)
+  }
+}
+
+/** Publish a complete sibling file over [target] without first removing the old target. */
+private fun replaceFileAtomically(temp: File, target: File) {
+  try {
+    Files.move(
+      temp.toPath(),
+      target.toPath(),
+      StandardCopyOption.ATOMIC_MOVE,
+      StandardCopyOption.REPLACE_EXISTING,
+    )
+  } catch (e: java.nio.file.AtomicMoveNotSupportedException) {
+    // The file is already complete and fsynced. REPLACE_EXISTING still keeps one target name
+    // visible throughout the move; an unsupported atomic flag cannot justify a direct append or
+    // truncate of the live target.
+    Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
   }
 }
 
