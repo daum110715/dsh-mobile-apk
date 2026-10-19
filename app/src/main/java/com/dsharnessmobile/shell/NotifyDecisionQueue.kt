@@ -6,6 +6,7 @@ import android.os.Looper
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 决策耐久队列（0.14.0-preview §6.3.1 / NT-14、NT-17）：
@@ -238,8 +239,13 @@ object NotifyDecisionQueue {
       val keep = load(context).filter { it.state == State.PENDING.wire || it.state == State.FAILED.wire }
       val tmp = File(f.parentFile, FILE_NAME + ".tmp")
       tmp.writeText(keep.joinToString("") { serialize(it) + "\n" })
-      if (!tmp.renameTo(f)) f.writeText(tmp.readText())
-      tmp.delete()
+      if (!AtomicFileReplace.publish(tmp, f)) {
+        // Keep the old ledger: fallback writes used to truncate it before re-writing, so a full
+        // disk could erase every unsubmitted answer. A failed replacement is retryable.
+        tmp.delete()
+        LogCollector.log(TAG, "decision compact skipped; original ledger retained")
+        return
+      }
       LogCollector.log(TAG, "decision file compacted, kept=" + keep.size)
     } catch (t: Throwable) {
       LogCollector.log(TAG, "decision compact failed: " + t.message)
@@ -256,6 +262,9 @@ object NotifyDecisionQueue {
 
   @Volatile
   private var scheduled = false
+
+  /** One flush at a time across receiver threads, retry ticks and engine startup. */
+  private val flushing = AtomicBoolean(false)
 
   /**
    * NOT_READY（应答流/引擎未就绪）的统一处置：预算内 -> 独立计数 + 指数退避重排；
@@ -295,6 +304,18 @@ object NotifyDecisionQueue {
    * - HTTP 失败 -> 既有 MAX_ATTEMPTS 退避，耗尽 -> FAILED（通知改「提交失败，点击重试」）。
    */
   fun flush(context: Context): Flush {
+    if (!flushing.compareAndSet(false, true)) {
+      LogCollector.log(TAG, "decision flush already in flight")
+      return Flush.WAITING
+    }
+    try {
+      return flushLocked(context)
+    } finally {
+      flushing.set(false)
+    }
+  }
+
+  private fun flushLocked(context: Context): Flush {
     val pending = load(context).filter { it.state == State.PENDING.wire || it.state == State.FAILED.wire }
     if (pending.isEmpty()) return Flush.EMPTY
     val now = System.currentTimeMillis()
