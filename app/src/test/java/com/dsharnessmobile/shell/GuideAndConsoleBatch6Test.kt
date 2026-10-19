@@ -43,6 +43,13 @@ class GuideAndConsoleBatch6Test {
     }
     .joinToString("\n")
 
+  private fun between(src: String, start: String, end: String): String {
+    val from = src.indexOf(start)
+    val to = src.indexOf(end, from + start.length)
+    if (from < 0 || to < 0) throw AssertionError("找不到代码区间：$start .. $end")
+    return src.substring(from, to)
+  }
+
   // ── S1-2：副文案仲裁（旧实现五个来源无优先级抢写）──────────────────────────
 
   @Test
@@ -429,6 +436,10 @@ class GuideAndConsoleBatch6Test {
     assertTrue("缺失时必须说清怎么办", html.contains("快照缺失：控制台依赖运行时里的 bash"))
     val act = codeOnly(source("ConsoleActivity.kt"))
     assertTrue("壳侧必须推状态+文案两个参数", act.contains("window.__consoleState && window.__consoleState("))
+    val destroy = between(act, "override fun onDestroy()", "inner class ConsoleBridge")
+    assertTrue("销毁前必须先摘掉主线程回调", destroy.contains("handler.removeCallbacksAndMessages(null)"))
+    assertTrue("销毁后输出回调不得再触达 WebView", act.contains("if (closed) return@post"))
+    assertTrue("销毁标记必须先于 WebView.destroy 设置", destroy.indexOf("closed = true") < destroy.indexOf("webView.destroy()"))
     // 状态 wire 字符串是两侧共享契约：改名即与页面失配。
     assertEquals("starting", ConsoleSession.State.STARTING.wire)
     assertEquals("ready", ConsoleSession.State.READY.wire)

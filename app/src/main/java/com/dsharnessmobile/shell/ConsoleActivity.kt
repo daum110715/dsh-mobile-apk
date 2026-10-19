@@ -34,12 +34,16 @@ class ConsoleActivity : ComponentActivity() {
   /** Last status text (re-pushed on onPageFinished; replays status lost before page load). */
   private var lastStatus: String? = null
 
+  /** No posted callback may touch a destroyed WebView. */
+  private var closed = false
+
   /** S1-18：与 lastStatus 配对的状态，页面重放时同样按状态判就绪。 */
   private var lastState: ConsoleSession.State = ConsoleSession.State.STARTING
 
   private val sessionListener = object : ConsoleSession.Listener {
     override fun onOutput(text: String) {
       handler.post {
+        if (closed) return@post
         webView.evaluateJavascript("window.__consoleAppend(" + jsString(text) + ")", null)
       }
     }
@@ -47,13 +51,14 @@ class ConsoleActivity : ComponentActivity() {
     override fun onStatus(state: ConsoleSession.State, text: String) {
       lastStatus = text
       lastState = state
-      handler.post { pushStatus(state, text) }
+      handler.post { if (!closed) pushStatus(state, text) }
     }
 
     override fun onExit(code: Int) {
       lastStatus = "bash 已退出（code $code）"
       lastState = ConsoleSession.State.EXITED
-      handler.post { pushStatus(ConsoleSession.State.EXITED, lastStatus!!) }
+      val status = lastStatus!!
+      handler.post { if (!closed) pushStatus(ConsoleSession.State.EXITED, status) }
     }
   }
 
@@ -64,6 +69,7 @@ class ConsoleActivity : ComponentActivity() {
    * 做子串正则（措辞一变就静默错判）。
    */
   private fun pushStatus(state: ConsoleSession.State, text: String) {
+    if (closed) return
     webView.evaluateJavascript(
       "window.__consoleState && window.__consoleState(" + jsString(state.wire) + "," + jsString(text) + ")",
       null,
@@ -71,7 +77,7 @@ class ConsoleActivity : ComponentActivity() {
   }
 
   private fun pushInsets() {
-    if (!pageReady || !::webView.isInitialized) return
+    if (closed || !pageReady || !::webView.isInitialized) return
     webView.evaluateJavascript(
       "window.__consoleInsets && window.__consoleInsets($pendingTopInset,$pendingBottomInset,$pendingImeInset)",
       null,
@@ -131,6 +137,8 @@ class ConsoleActivity : ComponentActivity() {
   }
 
   override fun onDestroy() {
+    closed = true
+    handler.removeCallbacksAndMessages(null)
     session.destroy()
     webView.destroy()
     super.onDestroy()
