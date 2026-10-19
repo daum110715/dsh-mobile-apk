@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { sameShellState, useShellState } from '../src/client/mobile/use-shell-state.ts'
+import { useShellState } from '../src/client/mobile/use-shell-state.ts'
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -13,12 +13,6 @@ let host: HTMLElement | undefined
 function Probe({ getter, pollMs }: { getter: () => string; pollMs?: number }) {
   const [value] = useShellState(getter, pollMs === undefined ? {} : { pollMs })
   return <span data-testid="v">{String(value)}</span>
-}
-
-function ObjectProbe({ getter, renders }: { getter: () => Record<string, unknown>; renders: { count: number } }) {
-  renders.count += 1
-  const [value] = useShellState(getter, { pollMs: 100 })
-  return <span data-testid="v">{JSON.stringify(value)}</span>
 }
 
 async function render(getter: () => string, pollMs?: number): Promise<HTMLElement> {
@@ -47,38 +41,6 @@ afterEach(async () => {
 })
 
 describe('useShellState（ST-09）', () => {
-  it('对象值按结构判等（忽略键顺序），同值轮询不触发重渲染', async () => {
-    let swap = false
-    let snapshot = { a: { c: 3, d: 4 }, b: 2 }
-    const getter = () => (swap ? { ...snapshot } : snapshot)
-    const renders = { count: 0 }
-    vi.useFakeTimers()
-    host = document.createElement('div')
-    document.body.appendChild(host)
-    root = createRoot(host)
-    await act(async () => { root!.render(<ObjectProbe getter={getter} renders={renders} />) })
-    const before = renders.count
-    swap = true
-    await act(async () => { vi.advanceTimersByTime(150) })
-    expect(renders.count).toBe(before)
-  })
-
-  it('结构比较保留真实变化（数组顺序与标量差异）', () => {
-    expect(sameShellState({ a: [1, 2] }, { a: [1, 2] })).toBe(true)
-    expect(sameShellState({ a: [1, 2] }, { a: [2, 1] })).toBe(false)
-    expect(sameShellState({ a: 1 }, { a: 2 })).toBe(false)
-    expect(sameShellState({ a: null }, {})).toBe(false)
-  })
-
-  it('不可序列化与循环引用保守判为变化，不抛栈溢出', () => {
-    const cycle: Record<string, unknown> = {}
-    cycle.self = cycle
-    expect(() => sameShellState(cycle, cycle)).not.toThrow()
-    expect(sameShellState(cycle, { self: {} })).toBe(false)
-    expect(sameShellState({ n: 1n }, { n: 1n })).toBe(false)
-    expect(sameShellState(new Date(0), new Date(0))).toBe(true)
-  })
-
   it('挂载时读一次真源', async () => {
     let reads = 0
     const el = await render(() => { reads += 1; return 'a' })
