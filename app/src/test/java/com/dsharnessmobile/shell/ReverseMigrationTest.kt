@@ -3,6 +3,7 @@ package com.dsharnessmobile.shell
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -202,6 +203,28 @@ class ReverseMigrationTest {
       assertFalse(File(relativeStem + "-parent/sessions.reverse-migration-stage").exists())
       assertFalse(File(relativeStem + "-parent/sessions.reverse-migration-owner").exists())
       assertEquals("source", File(public, "session.jsonl").readText())
+    } finally {
+      root.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun verifiedDirectoryCopyPublishesExactContentAndRemovesNoPublicChild() {
+    val root = Files.createTempDirectory("reverse-migration-verified-copy").toFile()
+    try {
+      val public = File(root, "public/sessions").apply { mkdirs() }
+      val private = File(root, "private/sessions")
+      val bytes = ByteArray(150_000) { (it % 251).toByte() }
+      File(public, "large.jsonl").writeBytes(bytes)
+      File(public, "nested").mkdirs()
+      File(public, "nested/settings.yaml").writeText("user: value\n")
+
+      ReverseMigration.migrateDir(private, public)
+
+      assertArrayEquals(bytes, File(private, "large.jsonl").readBytes())
+      assertEquals("user: value\n", File(private, "nested/settings.yaml").readText())
+      assertFalse("public source is removed only after the whole staged tree is published", public.exists())
+      assertFalse(File(root, "private/sessions.reverse-migration-stage").exists())
     } finally {
       root.deleteRecursively()
     }

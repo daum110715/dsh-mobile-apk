@@ -1093,12 +1093,27 @@ class EngineManager(private val context: Context, private val pickToken: String?
     }
     privateFile.parentFile?.mkdirs()
     publicFile.copyTo(privateFile, overwrite = true)
-    if (privateFile.length() != publicFile.length()) {
+    FileOutputStream(privateFile).use { it.fd.sync() }
+    if (privateFile.length() != publicFile.length() ||
+      sha256(privateFile) != sha256(publicFile)) {
       throw java.io.IOException("copy verification failed for " + publicFile.absolutePath)
     }
     if (!publicFile.delete()) {
       throw java.io.IOException("failed to delete public source " + publicFile.absolutePath)
     }
+  }
+
+  private fun sha256(file: File): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+      val buffer = ByteArray(64 * 1024)
+      while (true) {
+        val read = input.read(buffer)
+        if (read < 0) break
+        digest.update(buffer, 0, read)
+      }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
   }
 
   /** 供给结果落点（**私有目录**：公共目录刚建失败时往它里面写结果必然也失败）。 */

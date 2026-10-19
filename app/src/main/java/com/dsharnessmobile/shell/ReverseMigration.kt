@@ -1,10 +1,12 @@
 package com.dsharnessmobile.shell
 
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 
 /** File-level reverse migration with an owned sibling stage, so a retry never mistakes a partial copy for user data. */
 internal object ReverseMigration {
@@ -128,14 +130,63 @@ internal object ReverseMigration {
     val children = listFiles(src) ?: throw IOException("could not list migration source: " + src.absolutePath)
     children.forEach { f ->
       val target = File(dst, f.name)
-      if (f.isDirectory) copyTreeVerified(f, target, listFiles) else f.copyTo(target, overwrite = true)
+      if (f.isDirectory) {
+        copyTreeVerified(f, target, listFiles)
+      } else {
+        copyFileVerified(f, target)
+      }
     }
     val srcFiles = src.walkBottomUp().filter { it.isFile }.toList()
     val dstFiles = dst.walkBottomUp().filter { it.isFile }.toList()
     val srcSize = srcFiles.sumOf { it.length() }
     val dstSize = dstFiles.sumOf { it.length() }
-    if (srcFiles.size != dstFiles.size || srcSize != dstSize) {
+    if (srcFiles.size != dstFiles.size || srcSize != dstSize ||
+      srcFiles.map { it.relativeTo(src).invariantSeparatorsPath }.toSet() !=
+      dstFiles.map { it.relativeTo(dst).invariantSeparatorsPath }.toSet()) {
       throw IOException("copy verification failed for " + src.absolutePath)
     }
+  }
+
+  /**
+   * Copies one migration file through a unique sibling stage and proves both sides have the same
+   * bytes before it can be published. No public source is removed here; the caller deletes the
+   * source only after the whole staged tree has passed verification.
+   */
+  private fun copyFileVerified(src: File, dst: File) {
+    dst.parentFile?.mkdirs()
+    val srcDigest = sha256(src.toPath())
+    val temp = Files.createTempFile(dst.parentFile.toPath(), "." + dst.name + ".", ".tmp")
+    try {
+      FileInputStream(src).use { input ->
+        FileOutputStream(temp.toFile()).use { output ->
+          val buffer = ByteArray(64 * 1024)
+          while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            output.write(buffer, 0, read)
+          }
+          output.fd.sync()
+        }
+      }
+      if (Files.size(temp) != src.length() || sha256(temp) != srcDigest || sha256(src.toPath()) != srcDigest) {
+        throw IOException("copy verification failed for " + src.absolutePath)
+      }
+      Files.move(temp, dst.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+    } finally {
+      if (Files.exists(temp)) Files.deleteIfExists(temp)
+    }
+  }
+
+  internal fun sha256(path: java.nio.file.Path): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    Files.newInputStream(path).use { input ->
+      val buffer = ByteArray(64 * 1024)
+      while (true) {
+        val read = input.read(buffer)
+        if (read < 0) break
+        digest.update(buffer, 0, read)
+      }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
   }
 }

@@ -80,4 +80,32 @@ class EngineManagerWriteSafetyTest {
       assertTrue("in-place write remains: " + it, !code.contains(it))
     }
   }
+
+  @Test
+  fun fileReverseMigrationCanNeverDeleteThePublicSourceAfterCopyFailure() {
+    val root = Files.createTempDirectory("reverse-migration-file-source").toFile()
+    try {
+      val public = File(root, "public/settings.yaml")
+      public.parentFile!!.mkdirs()
+      public.writeText("source: value\n")
+      val source = listOf(
+        File("src/main/java/com/dsharnessmobile/shell/EngineManager.kt"),
+        File("app/src/main/java/com/dsharnessmobile/shell/EngineManager.kt"),
+      ).first { it.isFile }.readText()
+      val migration = source.substringAfter("private fun reverseMigrateFile(")
+        .substringBefore("private fun publicRepoStatusFile()")
+      val copy = migration.indexOf("publicFile.copyTo(privateFile, overwrite = true)")
+      val sync = migration.indexOf("fd.sync()")
+      val verify = migration.indexOf("copy verification failed")
+      val remove = migration.indexOf("publicFile.delete()")
+
+      assertTrue("the public source must survive a failed copy", public.exists())
+      assertTrue("copy, durability sync and content check must precede source deletion",
+        copy >= 0 && sync > copy && verify > sync && remove > verify)
+      assertTrue("the source may only be removed behind a failure-preserving copy",
+        migration.substring(remove).contains("failed to delete public source"))
+    } finally {
+      root.deleteRecursively()
+    }
+  }
 }
