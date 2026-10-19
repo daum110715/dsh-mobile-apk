@@ -75,4 +75,100 @@ class RepairConversationStoreTest {
     assertEquals(0, loaded.events.length())
     assertTrue(fresh.id != previous.id)
   }
+  @Test
+  fun damagedIndexDoesNotDeleteOtherConversationFiles() {
+    val first = RepairConversationStore.create(filesDir)
+    val second = RepairConversationStore.create(filesDir)
+    val index = File(filesDir, "native-repair/conversations/index.json")
+    index.writeText("[{")
+
+    val refs = RepairConversationStore.list(filesDir)
+
+    assertEquals(setOf(first.id, second.id), refs.map { it.id }.toSet())
+    assertNotNull(RepairConversationStore.load(filesDir, first.id))
+    assertNotNull(RepairConversationStore.load(filesDir, second.id))
+    assertEquals(2, File(filesDir, "native-repair/conversations").listFiles()!!.count { it.name.startsWith("session-") })
+  }
+
+  @Test
+  fun damagedIndexIsRebuiltWithoutChangingLegacySessionFields() {
+    val created = RepairConversationStore.create(filesDir, "旧会话")
+    val before = File(filesDir, "native-repair/conversations/session-" + created.id + ".json").readText()
+    File(filesDir, "native-repair/conversations/index.json").writeText("not json")
+
+    val refs = RepairConversationStore.list(filesDir)
+
+    assertEquals(listOf(created.id), refs.map { it.id })
+    assertEquals(before, File(filesDir, "native-repair/conversations/session-" + created.id + ".json").readText())
+    val rebuilt = JSONArray(File(filesDir, "native-repair/conversations/index.json").readText())
+    assertEquals("旧会话", rebuilt.getJSONObject(0).getString("title"))
+  }
+
+  @Test
+  fun savingAfterDamagedIndexKeepsUnindexedSessions() {
+    val first = RepairConversationStore.create(filesDir)
+    val second = RepairConversationStore.create(filesDir)
+    File(filesDir, "native-repair/conversations/index.json").writeText("")
+
+    RepairConversationStore.save(filesDir, RepairConversation(
+      id = second.id, title = "继续修复", history = JSONArray(), events = JSONArray(),
+    ))
+
+    assertNotNull(RepairConversationStore.load(filesDir, first.id))
+    assertNotNull(RepairConversationStore.load(filesDir, second.id))
+  }
+
+  @Test
+  fun repeatedSavesAfterIndexRecoveryPreserveOrphanAndUnreadableSessions() {
+    val first = RepairConversationStore.create(filesDir)
+    val second = RepairConversationStore.create(filesDir)
+    val directory = File(filesDir, "native-repair/conversations")
+    val orphanId = "00000000-0000-4000-8000-000000000001"
+    val brokenId = "00000000-0000-4000-8000-000000000002"
+    val orphan = File(directory, "session-" + orphanId + ".json")
+    val broken = File(directory, "session-" + brokenId + ".json")
+    val orphanBytes = "{\"id\":\"$orphanId\",\"title\":\"orphan bytes\"}\n"
+    orphan.writeText(orphanBytes)
+    broken.writeText("{\"id\":")
+    val orphanBefore = orphan.readBytes()
+    val brokenBefore = broken.readBytes()
+    File(directory, "index.json").writeText("not json")
+
+    RepairConversationStore.save(filesDir, RepairConversation(
+      id = first.id, title = "first save", history = JSONArray(), events = JSONArray(),
+    ))
+    RepairConversationStore.save(filesDir, RepairConversation(
+      id = second.id, title = "second save", history = JSONArray(), events = JSONArray(),
+    ))
+
+    assertTrue("orphan session bytes must survive", orphan.readBytes().contentEquals(orphanBefore))
+    assertTrue("unreadable session bytes must survive", broken.readBytes().contentEquals(brokenBefore))
+    assertNotNull(RepairConversationStore.load(filesDir, first.id))
+    assertNotNull(RepairConversationStore.load(filesDir, second.id))
+  }
+
+  @Test
+  fun partiallyInvalidIndexIsTreatedAsDamagedInsteadOfDroppingEntries() {
+    val first = RepairConversationStore.create(filesDir)
+    val second = RepairConversationStore.create(filesDir)
+    val directory = File(filesDir, "native-repair/conversations")
+    val brokenId = "00000000-0000-4000-8000-000000000003"
+    val broken = File(directory, "session-" + brokenId + ".json")
+    broken.writeText("still the user's bytes")
+    val brokenBefore = broken.readBytes()
+    File(directory, "index.json").writeText(
+      JSONArray().put(JSONObject().put("id", first.id).put("title", "first")).put("bad entry").toString(),
+    )
+
+    RepairConversationStore.save(filesDir, RepairConversation(
+      id = second.id, title = "continue", history = JSONArray(), events = JSONArray(),
+    ))
+    RepairConversationStore.save(filesDir, RepairConversation(
+      id = second.id, title = "continue again", history = JSONArray(), events = JSONArray(),
+    ))
+
+    assertTrue("session named by a valid prefix of the damaged index must survive", broken.readBytes().contentEquals(brokenBefore))
+    assertNotNull(RepairConversationStore.load(filesDir, first.id))
+    assertEquals("continue again", RepairConversationStore.load(filesDir, second.id)!!.title)
+  }
 }
