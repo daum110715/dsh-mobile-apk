@@ -54,7 +54,6 @@ class RepairActivityPersistenceTest {
     val failure = init.substring(init.indexOf("} catch (e: Exception) {"), init.indexOf("}.apply { name = \"dsh-repair-init\""))
     assertTrue("destroy during init must not escape as an uncaught exception", failure.contains("runCatching { addSystemMessage("))
   }
-
   @Test
   fun downloadCallbackChecksActivityAndWebViewLivenessBeforeJavascript() {
     val candidates = listOf(
