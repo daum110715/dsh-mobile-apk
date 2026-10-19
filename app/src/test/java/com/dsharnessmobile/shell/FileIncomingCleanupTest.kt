@@ -17,6 +17,37 @@ import org.junit.Test
 class FileIncomingCleanupTest {
 
   @Test
+  fun deliveryReservationIsTakenAfterSweepAndAlwaysReleased() {
+    val lock = Any()
+    val deliveries = java.util.concurrent.atomic.AtomicInteger(0)
+    val observed = mutableListOf<Pair<Int, Int>>()
+    var insideLock = false
+
+    val result = FileIncoming.withIncomingDeliveryAfterSweep(
+      lock,
+      deliveries,
+      sweep = {
+        insideLock = Thread.holdsLock(lock)
+        observed += 1 to deliveries.get()
+      },
+    ) {
+      observed += 2 to deliveries.get()
+      "done"
+    }
+
+    assertEquals("done", result)
+    assertTrue("sweep must run while holding the cleanup lock", insideLock)
+    assertEquals("sweep sees no in-flight delivery reservation", 1 to 0, observed[0])
+    assertEquals("delivery is reserved before work starts", 2 to 1, observed[1])
+    assertEquals("reservation must be released", 0, deliveries.get())
+
+    assertTrue(runCatching {
+      FileIncoming.withIncomingDeliveryAfterSweep(lock, deliveries, {}) { error("pipeline failed") }
+    }.isFailure)
+    assertEquals("failed delivery must not leak its reservation", 0, deliveries.get())
+  }
+
+  @Test
   fun wipeIsAllowedOnlyWhenBothCopyAndDeliveryAreSilent() {
     assertTrue(FileIncoming.workspaceWipeAllowed(0, 0))
     assertFalse("拷贝在途不得全清（会删半个文件）", FileIncoming.workspaceWipeAllowed(1, 0))
