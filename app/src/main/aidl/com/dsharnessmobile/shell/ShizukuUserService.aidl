@@ -69,5 +69,8 @@ interface ShizukuUserService {
 
     /** v4: confirm the one-time configured full UID and trusted data anchor. */
     Bundle configuration() = 10;
+
+    /** v5: atomically commit a completed transfer temp file to its destination. */
+    Bundle commitChunk(in String temporaryPath, in String path) = 11;
 }
 

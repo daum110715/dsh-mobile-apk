@@ -21,7 +21,7 @@ class ShizukuRpcLeaseWiringFixtureTest {
   @Test fun everyTransferRpcHasAFreshDispatchPointGateInsideItsLoop() {
     val pull = body("pullFileInternal")
     val push = body("pushFileInternal")
-    assertTrue(pull.indexOf("java.io.FileOutputStream(target)") < pull.indexOf("lease.beforeRpc(remoteSvc)"))
+    assertTrue(pull.indexOf("java.io.FileOutputStream(temporary)") < pull.indexOf("lease.beforeRpc(remoteSvc)"))
     assertTrue(pull.indexOf("while (true)") < pull.indexOf("lease.beforeRpc(remoteSvc)"))
     assertTrue(Regex("""lease\.beforeRpc\(remoteSvc\)\?\.let \{ return transferFacts\(it, offset\) }\s+val chunk = remoteSvc\.readChunk""")
       .containsMatchIn(pull))
@@ -35,6 +35,19 @@ class ShizukuRpcLeaseWiringFixtureTest {
     assertTrue(push.contains("transferFacts(lease.failed(failure), offset)"))
     assertFalse(pull.contains("RootAccess."))
     assertFalse(push.contains("RootAccess."))
+  }
+
+  @Test fun fileTransfersPublishOnlyAfterACompleteTemporaryWrite() {
+    val pull = body("pullFileInternal")
+    val push = body("pushFileInternal")
+    assertTrue("pull writes a sibling temporary file", pull.contains(".dsh-pull-"))
+    assertTrue("pull syncs before publishing", pull.indexOf("sink.fd.sync()") < pull.indexOf("Files.move("))
+    assertTrue("pull publishes atomically", pull.contains("StandardCopyOption.ATOMIC_MOVE"))
+    assertTrue(push.contains(".dsh-push-"))
+    assertTrue("push writes only the remote temporary path", push.contains("writeChunk(temporary, slice, append)"))
+    assertFalse("push must not truncate the live destination", push.contains("writeChunk(remote, slice, append)"))
+    assertTrue("push commits through the service rename", push.contains("commitChunk(temporary, remote)"))
+    assertTrue("failed push removes its remote temporary", push.contains("removePath(temporary)"))
   }
 
   @Test fun leaseBeginsOnlyForActualRootAndConsentIsRecheckedAfterPersistence() {

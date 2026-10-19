@@ -26,7 +26,7 @@ class ShizukuUserServiceBridge() : ShizukuUserService.Stub() {
     private const val OUTPUT_LIMIT = 16 * 1024
 
     /** v3（2026-09-30）：新增 [configure] / [repairOwnership]——root 通道写盘的属主归一。 */
-    const val PROTOCOL_VERSION = 4
+    const val PROTOCOL_VERSION = 5
     private const val MAX_TIMEOUT_MS = 600_000
     private const val MIN_TIMEOUT_MS = 250
     private const val CHUNK_LIMIT = 512 * 1024
@@ -307,6 +307,39 @@ class ShizukuUserServiceBridge() : ShizukuUserService.Stub() {
     } catch (t: Throwable) {
       out.putBoolean("ok", false)
       out.putString("error", t.javaClass.simpleName + ": " + (t.message ?: ""))
+      out
+    }
+  }
+
+  @Synchronized
+  override fun commitChunk(temporaryPath: String, path: String): Bundle {
+    val out = Bundle()
+    if (!isAbsolute(temporaryPath) || !isAbsolute(path)) {
+      out.putBoolean("ok", false)
+      out.putString("error", "requires absolute paths")
+      return out
+    }
+    val temporary = File(temporaryPath)
+    val target = File(path)
+    return try {
+      require(temporary.isFile) { "temporary-missing" }
+      target.parentFile?.let { if (!it.exists() && !it.mkdirs()) throw IllegalStateException("parent-create-failed") }
+      java.nio.file.Files.move(
+        temporary.toPath(), target.toPath(),
+        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+      )
+      val inApp = isUnderAppData(target)
+      val repaired = if (Process.myUid() == 0 && inApp) repairAfterWrite(target) else null
+      val ownerOk = Process.myUid() != 0 || !inApp || repaired?.getBoolean("ok") == true
+      out.putBoolean("ok", ownerOk)
+      if (!ownerOk) out.putString("error", "ownership-not-repaired")
+      out.putString("path", target.absolutePath)
+      out.putLong("size", target.length())
+      out
+    } catch (failure: Throwable) {
+      out.putBoolean("ok", false)
+      out.putString("error", failure.javaClass.simpleName + ": " + (failure.message ?: ""))
       out
     }
   }

@@ -849,9 +849,10 @@ object ShizukuTransport {
     if (remoteSvc == null) return refusal ?: unavailableShell()
     val lease = RpcLease(context, "shizuku-pull")
     var offset = 0L // Only bytes acknowledged by the remote and committed to the local sink.
+    val temporary = java.io.File(target.parentFile, "." + target.name + ".dsh-pull-" + java.util.UUID.randomUUID())
     return try {
       target.parentFile?.mkdirs()
-      java.io.FileOutputStream(target).use { sink ->
+      java.io.FileOutputStream(temporary).use { sink ->
         while (true) {
           lease.beforeRpc(remoteSvc)?.let { return transferFacts(it, offset) }
           val chunk = remoteSvc.readChunk(remote, offset, PULL_CHUNK)
@@ -866,11 +867,20 @@ object ShizukuTransport {
           sink.write(chunk)
           offset += chunk.size
         }
+        sink.flush()
+        sink.fd.sync()
       }
+      java.nio.file.Files.move(
+        temporary.toPath(), target.toPath(),
+        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+      )
       lease.complete(JSONObject().put("ok", true).put("code", "shell-ok")
         .put("localPath", target.absolutePath).put("path", target.absolutePath).put("size", offset).put("offset", offset))
     } catch (failure: Throwable) {
       transferFacts(lease.failed(failure), offset)
+    } finally {
+      temporary.delete()
     }
   }
 
@@ -899,6 +909,8 @@ object ShizukuTransport {
     if (remoteSvc == null) return refusal ?: unavailableShell()
     val lease = RpcLease(context, "shizuku-push")
     var offset = 0L // Acknowledged successful chunks; never guess bytes written by a failed RPC.
+    val temporary = remote + ".dsh-push-" + java.util.UUID.randomUUID()
+    var committed = false
     return try {
       java.io.FileInputStream(source).use { input ->
         val buf = ByteArray(PULL_CHUNK)
@@ -914,23 +926,32 @@ object ShizukuTransport {
           val append = offset > 0
           // Local read/copy completed: recheck actual UID + current effective consent EVERY chunk.
           lease.beforeRpc(remoteSvc)?.let { return transferFacts(it, offset) }
-          val reply = remoteSvc.writeChunk(remote, slice, append)
+          val reply = remoteSvc.writeChunk(temporary, slice, append)
           lease.acknowledged()
           if (!reply.containsKey("ok")) return transferFacts(lease.complete(
             JSONObject().put("ok", false).put("code", "shell-write-failed"), definitive = false), offset)
           if (!reply.getBoolean("ok")) {
             return transferFacts(lease.complete(JSONObject().put("ok", false).put("code", "shell-write-failed")
               .put("failedChunkMayBePartial", true)
-              .put("guidance", "远端写入失败：" + (reply.getString("error") ?: "") + "（$remote）")), offset)
+              .put("guidance", "远端临时写入失败：" + (reply.getString("error") ?: "") + "（$remote）")), offset)
           }
           offset += count
           sent = true
         }
       }
+      lease.beforeRpc(remoteSvc)?.let { return transferFacts(it, offset) }
+      val committedReply = remoteSvc.commitChunk(temporary, remote)
+      if (!committedReply.getBoolean("ok")) {
+        return transferFacts(lease.complete(JSONObject().put("ok", false).put("code", "shell-commit-failed")
+          .put("guidance", "远端临时文件提交失败：" + (committedReply.getString("error") ?: "") + "（$remote）")), offset)
+      }
+      committed = true
       lease.complete(JSONObject().put("ok", true).put("code", "shell-ok")
         .put("remotePath", remote).put("path", remote).put("size", offset).put("offset", offset))
     } catch (failure: Throwable) {
       transferFacts(lease.failed(failure), offset)
+    } finally {
+      if (!committed) runCatching { remoteSvc.removePath(temporary) }
     }
   }
 
