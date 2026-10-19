@@ -178,12 +178,14 @@ jobs:
           ls -l snapshot/
       - name: 版本与纪律断言（versionName == 输入）
         shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           set -e
           VER=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
           CODE=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)
-          echo "build.gradle versionName=$VER versionCode=$CODE ; input=${{ inputs.version }}"
-          [ "$VER" = "${{ inputs.version }}" ] || { echo "::error::versionName($VER) != 输入——先改 build.gradle.kts 并走 PR"; exit 1; }
+          echo "build.gradle versionName=$VER versionCode=$CODE ; input=$VERSION"
+          [ "$VER" = "$VERSION" ] || { echo "::error::versionName($VER) != 输入——先改 build.gradle.kts 并走 PR"; exit 1; }
           echo "ver=$VER" >> "$GITHUB_ENV"
           echo "code=$CODE" >> "$GITHUB_ENV"
       - name: 准备固定签名 keystore（与历史发布同一把）
@@ -335,9 +337,11 @@ jobs:
           path: release/v${{ inputs.version }}
       - name: 确认待发布包结构
         shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          VER="${{ inputs.version }}"
+          VER="$VERSION"
           DIR="release/v${VER}"
           test -s "$DIR/notes.md"
           test -s "$DIR/MANIFEST.txt"
@@ -355,10 +359,11 @@ jobs:
       - name: 建 draft Release 并上传已验证资产
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -e
-          VER="${{ inputs.version }}"
+          VER="$VERSION"
           TAG="v${VER}"
           # 幂等：已存在则复用，避免重跑 422
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
