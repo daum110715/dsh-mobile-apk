@@ -350,6 +350,32 @@ object FileIncoming {
   /** One serialized read-modify-write owner for the pending ledger and its delivery attempts. */
   private val pendingLock = Any()
 
+  /**
+   * Run the TTL sweep before reserving the delivery window, with both steps under the
+   * same lock as [cleanupTmp]. The sweep must observe a quiescent workspace; cleanup
+   * must observe the reservation before this thread can start copying a new source.
+   *
+   * The body runs after the lock is released so hashing/copying and the bounded retry
+   * loop cannot block the pending ledger's other readers and writers. The reservation
+   * is always released, including when the body throws.
+   */
+  internal fun <T> withIncomingDeliveryAfterSweep(
+    lock: Any,
+    deliveries: java.util.concurrent.atomic.AtomicInteger,
+    sweep: () -> Unit,
+    body: () -> T,
+  ): T {
+    synchronized(lock) {
+      sweep()
+      deliveries.incrementAndGet()
+    }
+    try {
+      return body()
+    } finally {
+      deliveries.decrementAndGet()
+    }
+  }
+
   private fun enqueuePending(context: Context, path: String) {
     synchronized(pendingLock) {
       try {
@@ -470,37 +496,35 @@ object FileIncoming {
     }
     val main = android.os.Handler(android.os.Looper.getMainLooper())
     ioExecutor.execute {
-      // FX-211.2：把守卫从「拷贝」扩到「投递 + 重试期」——这一段里 tmp 工作区中的来件与待发
-      // 清单都不能被 onTaskRemoved 的全清吃掉（划掉应用 = 用户主动关闭，不等于丢弃来件）。
-      activeDeliveries.incrementAndGet()
       try {
-        // 每次文件入队前先做 TTL 清扫（issue #60 F5.1：临时文件 7 天自动回收，防止无限堆积）
-        sweepExpired(context)
-        activeCopies.incrementAndGet()
-        val target = try {
-          copyIn(context, validated)
-        } finally {
-          activeCopies.decrementAndGet()
-        }
-        if (target == null) {
-          main.post { notify("文件拷贝失败", "无法读取传入文件") }
-          return@execute
-        }
-        recordOpening(context, target.absolutePath)
-        LogCollector.log("dsh-file-open", "incoming processed: " + target.absolutePath)
-        // 引擎侧插件端点：路径交给 dsh-android-file-open 强制新会话。
-        // 待发清单 + 短促重试（引擎就绪钩子会再补投，冷启动不再丢件）：
-        enqueuePending(context, target.absolutePath)
-        val deadline = System.currentTimeMillis() + 20_000
-        while (System.currentTimeMillis() < deadline) {
-          if (flushPending(context)) return@execute
-          try { Thread.sleep(4_000) } catch (_: InterruptedException) { return@execute }
+        withIncomingDeliveryAfterSweep(pendingLock, activeDeliveries, { sweepExpired(context) }) {
+          // 每次文件入队前先做 TTL 清扫（issue #60 F5.1：临时文件 7 天自动回收，防止无限堆积）
+          // 与投递预留同锁完成，见 withIncomingDeliveryAfterSweep。
+          // FX-211.2：把守卫从「拷贝」扩到「投递 + 重试期」——这一段里 tmp 工作区中的来件与待发
+          // 清单都不能被 onTaskRemoved 的全清吃掉（划掉应用 = 用户主动关闭，不等于丢弃来件）。
+          activeCopies.incrementAndGet()
+          val target = try {
+            copyIn(context, validated)
+          } finally {
+            activeCopies.decrementAndGet()
+          }
+          if (target == null) {
+            main.post { notify("文件拷贝失败", "无法读取传入文件") }
+            return@withIncomingDeliveryAfterSweep
+          }
+          recordOpening(context, target.absolutePath)
+          LogCollector.log("dsh-file-open", "incoming processed: " + target.absolutePath)
+          // 引擎侧插件端点：路径交给 dsh-android-file-open 强制新会话。
+          // 待发清单 + 短促重试（引擎就绪钩子会再补投，冷启动不再丢件）：
+          enqueuePending(context, target.absolutePath)
+          val deadline = System.currentTimeMillis() + 20_000
+          while (System.currentTimeMillis() < deadline) {
+            if (flushPending(context)) return@withIncomingDeliveryAfterSweep
+            try { Thread.sleep(4_000) } catch (_: InterruptedException) { return@withIncomingDeliveryAfterSweep }
+          }
         }
       } catch (t: Throwable) {
         android.util.Log.w("dsh-file-open", "incoming pipeline failed: " + (t.message ?: t.javaClass.simpleName))
-      } finally {
-        // 成功/失败/早退都递减：守卫只覆盖本段投递期，不泄漏（否则 tmp 永不清理）。
-        activeDeliveries.decrementAndGet()
       }
     }
   }
