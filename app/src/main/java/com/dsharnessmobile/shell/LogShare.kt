@@ -239,9 +239,8 @@ internal object LogShare {
         zip.write(manifest.toByteArray(Charsets.UTF_8))
         zip.closeEntry()
       }
-      if (zipFile.exists()) zipFile.delete()
-      if (!tmp.renameTo(zipFile)) {
-        java.nio.file.Files.move(tmp.toPath(), zipFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+      if (!AtomicFileReplace.publish(tmp, zipFile)) {
+        throw java.io.IOException("cannot replace diagnostic archive")
       }
       PackResult(true, zipFile, report)
     } catch (t: Throwable) {

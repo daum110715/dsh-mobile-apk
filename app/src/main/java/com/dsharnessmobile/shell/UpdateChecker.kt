@@ -382,8 +382,7 @@ object UpdateChecker {
             }
           }
         }
-        if (dest.exists()) dest.delete()
-        if (!tmp.renameTo(dest)) { tmp.copyTo(dest, overwrite = true); tmp.delete() }
+        if (!AtomicFileReplace.publish(tmp, dest)) throw java.io.IOException("cannot replace downloaded APK")
         conn.disconnect()
         return candidate
       } catch (e: Exception) {

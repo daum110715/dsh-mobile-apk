@@ -244,10 +244,8 @@ internal object LinuxAssetIO {
         val code = if (digest.bytes != spec.size) CODE_SIZE_MISMATCH else CODE_DIGEST_MISMATCH
         return Failure(code, detail)
       }
-      if (destination.exists()) destination.delete()
-      if (!tmp.renameTo(destination)) {
-        tmp.copyTo(destination, overwrite = true)
-        tmp.delete()
+      if (!AtomicFileReplace.publish(tmp, destination)) {
+        return Failure(CODE_DOWNLOAD_FAILED, "无法原子替换目标资产；旧文件仍保留")
       }
       return null
     } catch (e: Exception) {

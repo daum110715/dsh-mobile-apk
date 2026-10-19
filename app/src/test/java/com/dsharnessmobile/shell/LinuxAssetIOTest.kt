@@ -374,4 +374,24 @@ class LinuxAssetIOTest {
       SnapshotFs.deletePath(root)
     }
   }
+
+  @Test
+  fun failedRefreshKeepsThePreviouslyInstalledAsset() {
+    val root = tempRoot()
+    try {
+      val env = File(root, LinuxAssetIO.ENV_DIR).apply { mkdirs() }
+      val old = "old-runtime".toByteArray()
+      val body = "new-runtime".toByteArray()
+      val spec = LinuxAssetIO.Spec(goodUrl, sha256(body), body.size.toLong())
+      val dest = File(env, "cache/runtime.tar.xz").apply { parentFile.mkdirs(); writeBytes(old) }
+      val throwing = LinuxAssetIO.Opener { _, target, _ ->
+        target.writeBytes(body)
+        throw java.io.IOException("download interrupted")
+      }
+      assertEquals(LinuxAssetIO.CODE_DOWNLOAD_FAILED, LinuxAssetIO.download(spec, dest, env, throwing)!!.code)
+      assertEquals("the previous asset must remain usable", "old-runtime", dest.readText())
+    } finally {
+      SnapshotFs.deletePath(root)
+    }
+  }
 }
