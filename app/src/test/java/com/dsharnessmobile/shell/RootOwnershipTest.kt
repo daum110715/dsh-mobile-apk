@@ -18,7 +18,7 @@ class RootOwnershipTest {
     assertTrue(aidl.contains("void configure(int appUid, String appDataDir)"))
     assertTrue(aidl.contains("Bundle repairOwnership(in String path, int maxEntries)"))
     assertTrue(aidl.contains("Bundle configuration() = 10"))
-    assertTrue(kotlin("ShizukuUserService").contains("PROTOCOL_VERSION = 4"))
+    assertTrue(kotlin("ShizukuUserService").contains("PROTOCOL_VERSION = 5"))
     val transport = kotlin("ShizukuTransport")
     assertTrue(transport.contains("val ack = remote.configuration()"))
     assertTrue(transport.contains("if (valid) configuredForAge = age"))

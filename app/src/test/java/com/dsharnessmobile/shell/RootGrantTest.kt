@@ -301,7 +301,7 @@ class RootGrantTest {
 
   @Test
   fun v4ConfigurationAcknowledgementBindsExactAppIdentityBeforeReady() {
-    assertTrue(source("ShizukuUserService.kt").contains("const val PROTOCOL_VERSION = 4"))
+    assertTrue(source("ShizukuUserService.kt").contains("const val PROTOCOL_VERSION = 5"))
     val configure = body("ShizukuTransport.kt", "private fun configureIfNeeded(")
     assertBefore(configure, "remote.protocolVersion() < ShizukuUserServiceBridge.PROTOCOL_VERSION", "remote.configure(uid, root)")
     assertBefore(configure, "remote.configure(uid, root)", "val ack = remote.configuration()")

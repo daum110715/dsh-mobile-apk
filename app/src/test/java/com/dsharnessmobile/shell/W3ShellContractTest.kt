@@ -384,9 +384,12 @@ class W3ShellContractTest {
     )
     assertTrue(
       "仍有 pending 或未 claim 草稿队列引用的来件与元数据条目不得随全清删除",
-      cleanup.contains("cleanupDeletions(entries, pendingPaths(context), queuedSessionPaths(context))"),
+      cleanup.contains("val pending = pendingPaths(context)") &&
+        cleanup.contains("val queued = queuedSessionPaths(context)") &&
+        cleanup.contains("cleanupDeletions(entries, pending, queued)"),
     )
-    assertTrue(".sessions 的既有豁免必须保留", code.contains("if (f.name == SESSIONS_ENTRY) continue"))
+    val policy = code.substringAfter("fun cleanupDeletions(").substringBefore("fun ttlDeletions(")
+    assertTrue(".sessions 的既有豁免必须保留", policy.contains("it != SESSIONS_ENTRY"))
   }
 
   @Test
