@@ -107,11 +107,16 @@ object NotifySuppressQueue {
   private var queue: List<Pending> = emptyList()
 
   private const val JOURNAL_KEY = "notify.deferred.v1"
+  private const val BACKUP_PREFIX = "notify.deferred.backup."
+  private const val MAX_BACKUPS = 4
+  private const val BACKUP_TIME_PREFIX = "notify.deferred.backupAt."
   private const val MAX_SETTLED = 32
   private var settled: Map<String, Long> = emptyMap()
   private var loaded = false
   private var journalWritable = true
   private var appContext: Context? = null
+  /** Original bytes waiting for a durable backup; writes stay locked until it commits. */
+  private var pendingRecoveryRaw: String? = null
 
   /** Stable identity includes all display fields, including reports without an eventId. */
   internal fun identity(entry: NotifyEntry): String = MessageDigest.getInstance("SHA-256")
@@ -142,7 +147,16 @@ object NotifySuppressQueue {
     } }))
   }
 
-  internal fun encodeJournal(pending: List<Pending>, done: Map<String, Long>): String = JSONObject().apply {
+  /** Strict encoder for the live journal; recovery writes must use encodeSalvagedJournal. */
+  internal fun encodeJournal(pending: List<Pending>, done: Map<String, Long>): String {
+    return encodeJournalAny(pending, done)
+  }
+
+  /** Recovery can exceed the normal queue bound while draining the backup in batches. */
+  internal fun encodeSalvagedJournal(pending: List<Pending>, done: Map<String, Long>): String =
+    encodeJournalAny(pending, done)
+
+  private fun encodeJournalAny(pending: List<Pending>, done: Map<String, Long>): String = JSONObject().apply {
     put("version", 1)
     put("pending", JSONArray(pending.map { p -> JSONObject().apply {
       put("key", p.key); put("at", p.enqueuedAt); put("entry", encodeEntry(p.entry))
@@ -154,15 +168,12 @@ object NotifySuppressQueue {
     val root = JSONObject(raw)
     require(root.getInt("version") == 1) { "unsupported deferred journal" }
     val pending = root.getJSONArray("pending")
-    // Keep a bounded number of newest entries. One damaged record must not make every valid
-    // waiting question unreadable, and an over-cap journal still has recoverable newest items.
-    val entries = (0 until pending.length()).mapNotNull { i ->
-      try {
-        val p = pending.getJSONObject(i)
-        Pending(p.getString("key"), requireNotNull(NotifyStore.parseEntry(p.getJSONObject("entry").toString())), p.getLong("at"))
-      } catch (_: Exception) { null }
-    }.takeLast(MAX_PENDING)
-    val done = root.optJSONObject("settled") ?: JSONObject()
+    require(pending.length() <= MAX_PENDING) { "oversize deferred journal" }
+    val entries = (0 until pending.length()).map { i ->
+      val p = pending.getJSONObject(i)
+      Pending(p.getString("key"), requireNotNull(NotifyStore.parseEntry(p.getJSONObject("entry").toString())), p.getLong("at"))
+    }
+    val done = root.getJSONObject("settled")
     require(done.length() <= MAX_SETTLED) { "oversize deferred settlements" }
     return entries to done.keys().asSequence().associateWith { done.getLong(it) }
   }
@@ -177,28 +188,79 @@ object NotifySuppressQueue {
     }
   }
 
+  data class Salvage(val pending: List<Pending>, val settled: Map<String, Long>, val damaged: Int, val oversized: Int)
+
   /**
-   * Best-effort recovery for a journal whose envelope is damaged. Individual valid pending
-   * records are retained; a missing or invalid version does not make the entries disappear.
+   * Read individual records for a journal that failed strict decode. Valid records are retained,
+   * including recovering more than [MAX_PENDING] waiting events; delivery drains them in bounded
+   * batches. Damaged records are counted, never silently treated as absent, and the original raw
+   * text is backed up before any later journal write replaces it.
    */
-  internal fun partialJournal(raw: String?): Pair<List<Pending>, Map<String, Long>> {
-    if (raw == null) return emptyList<Pending>() to emptyMap()
+  internal fun salvageJournal(raw: String?): Salvage {
+    if (raw == null) return Salvage(emptyList(), emptyMap(), 0, 0)
     return try {
       val root = JSONObject(raw)
       val pending = root.optJSONArray("pending") ?: JSONArray()
+      var damaged = 0
       val entries = (0 until pending.length()).mapNotNull { i ->
         try {
           val p = pending.getJSONObject(i)
           Pending(p.getString("key"), requireNotNull(NotifyStore.parseEntry(p.getJSONObject("entry").toString())), p.getLong("at"))
-        } catch (_: Exception) { null }
-      }.takeLast(MAX_PENDING)
+        } catch (_: Exception) {
+          damaged++
+          null
+        }
+      }
       val settled = root.optJSONObject("settled") ?: JSONObject()
       val done = settled.keys().asSequence().mapNotNull { key ->
         try { key to settled.getLong(key) } catch (_: Exception) { null }
-      }.toList().takeLast(MAX_SETTLED).toMap()
-      entries to done
+      }.toMap()
+      Salvage(entries, done, damaged, (entries.size - MAX_PENDING).coerceAtLeast(0))
     } catch (_: Exception) {
-      emptyList<Pending>() to emptyMap()
+      Salvage(emptyList(), emptyMap(), 1, 0)
+    }
+  }
+
+  internal fun backupKey(raw: String): String = BACKUP_PREFIX + MessageDigest.getInstance("SHA-256")
+    .digest(raw.toByteArray(Charsets.UTF_8))
+    .joinToString("") { "%02x".format(it.toInt() and 255) }
+
+  /** Backup commit is the only gate that may unlock journal writes. */
+  internal fun backupJournal(raw: String, write: (String, String) -> Boolean): Boolean =
+    try { write(backupKey(raw), raw) } catch (_: Throwable) { false }
+
+  private fun retryRecoveryBackup(app: Context): Boolean {
+    val raw = pendingRecoveryRaw ?: return journalWritable
+    val ok = backupJournal(raw) { key, value ->
+      val prefs = NotifyCenter.prefs(app)
+      // Commit the backup, read it back, and only then permit the live key to be replaced.
+      prefs.edit().putString(key, value).putLong(BACKUP_TIME_PREFIX + key, System.currentTimeMillis()).commit() &&
+        prefs.getString(key, null) == value
+    }
+    if (ok) {
+      pendingRecoveryRaw = null
+      journalWritable = true
+      NotifyProbe.log(app, TAG, "suppress deferred original journal backed up; writes resumed")
+      pruneBackups(app)
+    } else {
+      journalWritable = false
+      NotifyProbe.log(app, TAG, "suppress deferred journal backup failed; writes remain locked")
+    }
+    return ok
+  }
+
+  /** Keep only recent encrypted originals; never touch a backup whose live recovery is pending. */
+  private fun pruneBackups(app: Context, keep: Int = MAX_BACKUPS) {
+    try {
+      val prefs = NotifyCenter.prefs(app)
+      val current = pendingRecoveryRaw?.let { backupKey(it) }
+      prefs.all.keys.asSequence().filter { it.startsWith(BACKUP_PREFIX) && it != current }
+        .sortedBy { prefs.getLong(BACKUP_TIME_PREFIX + it, 0L) }
+        .drop(keep).forEach { key ->
+          prefs.edit().remove(key).remove(BACKUP_TIME_PREFIX + key).commit()
+        }
+    } catch (t: Throwable) {
+      NotifyProbe.log(app, TAG, "suppress deferred backup prune failed: " + t.message)
     }
   }
 
@@ -211,14 +273,17 @@ object NotifySuppressQueue {
         settled = state.settled
       }
       is JournalRead.Invalid -> {
-        // A broken envelope must not erase entries that are still readable. Recover valid records,
-        // keep the original bytes in prefs until a complete journal replaces them, and allow later
-        // writes so a transient write failure does not disable delivery for the process lifetime.
-        val (recovered, done) = partialJournal(raw)
-        queue = recovered
-        settled = done
-        journalWritable = true
-        NotifyProbe.log(app, TAG, "suppress deferred journal partially recovered; pending=" + recovered.size + " reason=" + state.reason)
+        val salvaged = salvageJournal(raw)
+        queue = salvaged.pending
+        settled = salvaged.settled
+        journalWritable = false
+        pendingRecoveryRaw = raw
+        NotifyProbe.log(app, TAG, "suppress deferred journal strict decode failed; pending=" + salvaged.pending.size +
+          " damaged=" + salvaged.damaged + " reason=" + state.reason)
+        // Backup first. Only a successful commit of the original bytes may unlock journal writes.
+        if (retryRecoveryBackup(app) && salvaged.damaged > 0) {
+          NotifyProbe.log(app, TAG, "suppress deferred salvage kept valid records; original retained at " + backupKey(state.original))
+        }
       }
     }
     appContext = app
@@ -239,7 +304,8 @@ object NotifySuppressQueue {
     pending: List<Pending>, done: Map<String, Long>, allowed: Boolean, write: (String) -> Boolean,
   ): Boolean {
     if (!allowed) return false
-    if (!write(encodeJournal(pending, done))) return false
+    val encoded = if (pending.size > MAX_PENDING) encodeSalvagedJournal(pending, done) else encodeJournal(pending, done)
+    if (!write(encoded)) return false
     queue = pending
     settled = done
     return true
@@ -260,6 +326,7 @@ object NotifySuppressQueue {
     try {
       synchronized(lock) {
         load(app)
+        if (!journalWritable) retryRecoveryBackup(app)
       }
       if (pendingCount() > 0) {
         if (!NotifyStore.isForeground(app) || !NotifyCenter.suppressForeground(app)) flush(app) else scheduleTick(app)
@@ -277,6 +344,13 @@ object NotifySuppressQueue {
 
   fun pendingCount(): Int = queue.size
 
+  /** A deferred event must remain queued until it is actually settled. */
+  internal fun isSettledResult(result: NotifyCenter.Result): Boolean = when (result) {
+    NotifyCenter.Result.POSTED, NotifyCenter.Result.DUPLICATE_SUPPRESSED,
+    NotifyCenter.Result.RESOLVED -> true
+    else -> false
+  }
+
   /** 探针用：上一次丢弃的原因（无丢弃时为 null）。 */
   @Volatile
   var lastDropReason: String? = null
@@ -288,12 +362,17 @@ object NotifySuppressQueue {
     val now = System.currentTimeMillis()
     synchronized(lock) {
       load(app)
+      if (!journalWritable) retryRecoveryBackup(app)
       if (!journalWritable) return false
       val done = settled.filterValues { !isExpired(it, now) }
       if (done.containsKey(identity(entry))) return true
       // Source replay must not extend the TTL or move an older report behind its successor.
       if (queue.any { identity(it.entry) == identity(entry) }) return true
-      val next = merge(queue, entry, key, now)
+      val next = if (queue.size > MAX_PENDING) {
+        // A salvage may exceed MAX_PENDING. Keep every waiting item until delivery drains it;
+        // repeated source deliveries are already collapsed by identity above.
+        queue + Pending(key, entry, now)
+      } else merge(queue, entry, key, now)
       val removed = queue.filterNot { next.contains(it) }.associate { identity(it.entry) to now }
       val completed = (done + removed).entries.toList().takeLast(MAX_SETTLED).associate { it.key to it.value }
       if (!persist(app, next, completed)) return false
@@ -327,6 +406,7 @@ object NotifySuppressQueue {
     try {
       synchronized(lock) {
         load(app)
+        if (!journalWritable) retryRecoveryBackup(app)
         if (!journalWritable) return 0
         val (deliver, expired) = takeForFlush(queue, now)
         val expiredIdentities = queue.filter { expiredAt(it, now) }.associate { identity(it.entry) to now }
@@ -344,8 +424,12 @@ object NotifySuppressQueue {
         for (item in deliver) {
           val result = NotifyCenter.deliverDeferred(app, item.entry)
           if (result == NotifyCenter.Result.POSTED) posted++
-          // A duplicate is already visible; failures keep the original durable item and deadline.
-          if (result == NotifyCenter.Result.POSTED || result == NotifyCenter.Result.DUPLICATE_SUPPRESSED) {
+          // A duplicate is already visible; a deferred retry is still queued. Neither is a
+          // successful settlement of this durable item.
+          if (isSettledResult(result)) {
+            // DEFERRED_RETRY is deliberately absent: the item remains queued and is replayed by
+            // the next tick. UNKNOWN_KIND/DISABLED/PERMISSION_DENIED also remain until a later
+            // attempt can deliver them; dropping them here would lose the only answer surface.
             val done = (settled + (identity(item.entry) to now)).entries.toList().takeLast(MAX_SETTLED)
               .associate { it.key to it.value }
             if (!persist(app, queue.filterNot { it == item }, done)) {

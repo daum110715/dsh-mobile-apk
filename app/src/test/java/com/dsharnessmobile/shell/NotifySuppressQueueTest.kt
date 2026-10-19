@@ -75,22 +75,39 @@ class NotifySuppressQueueTest {
   }
 
   @Test
-  fun oversizedJournalKeepsTheNewestRecoverableEntries() {
+  fun strictDecodeKeepsOversizeJournalForBackupAndSalvage() {
     val q = List(NotifySuppressQueue.MAX_PENDING + 1) { NotifySuppressQueue.Pending("key$it", entry("e$it"), 1L) }
-    val recovered = NotifySuppressQueue.decodeJournal(NotifySuppressQueue.encodeJournal(q, emptyMap())).first
-    assertEquals(NotifySuppressQueue.MAX_PENDING, recovered.size)
-    assertEquals("e" + NotifySuppressQueue.MAX_PENDING, recovered.last().entry.eventId)
+    val raw = NotifySuppressQueue.encodeJournal(q, emptyMap())
+    assertTrue(NotifySuppressQueue.readJournal(raw) is NotifySuppressQueue.JournalRead.Invalid)
+    val salvaged = NotifySuppressQueue.salvageJournal(raw)
+    assertEquals("all waiting records must remain recoverable", q.size, salvaged.pending.size)
+    assertEquals(1, salvaged.oversized)
   }
 
   @Test
-  fun damagedEnvelopeRetainsValidWaitingQuestions() {
+  fun damagedParentEnvelopeRetainsValidWaitingQuestions() {
     val item = NotifyEntry(kind = "question", eventId = "q-1", title = "还等你回答")
-    val raw = "{\"pending\":[{\"key\":\"retry:q-1\",\"at\":1,\"entry\":" +
-      NotifySuppressQueue.encodeEntry(item).toString() + "}]}"
-    val (pending, settled) = NotifySuppressQueue.partialJournal(raw)
-    assertEquals(1, pending.size)
-    assertEquals(item, pending[0].entry)
-    assertTrue(settled.isEmpty())
+    val raw = "{\"version\":1,\"pending\":[{\"key\":\"retry:q-1\",\"at\":1,\"entry\":" +
+      NotifySuppressQueue.encodeEntry(item).toString() + "}],\"settled\":[]}"
+    val salvage = NotifySuppressQueue.salvageJournal(raw)
+    assertEquals(1, salvage.pending.size)
+    assertEquals(item, salvage.pending[0].entry)
+    assertTrue(salvage.settled.isEmpty())
+    assertTrue("the parent envelope still fails strict decode", NotifySuppressQueue.readJournal(raw) is NotifySuppressQueue.JournalRead.Invalid)
+  }
+
+  @Test
+  fun backupKeyIsStableAndIndependentOfTheLiveJournalKey() {
+    val raw = "{\"version\":2,\"pending\":[]}"
+    assertEquals(NotifySuppressQueue.backupKey(raw), NotifySuppressQueue.backupKey(raw))
+    assertTrue(NotifySuppressQueue.backupKey(raw).startsWith("notify.deferred.backup."))
+    assertFalse("the original journal key must remain available for the backup", NotifySuppressQueue.backupKey(raw) == "notify.deferred.v1")
+    var wroteKey = ""
+    var wroteValue = ""
+    assertTrue(NotifySuppressQueue.backupJournal(raw) { k, v -> wroteKey = k; wroteValue = v; true })
+    assertEquals(NotifySuppressQueue.backupKey(raw), wroteKey)
+    assertEquals(raw, wroteValue)
+    assertFalse("failed backup must not unlock the journal", NotifySuppressQueue.backupJournal(raw) { _, _ -> false })
   }
 
   @Test
@@ -105,7 +122,40 @@ class NotifySuppressQueueTest {
     assertEquals(0, expired)
   }
 
-  @Test fun corruptOrUnknownJournalRecoversReadableEntriesAndAllowsLaterWrites() {
+  @Test
+  fun deferredRetryNeverSettlesTheDurableItem() {
+    assertFalse(NotifySuppressQueue.isSettledResult(NotifyCenter.Result.DEFERRED_RETRY))
+    assertFalse(NotifySuppressQueue.isSettledResult(NotifyCenter.Result.PERMISSION_DENIED))
+    assertFalse(NotifySuppressQueue.isSettledResult(NotifyCenter.Result.ERROR))
+    assertTrue(NotifySuppressQueue.isSettledResult(NotifyCenter.Result.POSTED))
+    assertTrue(NotifySuppressQueue.isSettledResult(NotifyCenter.Result.RESOLVED))
+  }
+
+  @Test
+  fun enqueueIsIdempotentForTheSameEntry() {
+    val e = entry("event-id")
+    val first = NotifySuppressQueue.merge(emptyList(), e, "retry:" + NotifySuppressQueue.identity(e), 1L)
+    val again = NotifySuppressQueue.merge(first, e, "retry:" + NotifySuppressQueue.identity(e), 2L)
+    assertEquals("replaying the same source event must not duplicate it", 1, again.size)
+  }
+
+  @Test
+  fun everySalvagedEntryIsPreservedForBatchedDelivery() {
+    val q = List(NotifySuppressQueue.MAX_PENDING + 4) {
+      NotifySuppressQueue.Pending("retry:$it", NotifyEntry(kind = "question", eventId = "q$it"), 1L)
+    }
+    val raw = NotifySuppressQueue.encodeSalvagedJournal(q, emptyMap())
+    val strict = NotifySuppressQueue.readJournal(raw)
+    assertTrue("an oversized journal still needs salvage", strict is NotifySuppressQueue.JournalRead.Invalid)
+    val readBack = NotifySuppressQueue.salvageJournal(raw)
+    assertEquals("no waiting question may be truncated away", q.size, readBack.pending.size)
+    val (batch, expired) = NotifySuppressQueue.takeForFlush(readBack.pending, 2L)
+    assertEquals("delivery remains bounded", NotifySuppressQueue.MAX_DELIVER_PER_FLUSH, batch.size)
+    assertEquals(0, expired)
+    assertEquals("the remainder stays queued", q.size - batch.size, readBack.pending.size - batch.size)
+  }
+
+  @Test fun corruptOrUnknownJournalIsRetainedUntilBackupGate() {
     val malformed = "{not-json"
     val invalid = NotifySuppressQueue.readJournal(malformed) as NotifySuppressQueue.JournalRead.Invalid
     assertEquals(malformed, invalid.original)
@@ -115,11 +165,11 @@ class NotifySuppressQueueTest {
     assertTrue(NotifySuppressQueue.readJournal(null) is NotifySuppressQueue.JournalRead.Valid)
 
     var writes = 0
-    val committed = NotifySuppressQueue.commitJournalIfAllowed(
-      listOf(NotifySuppressQueue.Pending("report:s", entry("e"), 1L)), emptyMap(), allowed = true,
+    val blocked = NotifySuppressQueue.commitJournalIfAllowed(
+      listOf(NotifySuppressQueue.Pending("report:s", entry("e"), 1L)), emptyMap(), allowed = false,
     ) { writes++; true }
-    assertTrue(committed)
-    assertEquals("a recovered journal must be writable", 1, writes)
+    assertFalse("a failed backup must keep the live journal untouched", blocked)
+    assertEquals(0, writes)
   }
 
   private fun entry(id: String, session: String = "s1") = NotifyEntry(
