@@ -314,9 +314,46 @@ object FileIncoming {
   private fun pendingFile(context: Context): File = File(tmpWorkspace(context), PENDING_ENTRY)
 
   private fun enqueuePending(context: Context, path: String) {
-    try {
-      pendingFile(context).appendText(path + "\n")
+    synchronized(pendingLock) {
+      try {
+        val f = pendingFile(context)
+        val current = readPending(f)
+        if (current == null) LogCollector.log("dsh-file-open", "pending ledger enqueue skipped (unreadable)")
+        else writePending(f, current + listOf(path))
+      } catch (_: Exception) {
+        LogCollector.log("dsh-file-open", "pending ledger enqueue failed")
+      }
+    }
+  }
+
+  /** null = the ledger exists but could not be read; [] = it is absent or empty. */
+  internal fun readPending(f: File): List<String>? {
+    if (!f.exists()) return emptyList()
+    return try {
+      f.readLines().map { it.trim() }.filter { it.isNotEmpty() }
     } catch (_: Exception) {
+      null
+    }
+  }
+
+  /** Publish a complete ledger with a unique sibling temp file and an atomic replacement. */
+  internal fun writePending(f: File, paths: List<String>) {
+    f.parentFile?.mkdirs()
+    val temp = File.createTempFile(f.name + ".", ".tmp", f.parentFile)
+    try {
+      val text = paths.joinToString("\n") + if (paths.isEmpty()) "" else "\n"
+      java.io.FileOutputStream(temp).use { output ->
+        output.write(text.toByteArray(Charsets.UTF_8))
+        output.flush()
+        output.fd.sync()
+      }
+      java.nio.file.Files.move(
+        temp.toPath(), f.toPath(),
+        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+      )
+    } finally {
+      temp.delete()
     }
   }
 
@@ -356,17 +393,22 @@ object FileIncoming {
    * 冷启动竞态的确定性补投路径）。
    */
   fun flushPending(context: Context): Boolean {
-    val f = pendingFile(context)
-    val lines = try { f.readLines().filter { it.isNotBlank() } } catch (_: Exception) { return true }
-    if (lines.isEmpty()) { try { f.delete() } catch (_: Exception) {} ; return true }
-    val remaining = lines.filter { !deliverOnce(context, it) }
-    if (remaining.isEmpty()) {
-      try { f.delete() } catch (_: Exception) {}
-      LogCollector.log("dsh-file-open", "pending incoming flushed (${lines.size} file(s))")
-    } else {
-      try { f.writeText(remaining.joinToString("\n") + "\n") } catch (_: Exception) {}
+    synchronized(pendingLock) {
+      val f = pendingFile(context)
+      val lines = readPending(f) ?: return false
+      if (lines.isEmpty()) { try { f.delete() } catch (_: Exception) {} ; return true }
+      val accepted = HashSet<String>()
+      for (line in lines) if (deliverOnce(context, line)) accepted += line
+      try {
+        val current = readPending(f) ?: return false
+        val remaining = current.filter { it !in accepted }
+        if (remaining.isEmpty()) f.delete() else writePending(f, remaining)
+        if (remaining.isEmpty()) LogCollector.log("dsh-file-open", "pending incoming flushed (${lines.size} file(s))")
+        return remaining.isEmpty()
+      } catch (_: Exception) {
+        return false
+      }
     }
-    return remaining.isEmpty()
   }
 
   /**

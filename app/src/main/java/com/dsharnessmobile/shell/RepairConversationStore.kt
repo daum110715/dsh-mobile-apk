@@ -125,10 +125,19 @@ internal object RepairConversationStore {
   }
 
   private fun atomicWrite(target: File, text: String) {
-    val temp = File(target.parentFile, target.name + ".tmp")
-    temp.writeText(text)
-    if (!temp.renameTo(target)) {
-      target.writeText(text)
+    val temp = File.createTempFile(target.name + ".", ".tmp", target.parentFile)
+    try {
+      java.io.FileOutputStream(temp).use { output ->
+        output.write(text.toByteArray(Charsets.UTF_8))
+        output.flush()
+        output.fd.sync()
+      }
+      java.nio.file.Files.move(
+        temp.toPath(), target.toPath(),
+        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+      )
+    } finally {
       temp.delete()
     }
   }
