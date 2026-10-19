@@ -554,12 +554,14 @@ internal class EngineStartFlow(private val activity: MainActivity) {
       deferEngineStartWhileSnapshotTransactionBusy()
       return
     }
+    try {
+    flowOwnership.handoff(token) {
     val generation = token.generation
     currentStartGeneration = generation
     RepairState.startupInProgress = true
     activity.engineManager.lastStartRefusalCode = null
     activity.engineManager.lastStartRefusal = null
-    if (!isCurrentEngineFlow(generation)) { flowOwnership.finish(token); return }
+    if (!isCurrentEngineFlow(generation)) return@handoff null
     // 新启动世代 = boot-stall 的新 epoch：在此复位（**不在** onPageFinished。
     // onPageFinished 只代表文档加载完，在那里复位会造成同 epoch 重复报，见 L-1）。
     resetBootStall()
@@ -991,8 +993,18 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         RepairState.startupInProgress = false
       }
     }
-    token.attach(caller)
-    caller.start()
+    caller
+    }
+    } catch (t: Throwable) {
+      RepairState.startupInProgress = false
+      activity.engineManager.lastStartRefusalCode = activity.engineManager.startupExceptionCode(t)
+      LogCollector.log("dsh-start", "startup preparation failed: " + t.javaClass.simpleName)
+      runCatching {
+        activity.applyGuidePhase(GuidePhase.Error, "引擎启动失败",
+          startupFailureHint(activity, activity.engineManager.lastStartRefusalCode))
+        activity.showGuide()
+      }
+    }
   }
 
   /**
@@ -1444,6 +1456,21 @@ internal class StartupFlowOwnership {
         before.token?.cancel()
         return token
       }
+    }
+  }
+
+  /** Transfer ownership to a worker only after preparation succeeds. */
+  fun handoff(token: Token, prepare: () -> Thread?) {
+    var caller: Thread? = null
+    try {
+      caller = prepare()
+      if (caller == null) { finish(token); return }
+      token.attach(caller)
+      caller.start()
+    } catch (t: Throwable) {
+      caller?.let { token.detach(it) }
+      finish(token)
+      throw t
     }
   }
 

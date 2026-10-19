@@ -16,6 +16,28 @@ class StartupLifecycleOwnershipTest {
     assertFalse(startupOwnershipPending("root-unavailable"))
   }
 
+  @Test fun preparationAndThreadStartFailuresReleaseTheOwnerForRetry() {
+    val ownership = StartupFlowOwnership()
+    val first = ownership.begin()!!
+    try { ownership.handoff(first) { throw IllegalStateException("injected setup failure") } }
+    catch (_: IllegalStateException) { }
+    assertFalse(ownership.running)
+    val next = ownership.begin()!!
+    try {
+      ownership.handoff(next) { object : Thread() { override fun start() { throw IllegalStateException("injected thread failure") } } }
+    } catch (_: IllegalStateException) { }
+    assertFalse(ownership.running)
+    assertNotNull(ownership.begin())
+  }
+
+  @Test fun cancelledPreparationDoesNotStartAWorkerOrRetainOwnership() {
+    val ownership = StartupFlowOwnership()
+    val token = ownership.begin()!!
+    ownership.handoff(token) { null }
+    assertFalse(ownership.running)
+    assertNotNull(ownership.begin())
+  }
+
   @Test fun duplicateBeginDoesNotAdvanceTheCurrentGeneration() {
     val ownership = StartupFlowOwnership()
     val first = ownership.begin()!!
