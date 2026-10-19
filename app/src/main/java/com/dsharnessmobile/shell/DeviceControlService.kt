@@ -220,8 +220,11 @@ class DeviceControlService : AccessibilityService() {
         .put("restrictedSettingsApplies", restricted)
         .put(
           "hint",
-          if (enabled) "无障碍服务已开启：设备控制走无障碍通道（语义树 + performAction）"
-          else "未开启：到 系统设置 → 无障碍 → 已下载的服务 里开启「" + UserCopy.A11Y_SERVICE_NAME + "」",
+          if (enabled) {
+            UiText.t(context, "无障碍服务已开启：设备控制走无障碍通道（语义树 + performAction）", "Accessibility is on: device control uses the semantic tree and performAction")
+          } else {
+            UiText.t(context, "未开启：到 系统设置 → 无障碍 → 已下载的服务 里开启「" + UserCopy.A11Y_SERVICE_NAME + "」", "Off: open Settings → Accessibility → Downloaded services and turn on " + UserCopy.A11Y_SERVICE_NAME)
+          },
         )
         .put("tokenConfigured", !context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_TOKEN, null).isNullOrEmpty())
         .toString()

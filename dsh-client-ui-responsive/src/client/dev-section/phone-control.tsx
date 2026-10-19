@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useShellState } from '../mobile/use-shell-state.ts'
 import { describeCallReason } from '../user-copy.ts'
+import { tr } from '../i18n.ts'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '../android-bridge.ts'
@@ -119,10 +120,10 @@ interface RootAccessStatus {
 }
 
 const STATUS_LABEL: Record<VdisplayState, string> = {
-  disabled: '已关闭',
-  blocked: '需要准备',
-  ready: '可创建',
-  active: '已激活',
+  disabled: tr('已关闭', 'Off'),
+  blocked: tr('需要准备', 'Needs setup'),
+  ready: tr('可创建', 'Ready'),
+  active: tr('已激活', 'Active'),
 }
 
 const A11Y_UNREADABLE: A11yStatus = {
@@ -792,8 +793,8 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
   }, [confirmStage, refreshVdisplay])
 
   const forceLabel = confirmStage === 0
-    ? '强制销毁虚拟屏'
-    : '再次点击确认（' + confirmStage + '/3）'
+    ? tr('强制销毁虚拟屏', 'Force destroy virtual screens')
+    : tr('再次点击确认（', 'Tap again to confirm (') + confirmStage + '/3)'
   // P5-5：进入确认态后必须给**取消途径**。旧实现没有任何退出通道——误点一下就只能
   // 「再点两下把它执行掉」或者等 4 秒超时（超时不可见，用户并不知道自己还能等）。
   const forceArmed = confirmStage > 0
@@ -813,8 +814,8 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
     >
       <header className="dsh-screen-control-header">
         <span>
-          <strong id="dsh-phone-control-title">手机控制</strong>
-          <small>屏幕与特权通道的授权设置；模型改不了这里的设置。</small>
+          <strong id="dsh-phone-control-title">{tr('手机控制', 'Phone control')}</strong>
+          <small>{tr('屏幕与特权通道的授权设置；模型改不了这里的设置。', 'Screen and privileged channel settings. The model cannot change them.')}</small>
         </span>
         <span className="dsh-screen-control-state" data-state={vdisplay.state}>{STATUS_LABEL[vdisplay.state]}</span>
       </header>
@@ -827,7 +828,7 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
       ) : null}
 
       <div className="dsh-screen-control-detail">
-        <strong>Shizuku 特权通道</strong>
+        <strong>{tr('Shizuku 特权通道', 'Shizuku privileged channel')}</strong>
         <span data-code={shizuku.readable ? undefined : 'shizuku-status-unreadable'}>
           {shizukuStateLabel(shizuku)}
         </span>
@@ -836,23 +837,23 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
         {shizuku.guidance !== '' ? shizuku.guidance : shizukuStepHint(shizuku)}
       </p>
       <div className="dsh-dev-row dsh-dev-split">
-        <button type="button" className="dsh-dev-btn" onClick={downloadShizuku}>下载 Shizuku</button>
+        <button type="button" className="dsh-dev-btn" onClick={downloadShizuku}>{tr('下载 Shizuku', 'Download Shizuku')}</button>
         <button
           type="button"
           className="dsh-dev-btn"
           disabled={!canOpenShizuku}
           onClick={openShizuku}
         >
-          打开 Shizuku
+          {tr('打开 Shizuku', 'Open Shizuku')}
         </button>
       </div>
       {/* 精简（0.14.7-B D5）：保留「两个入口都会跳出去」「授权只能由你亲手完成」；状态自动刷新
           这句已由上方状态行与本页 2 秒轮询承担，不再复述。 */}
-      <p className="dsh-dev-hint">两个入口都会跳到应用外（系统浏览器 / Shizuku 应用）；装好并授权后回本页即可，授权只能在 Shizuku 内由你亲手完成。</p>
+      <p className="dsh-dev-hint">{tr('两个入口都会跳到应用外（系统浏览器 / Shizuku 应用）；装好并授权后回本页即可，授权只能在 Shizuku 内由你亲手完成。', 'Both buttons leave the app (browser or Shizuku). Come back here after installing and granting; only you can grant inside Shizuku.')}</p>
       <div className="dsh-dev-row">
-        <button type="button" className="dsh-dev-link" onClick={tutorialShizuku}>点击查看教程</button>
-        <button type="button" className="dsh-dev-btn" onClick={refreshShizuku}>刷新状态</button>
-        <button type="button" className="dsh-dev-btn" onClick={resetShizuku}>重置链接</button>
+        <button type="button" className="dsh-dev-link" onClick={tutorialShizuku}>{tr('点击查看教程', 'Watch the tutorial')}</button>
+        <button type="button" className="dsh-dev-btn" onClick={refreshShizuku}>{tr('刷新状态', 'Refresh status')}</button>
+        <button type="button" className="dsh-dev-btn" onClick={resetShizuku}>{tr('重置链接', 'Reset link')}</button>
       </div>
       {shizuku.granted ? null : (
         <div className="dsh-dev-row">
@@ -862,10 +863,10 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
             disabled={!shizuku.readable || !shizuku.running}
             onClick={requestShizukuPermission}
           >
-            请求 Shizuku 授权
+            {tr('请求 Shizuku 授权', 'Request Shizuku access')}
           </button>
           {/* 失败机理保留（用户据此判断「为什么点了没反应」），只压掉重复的前提句。 */}
-          <span className="dsh-dev-hint">授权框需要前台界面才会弹出，后台自动请求会静默失败。</span>
+          <span className="dsh-dev-hint">{tr('授权框需要前台界面才会弹出，后台自动请求会静默失败。', 'The grant dialog only appears with the app in front; background requests fail silently.')}</span>
         </div>
       )}
       {shizukuMsg === null ? null : (
@@ -874,59 +875,59 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
 
       <section className="dsh-root-access-card" aria-label="Root 权限设置">
         <div className="dsh-screen-control-header">
-          <span><strong>Root 权限</strong><small>先确认可用通道，再决定是否允许 AI 使用。</small></span>
+          <span><strong>{tr('Root 权限', 'Root access')}</strong><small>{tr('先确认可用通道，再决定是否允许 AI 使用。', 'Confirm an available channel before letting the model use it.')}</small></span>
           <span className="dsh-screen-control-state" data-state={rootGrant.granted ? 'active' : 'disabled'}>
-            {rootGrant.granted ? 'AI 已开启' : 'AI 未开启'}
+            {rootGrant.granted ? tr('AI 已开启', 'Model access on') : tr('AI 未开启', 'Model access off')}
           </span>
         </div>
 
         <div className="dsh-root-step">
           <div className="dsh-screen-control-detail">
-            <strong>1. 应用 root 授权</strong>
+            <strong>{tr('1. 应用 root 授权', '1. App root access')}</strong>
             <span data-code={rootAccess.readable ? rootAccess.state : 'root-access-unreadable'}>
               {rootAccessStateLabel(rootAccess)}
             </span>
           </div>
           <p className="dsh-dev-hint">
-            {rootAccess.guidance || '检测应用的 su 授权；Shizuku 已以 root 启动时，也可直接使用该通道。'}
+            {rootAccess.guidance || tr('检测应用的 su 授权；Shizuku 已以 root 启动时，也可直接使用该通道。', 'Checks the app su grant. If Shizuku runs as root, that channel works too.')}
           </p>
           <button type="button" className="dsh-dev-btn" disabled={!canRequestRoot(rootAccess)} onClick={requestRoot}>
-            {rootAccess.requesting ? '正在检测…' : '检测 root 授权'}
+            {rootAccess.requesting ? tr('正在检测…', 'Checking…') : tr('检测 root 授权', 'Check root access')}
           </button>
           {rootAccess.managerInstalled ? (
-            <p className="dsh-dev-hint">Root 管理器：{rootAccess.managerLabel}——在管理器中允许本应用，再回这里检测。</p>
+            <p className="dsh-dev-hint">{tr('Root 管理器：', 'Root manager: ')}{rootAccess.managerLabel}{tr('——在管理器中允许本应用，再回这里检测。', ' — allow this app there, then check again here.')}</p>
           ) : null}
         </div>
 
         <div className="dsh-root-step">
           <div className="dsh-screen-control-detail">
-            <strong>2. AI root 权限</strong>
+            <strong>{tr('2. AI root 权限', '2. Model root access')}</strong>
             <span data-code={rootGrant.readable ? undefined : 'root-grant-unreadable'}>{rootGrantStateLabel(rootGrant)}</span>
           </div>
           {!rootGrant.readable ? (
-            <p className="dsh-dev-error">授权状态不可读。重新打开应用再试；读不到时不会允许 AI 使用 root。</p>
+            <p className="dsh-dev-error">{tr('授权状态不可读。重新打开应用再试；读不到时不会允许 AI 使用 root。', 'The grant state cannot be read. Reopen the app; without it, the model never gets root.')}</p>
           ) : !rootGrant.channelRoot && !rootGrant.rootGranted ? (
             <p className={rootGrantChannelHint(rootGrant).kind === 'shell-identity' ? 'dsh-dev-hint' : 'dsh-dev-error'}
               data-code={rootGrantChannelHint(rootGrant).kind === 'shell-identity' ? 'shizuku-shell-identity' : 'not-root-channel'}>
               {rootGrantChannelHint(rootGrant).text}
             </p>
           ) : (
-            <p className="dsh-dev-hint">可用通道：{rootGrant.channelRoot ? 'Shizuku root' : '应用 su root'}。应用获得授权不等于已允许 AI 使用。</p>
+            <p className="dsh-dev-hint">{tr('可用通道：', 'Channel: ')}{rootGrant.channelRoot ? 'Shizuku root' : tr('应用 su root', 'app su root')}{tr('。应用获得授权不等于已允许 AI 使用。', '. An app grant does not by itself allow the model.')}</p>
           )}
-          <button type="button" className="dsh-dev-link" onClick={openRootDisclaimer}>阅读《AI root 权限免责声明》</button>
+          <button type="button" className="dsh-dev-link" onClick={openRootDisclaimer}>{tr('阅读《AI root 权限免责声明》', 'Read the root access disclaimer')}</button>
           <label className="dsh-screen-scope-row dsh-root-toggle-row">
-            <span><strong>已阅读免责声明</strong><small>理解 root 操作可能修改或删除系统与个人数据，并承担相应风险。应用升级不需重新确认（免责声明内容更新时才需）；撤销同意会同时关闭 AI 开关。</small></span>
-            <input type="checkbox" aria-label="已阅读免责声明" checked={rootGrant.consentValid}
+            <span><strong>{tr('已阅读免责声明', 'Disclaimer read')}</strong><small>{tr('理解 root 操作可能修改或删除系统与个人数据，并承担相应风险。应用升级不需重新确认（免责声明内容更新时才需）；撤销同意会同时关闭 AI 开关。', 'Root operations can change or delete system and personal data, and you accept that risk. App updates keep this consent; revoking it also turns model access off.')}</small></span>
+            <input type="checkbox" aria-label={tr('已阅读免责声明', 'Disclaimer read')} checked={rootGrant.consentValid}
               disabled={!rootGrant.readable} onChange={(event) => toggleRootConsent(event.target.checked)} />
           </label>
           <label className="dsh-screen-scope-row dsh-root-toggle-row">
-            <span><strong>授权 AI 使用 root</strong><small>{rootGrant.honesty || '这是策略与知情同意开关，不是技术沙箱。关闭后 AI 的 root 执行路径会被拒绝。'}</small></span>
-            <input type="checkbox" role="switch" aria-label="授权 AI 使用 root" checked={rootGrant.granted}
+            <span><strong>{tr('授权 AI 使用 root', 'Allow model root access')}</strong><small>{rootGrant.honesty || tr('这是策略与知情同意开关，不是技术沙箱。关闭后 AI 的 root 执行路径会被拒绝。', 'This is a policy and consent switch, not a sandbox. When off, model root execution is refused.')}</small></span>
+            <input type="checkbox" role="switch" aria-label={tr('授权 AI 使用 root', 'Allow model root access')} checked={rootGrant.granted}
               disabled={!rootGrant.readable || (!rootGrant.granted && (!canToggleRootGrant(rootGrant) || !rootGrant.consentValid))}
               onChange={(event) => toggleRootGrant(event.target.checked)} />
           </label>
           {rootGrant.readable && canToggleRootGrant(rootGrant) && !rootGrant.consentValid ? (
-            <p className="dsh-dev-hint">请先阅读并确认免责声明，才能开启 AI root 权限。</p>
+            <p className="dsh-dev-hint">{tr('请先阅读并确认免责声明，才能开启 AI root 权限。', 'Read and accept the disclaimer before turning on model root access.')}</p>
           ) : null}
           {rootMsg === null ? null : (
             <p role="status" aria-live="polite" className={rootOk === true ? 'dsh-dev-hint' : 'dsh-dev-error'}>{rootMsg}</p>
@@ -934,10 +935,10 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
         </div>
 
         <details className="dsh-root-maintenance">
-          <summary>文件属主维护</summary>
-          <p className="dsh-dev-hint">root 写盘后应用无法读取文件时使用。仅修复本应用数据目录，不改变 AI 授权。</p>
+          <summary>{tr('文件属主维护', 'File ownership repair')}</summary>
+          <p className="dsh-dev-hint">{tr('root 写盘后应用无法读取文件时使用。仅修复本应用数据目录，不改变 AI 授权。', 'Use this after root writes make files unreadable. It repairs only this app data folder.')}</p>
           <button type="button" className="dsh-dev-btn" disabled={repairState.running || (!rootAccess.granted && !rootGrant.channelRoot)} onClick={repairOwnership}>
-            {repairState.running ? '属主维护进行中' : '修复文件属主'}
+            {repairState.running ? tr('属主维护进行中', 'Repair running') : tr('修复文件属主', 'Repair ownership')}
           </button>
           {repairFeedback === undefined ? null : (
             <p role="status" aria-live="polite" className={repairFeedback.ok === false ? 'dsh-dev-error' : 'dsh-dev-hint'}>{repairFeedback.text}</p>
@@ -947,25 +948,25 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
 
       <label className="dsh-screen-scope-row">
         <span>
-          <strong>开放屏幕范围</strong>
-          <small>默认仅虚拟屏幕；真实屏幕、截图与控制都受此范围约束。</small>
+          <strong>{tr('开放屏幕范围', 'Screen access')}</strong>
+          <small>{tr('默认仅虚拟屏幕；真实屏幕、截图与控制都受此范围约束。', 'Defaults to virtual screens only; screenshots and control follow this scope.')}</small>
         </span>
-        <select aria-label="开放屏幕范围" value={scope} onChange={(event) => setScope(event.target.value as ScreenScope)}>
-          <option value="virtual-only">仅虚拟屏幕</option>
-          <option value="real-only">仅真实屏幕</option>
-          <option value="all">全部开放</option>
+        <select aria-label={tr('开放屏幕范围', 'Screen access')} value={scope} onChange={(event) => setScope(event.target.value as ScreenScope)}>
+          <option value="virtual-only">{tr('仅虚拟屏幕', 'Virtual only')}</option>
+          <option value="real-only">{tr('仅真实屏幕', 'Real only')}</option>
+          <option value="all">{tr('全部开放', 'All screens')}</option>
         </select>
       </label>
 
       <label className="dsh-screen-scope-row">
         <span>
-          <strong>虚拟屏分辨率档位</strong>
-          <small>跟随真机比例缩放（下次建屏生效；默认 0.75）。</small>
+          <strong>{tr('虚拟屏分辨率档位', 'Virtual screen scale')}</strong>
+          <small>{tr('跟随真机比例缩放（下次建屏生效；默认 0.75）。', 'Scales with the device; applies to the next screen (default 0.75).')}</small>
         </span>
-        <select aria-label="虚拟屏分辨率档位" value={String(scale)} onChange={(event) => setScale(Number(event.target.value))}>
+        <select aria-label={tr('虚拟屏分辨率档位', 'Virtual screen scale')} value={String(scale)} onChange={(event) => setScale(Number(event.target.value))}>
           {SCALE_OPTIONS.map((option) => (
             <option key={option} value={String(option)}>
-              {option === 1 ? '原生' : String(Math.round(option * 100)) + '%'}
+              {option === 1 ? tr('原生', 'Native') : String(Math.round(option * 100)) + '%'}
             </option>
           ))}
         </select>
@@ -973,13 +974,13 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
 
       <label className="dsh-screen-scope-row">
         <span>
-          <strong>虚拟屏浮窗（退后台自动显示）</strong>
+          <strong>{tr('虚拟屏浮窗（退后台自动显示）', 'Virtual screen window (shown in the background)')}</strong>
           {/* P5-6：与开发者选项里的「悬浮球」去混淆。两者都叫「浮」，但一个是**虚拟屏只读画面**，
               一个是**任务面板入口**——旧文案各说各的，用户在两页之间对不上号。 */}
-          <small>只读浮窗：退后台时显示虚拟屏画面，前台只在侧栏可见。不是开发者选项里的「悬浮球」（那个是任务面板入口）。</small>
+          <small>{tr('只读浮窗：退后台时显示虚拟屏画面，前台只在侧栏可见。不是开发者选项里的「悬浮球」（那个是任务面板入口）。', 'Read-only window: it shows the virtual screen in the background and only in the sidebar in front. It is not the floating ball in developer options.')}</small>
         </span>
         <input
-          aria-label="虚拟屏浮窗（退后台自动显示）"
+          aria-label={tr('虚拟屏浮窗（退后台自动显示）', 'Virtual screen window')}
           type="checkbox"
           checked={floatOn}
           onChange={(event) => setFloat(event.target.checked)}
@@ -987,25 +988,25 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
       </label>
 
       <div className="dsh-screen-control-detail">
-        <strong>无障碍通道</strong>
+        <strong>{tr('无障碍通道', 'Accessibility channel')}</strong>
         <span>
           {!a11y.readable
-            ? '状态不可读'
-            : (a11y.enabled ? '已开启（语义读取/点击/输入）' : '未开启（推荐开启）')}
+            ? tr('状态不可读', 'State unreadable')
+            : (a11y.enabled ? tr('已开启（语义读取/点击/输入）', 'On (semantic read, tap, type)') : tr('未开启（推荐开启）', 'Off (recommended)'))}
         </span>
         {a11y.hint !== '' ? <span>{a11y.hint}</span> : null}
       </div>
       {/* 权限引导必须保留：说明为什么系统页开关是灰的、以及解锁只影响本应用这一项。 */}
       {a11y.readable && !a11y.enabled && a11y.restrictedSettingsApplies ? (
-        <p className="dsh-dev-hint">
-          Android 13 及以上对侧载应用默认开启「受限设置」，系统页里本应用的开关是灰的：
-          先点「解锁受限设置」（经 Shizuku 特权通道，只影响本应用这一项），再回去开启。
-        </p>
+        <p className="dsh-dev-hint">{tr(
+          'Android 13 及以上对侧载应用默认开启「受限设置」，系统页里本应用的开关是灰的：先点「解锁受限设置」（经 Shizuku 特权通道，只影响本应用这一项），再回去开启。',
+          'Android 13 and later restrict sideloaded apps, so this app switch is greyed out. Tap Unlock restricted settings (Shizuku, affects only this app), then turn it on again.',
+        )}</p>
       ) : null}
       <div className="dsh-dev-row">
-        <button type="button" className="dsh-dev-btn" onClick={openA11y}>去开启无障碍服务</button>
+        <button type="button" className="dsh-dev-btn" onClick={openA11y}>{tr('去开启无障碍服务', 'Open accessibility settings')}</button>
         {a11y.readable && !a11y.enabled && a11y.restrictedSettingsApplies ? (
-          <button type="button" className="dsh-dev-btn" onClick={unlockA11y}>解锁受限设置</button>
+          <button type="button" className="dsh-dev-btn" onClick={unlockA11y}>{tr('解锁受限设置', 'Unlock restricted settings')}</button>
         ) : null}
       </div>
       {a11yMsg === null ? null : (
@@ -1013,8 +1014,8 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
       )}
 
       <div className="dsh-screen-control-detail">
-        <strong>强制销毁虚拟屏</strong>
-        <span>销毁全部虚拟屏与其上的任务（无视会话归属）；需连续点击三次确认，点错可取消。</span>
+        <strong>{tr('强制销毁虚拟屏', 'Force destroy virtual screens')}</strong>
+        <span>{tr('销毁全部虚拟屏与其上的任务（无视会话归属）；需连续点击三次确认，点错可取消。', 'Destroys every virtual screen and its tasks, regardless of owner. Tap three times to confirm; you can cancel.')}</span>
       </div>
       {/* P5-5：破坏性按钮必须与同页的普通按钮**看得出区别**（dsh-dev-danger），
           并在确认态给「取消」。此前它长得和「刷新状态」一模一样，还紧邻其它按钮。 */}
@@ -1029,7 +1030,7 @@ export function PhoneControlSection(_props: PropsRuntime<'settings.section'>) {
           {forceLabel}
         </button>
         {forceArmed ? (
-          <button type="button" className="dsh-dev-link" onClick={cancelForce}>取消</button>
+          <button type="button" className="dsh-dev-link" onClick={cancelForce}>{tr('取消', 'Cancel')}</button>
         ) : null}
       </div>
       {forceMsg === null ? null : (

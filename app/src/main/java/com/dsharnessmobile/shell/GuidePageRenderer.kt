@@ -452,7 +452,7 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
       phase == GuidePhase.Closed -> activity.getString(R.string.ds_restart)
       // 缺陷 D（fx-2）：启动失败时主按钮是「安全模式启动」而不是「重试」。
       // 用户口径：失败的当下，重试往往只是再撞一次同一堵墙；能自救的那条路是带着上下文进安全模式。
-      phase == GuidePhase.Error -> "启动修复助手"
+      phase == GuidePhase.Error -> UiText.t(activity, "启动修复助手", "Start repair assistant")
       startupRetryAction -> activity.getString(R.string.ds_start_retry)
       phase == GuidePhase.Recovering -> activity.getString(R.string.ds_recovering)
       phase == GuidePhase.Starting || phase == GuidePhase.Extracting -> activity.getString(R.string.ds_starting)
@@ -642,26 +642,39 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
     progressBar.isIndeterminate = true
     progressText.visibility = View.VISIBLE
     if (!stageRotation.advanceIfDue(nowMs)) return
-    progressText.text = stageRotation.currentPhrase()
+    progressText.text = localizedStagePhrase(stageRotation.currentPhrase())
+  }
+
+  /** Stage phrases stay a single list for the rotation test; the copy is translated here. */
+  private fun localizedStagePhrase(zh: String): String = when (zh) {
+    RUNTIME_STAGE_PHRASES[0] -> UiText.t(activity, zh, "Extracting the runtime…")
+    RUNTIME_STAGE_PHRASES[1] -> UiText.t(activity, zh, "Clearing leftover data…")
+    else -> UiText.t(activity, zh, "Preparing the runtime…")
   }
 
   /** 相位切走/流程重跑时复位轮换，使下一次重新显示第一句并重新起算时间窗。 */
   fun resetRuntimeStageRotation() = stageRotation.reset()
 
+  /** Show the first stage phrase right away; used when the extraction phase starts. */
+  fun showInitialRuntimeStage() {
+    stageRotation.reset()
+    progressText.text = localizedStagePhrase(stageRotation.currentPhrase())
+  }
+
   private fun defaultHint(phase: GuidePhase): String = when (phase) {
-    GuidePhase.Starting -> "首次启动会解压内嵌运行时，请保持应用在前台。"
+    GuidePhase.Starting -> UiText.t(activity, "首次启动会解压内嵌运行时，请保持应用在前台。", "The first start extracts the embedded runtime; keep the app in the foreground.")
     GuidePhase.Extracting -> extractHintBody()
     // 0.14.6：这句只允许出现在**引擎快照更新**相位。APK 自更新路径不再把相位设成 Updating
     // （更新动作只占用次级提示/次级按钮，不占用主按钮与状态行），故此处不会误导成「在更新应用」。
-    GuidePhase.Updating -> "正在检查运行时快照更新（与安装新版本 APK 是两件事）。"
-    GuidePhase.Recovering -> "看门狗正在拉起引擎，通常几秒内恢复。"
-    GuidePhase.Undoing -> "正在把配置/插件回滚到最后良好快照（自动回撤）。"
+    GuidePhase.Updating -> UiText.t(activity, "正在检查运行时快照更新（与安装新版本 APK 是两件事）。", "Checking for a runtime snapshot update (separate from installing a new APK).")
+    GuidePhase.Recovering -> UiText.t(activity, "看门狗正在拉起引擎，通常几秒内恢复。", "The watchdog is restarting the engine; it usually recovers within seconds.")
+    GuidePhase.Undoing -> UiText.t(activity, "正在把配置/插件回滚到最后良好快照（自动回撤）。", "Rolling configuration and plugins back to the last good snapshot.")
     // 缺陷 D（fx-2）：失败页的默认副文案要说清「这个按钮现在做什么」——
     // 旧文案只提「重试」，而按钮此刻已被改成安全模式入口（文案与事实必须对齐）。
     GuidePhase.Error -> startupFailureHint(activity, activity.engineManager.lastStartRefusalCode)
-    GuidePhase.Closed -> "引擎已停止，不会自动恢复。"
-    GuidePhase.Idle -> "引擎就绪后将进入 " + UserCopy.APP_NAME + "。"
-    GuidePhase.Info -> "运行时随安装包一起更新：安装新版 APK 即完成升级。"
+    GuidePhase.Closed -> UiText.t(activity, "引擎已停止，不会自动恢复。", "The engine is stopped; it will not restart on its own.")
+    GuidePhase.Idle -> UiText.t(activity, "引擎就绪后将进入 ", "Once the engine is ready, ") + UserCopy.APP_NAME + UiText.t(activity, "。", " opens.")
+    GuidePhase.Info -> UiText.t(activity, "运行时随安装包一起更新：安装新版 APK 即完成升级。", "The runtime updates with the app: installing a new APK completes the upgrade.")
   }
 
   /**
@@ -672,7 +685,11 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
    * 所以这里只给「别关应用」这个用户真正需要知道的事。
    */
   private fun extractHintBody(): String =
-    "正在写入内嵌 Termux 环境（首次启动需数分钟，请勿关闭应用）。"
+    UiText.t(
+      activity,
+      "正在写入内嵌 Termux 环境（首次启动需数分钟，请勿关闭应用）。",
+      "Writing the embedded Termux environment (the first start takes a few minutes; keep the app open).",
+    )
 
   private fun setStatusPulse(on: Boolean) {
     if (on) {
@@ -859,7 +876,7 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
       }
       ApkUpdateState.STATE_FAILED -> {
         // 失败如实报分类原因（UpdateChecker 的 8 类 + 下载/校验/安装器 3 类），不再链快照更新。
-        val reason = activity.apkUpdate.reason() ?: "检查更新未完成——可重试，或复制日志反馈"
+    val reason = activity.apkUpdate.reason() ?: UiText.t(activity, "检查更新未完成——可重试，或复制日志反馈", "The update check did not finish. Retry, or copy the log and report it.")
         setUpdateButton(activity.getString(R.string.ds_check_update), enabled = true)
         apkHint(reason)
       }
@@ -945,7 +962,7 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
     val crash = activity.crashInfo
     if (crash != null) {
       crashBanner.visibility = View.VISIBLE
-      crashBanner.text = "上次异常退出：$crash"
+      crashBanner.text = UiText.t(activity, "上次异常退出：", "Last crash: ") + crash
     } else {
       crashBanner.visibility = View.GONE
     }

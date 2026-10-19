@@ -104,7 +104,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
             } else if (activity.webView.visibility == View.VISIBLE) {
               engineMonitorFailures++
               if (engineMonitorFailures >= UI_DEAD_CONFIRMATIONS) {
-                activity.applyGuidePhase(GuidePhase.Recovering, "引擎未运行，正在自动恢复…")
+                activity.applyGuidePhase(GuidePhase.Recovering, UiText.t(activity, "引擎未运行，正在自动恢复…", "The engine is not running; recovering automatically…"))
                 activity.showGuide()
               }
             }
@@ -418,7 +418,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     val updateGeneration = ++updateUiGeneration
     activity.guideRenderer.chrome.updateButton.isEnabled = false
     activity.guideRenderer.chrome.updateButton.alpha = 0.55f
-    activity.applyGuidePhase(GuidePhase.Updating, "检查更新…")
+    activity.applyGuidePhase(GuidePhase.Updating, UiText.t(activity, "检查更新…", "Checking for updates…"))
     UpdateManager(activity).checkAndApply { st ->
       activity.runOnUiThread {
         if (updateGeneration != updateUiGeneration || !canRunEngineWork()) return@runOnUiThread
@@ -463,7 +463,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     freezeHandler.removeCallbacks(freezeRunnable)
     activity.runOnUiThread {
       activity.hideSoftInput()
-      activity.applyGuidePhase(GuidePhase.Closed, "引擎已关闭")
+      activity.applyGuidePhase(GuidePhase.Closed, UiText.t(activity, "引擎已关闭", "Engine closed"))
       activity.showGuide()
     }
     try { EngineService.instance?.requestShutdown() } catch (_: Exception) {
@@ -523,7 +523,11 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     activity.runOnUiThread {
       if (activity.isDestroyed || activity.isFinishing) return@runOnUiThread
       activity.showGuide()
-      activity.applyGuidePhase(GuidePhase.Error, "引擎仍无法启动", "已自动重试两次。可启动修复助手，自动读取本轮诊断并修复运行时。")
+      activity.applyGuidePhase(
+        GuidePhase.Error,
+        UiText.t(activity, "引擎仍无法启动", "The engine still will not start"),
+        UiText.t(activity, "已自动重试两次。可启动修复助手，自动读取本轮诊断并修复运行时。", "Automatic retry failed twice. The repair assistant can read this failure and repair the runtime."),
+      )
     }
   }
 
@@ -578,7 +582,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     // 复用现有快照（用户口径）：这一步只做相位，不探测、不解压、不重建任何状态；已解压且指纹
     // 匹配的运行时仍走下面的既有早退路径（startupRecoverThenProbe → snapshotFresh）。
     if (!activity.webViewReady || activity.webView.visibility != View.VISIBLE) {
-      activity.applyGuidePhase(GuidePhase.Starting, "正在启动引擎…")
+      activity.applyGuidePhase(GuidePhase.Starting, UiText.t(activity, "正在启动引擎…", "Starting the engine…"))
       activity.showGuide()
     }
     val caller = Thread {
@@ -619,7 +623,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
           if (activity.engineManager.snapshotRecoveryBlocksRuntime()) {
             activity.runOnUiThread {
               if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-              activity.applyGuidePhase(GuidePhase.Error, "运行时恢复未完成", "事务现场已保留；请打开控制台查看恢复失败原因。修复前不会探活或启动运行时。")
+          activity.applyGuidePhase(GuidePhase.Error, UiText.t(activity, "运行时恢复未完成", "Runtime recovery did not finish"), UiText.t(activity, "事务现场已保留；请打开控制台查看恢复失败原因。修复前不会探活或启动运行时。", "The transaction state is preserved. Open the console to see why recovery failed; nothing is probed or started until it is repaired."))
               activity.showGuide()
             }
             throw java.util.concurrent.CancellationException("snapshot recovery has not converged")
@@ -679,14 +683,15 @@ internal class EngineStartFlow(private val activity: MainActivity) {
           )
           activity.runOnUiThread {
             if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-            activity.applyGuidePhase(GuidePhase.Starting, "运行时更新未完成，正以现有运行时启动…")
+            activity.applyGuidePhase(GuidePhase.Starting, UiText.t(activity, "运行时更新未完成，正以现有运行时启动…", "The runtime update did not finish; starting with the current runtime…"))
             activity.guideRenderer.progressText.visibility = View.GONE
           }
         } else {
           if (!isCurrentEngineFlow(generation)) return@Thread
           activity.runOnUiThread {
             if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-            activity.applyGuidePhase(GuidePhase.Extracting, "正在解压运行时")
+            activity.applyGuidePhase(GuidePhase.Extracting, UiText.t(activity, "正在解压运行时", "Extracting the runtime"))
+            activity.guideRenderer.showInitialRuntimeStage()
             activity.guideRenderer.progressText.visibility = View.VISIBLE
             activity.guideRenderer.progressText.text = "准备写入内嵌环境…"
           }
@@ -705,7 +710,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
                 // 造的，而真实解压是增量的（含磁盘上已有数据）。现在只推进阶段车轱辘话，
                 // 进度条恒为不确定态。回调里的 done/total 仍然收下（接口未变），但不再渲染。
                 if (activity.guideRenderer.lastGuidePhase != GuidePhase.Extracting) {
-                  activity.applyGuidePhase(GuidePhase.Extracting, "正在解压运行时")
+                  activity.applyGuidePhase(GuidePhase.Extracting, UiText.t(activity, "正在解压运行时", "Extracting the runtime"))
                 }
                 // 时间戳取自单调时钟：回调频率再高，闸门也只按 1.3s 的窗放行（同一窗内只刷可见性）。
                 activity.guideRenderer.showRuntimeStage(SystemClock.elapsedRealtime())
@@ -714,7 +719,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
             onStage = { stage ->
               activity.runOnUiThread {
                 if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-                activity.applyGuidePhase(GuidePhase.Extracting, "正在更新运行时")
+                activity.applyGuidePhase(GuidePhase.Extracting, UiText.t(activity, "正在更新运行时", "Updating the runtime"))
                 // stage 是 EngineManager 的阶段句（「正在解压运行时…」「正在恢复用户数据…」等），
                 // 本身就是无数字的车轱辘话，直接沿用——不为它另造一套文案，避免两份口径漂移。
                 activity.guideRenderer.progressText.visibility = View.VISIBLE
@@ -767,7 +772,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
           }
           activity.runOnUiThread {
             if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-            activity.applyGuidePhase(GuidePhase.Starting, "正在启动引擎…")
+            activity.applyGuidePhase(GuidePhase.Starting, UiText.t(activity, "正在启动引擎…", "Starting the engine…"))
           }
         }
       }
@@ -823,7 +828,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         }
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Error, "引擎启动失败", startupFailureHint(activity, refusalCode))
+          activity.applyGuidePhase(GuidePhase.Error, UiText.t(activity, "引擎启动失败", "Engine failed to start"), startupFailureHint(activity, refusalCode))
           activity.showGuide()
         }
         // A foreign listener cannot be repaired by changing this app's profile or ownership.
@@ -892,7 +897,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         if (engineBootShouldReport(clock.waitedSeconds)) {
           activity.runOnUiThread {
             if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-            activity.applyGuidePhase(GuidePhase.Starting, engineBootProgressText(clock))
+            activity.applyGuidePhase(GuidePhase.Starting, engineBootProgressText(clock, UiText.isEnglish(activity)))
           }
         }
         Thread.sleep(pollStepMs)
@@ -962,7 +967,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         scheduleEngineRetry(generation)
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Starting, "引擎启动较慢（已超过 90s），已安排自动重试…")
+          activity.applyGuidePhase(GuidePhase.Starting, UiText.t(activity, "引擎启动较慢（已超过 90s），已安排自动重试…", "Engine startup is slow (over 90s); an automatic retry is scheduled…"))
         }
       }
       return@Thread
@@ -1335,10 +1340,10 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     when {
       safeModeRestartCanProceed(decision) ->
         // 放行面：明确的中间态（旧引擎停止中或已停、新引擎未就绪），相位必须是 Starting 而不是任何就绪态。
-        activity.applyGuidePhase(GuidePhase.Starting, "正在以安全模式重启运行时…", hint)
+        activity.applyGuidePhase(GuidePhase.Starting, UiText.t(activity, "正在以安全模式重启运行时…", "Restarting the runtime in safe mode…"), hint)
       else ->
         // 拒绝面：停在可读错误页（Error 相位保留「安全模式启动」出口，用户可再次尝试）。
-        activity.applyGuidePhase(GuidePhase.Error, "安全模式未能生效", hint)
+        activity.applyGuidePhase(GuidePhase.Error, UiText.t(activity, "安全模式未能生效", "Safe mode did not take effect"), hint)
     }
     activity.showGuide()
   }
@@ -1976,8 +1981,12 @@ internal fun engineBootClock(elapsedMs: Long, budgetMs: Long = ENGINE_BOOT_BUDGE
   EngineBootClock(elapsedMs, budgetMs)
 
 /** 引导页启动中文案（唯一生成点）：显示值与真实已等**同源**。 */
-internal fun engineBootProgressText(clock: EngineBootClock): String =
-  "引擎启动中（已等待 ${clock.waitedSeconds}s / 剩余 ${clock.remainingSeconds}s，冷启动较慢属正常）"
+internal fun engineBootProgressText(clock: EngineBootClock, english: Boolean = false): String =
+  if (english) {
+    "Starting the engine (waited ${clock.waitedSeconds}s, ${clock.remainingSeconds}s left; a slow cold start is normal)"
+  } else {
+    "引擎启动中（已等待 ${clock.waitedSeconds}s / 剩余 ${clock.remainingSeconds}s，冷启动较慢属正常）"
+  }
 
 /** 上报节流：每 [ENGINE_BOOT_REPORT_STEP_S] 秒一帧。 */
 internal fun engineBootShouldReport(waitedSeconds: Int, stepSeconds: Int = ENGINE_BOOT_REPORT_STEP_S): Boolean =

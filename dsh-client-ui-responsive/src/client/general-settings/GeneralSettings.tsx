@@ -27,11 +27,20 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Single source of truth for the bridge types (incl. the Window.androidBridge global).
 import type {} from '../android-bridge.ts'
 import { sidebarSwipeEnabled, setSidebarSwipeEnabled } from '../mobile/sidebar-gestures.ts'
+import { type UiLanguageMode, UI_LANGUAGE_MODES, readUiLanguage } from './ui-language.ts'
+import { tr } from '../i18n.ts'
 
 /** Full section props: the settings shell supplies only `close`. */
 export type GeneralSettingsProps = PropsRuntime<'settings.general.item'>
 
 const IMMERSIVE_KEY = 'dsh.android.immersive'
+
+/** "Follow system" and "Chinese" are themselves localized. */
+function languageLabel(mode: UiLanguageMode): string {
+  if (mode === 'en') return 'English'
+  if (mode === 'system') return tr('跟随系统', 'Follow system')
+  return tr('中文', 'Chinese')
+}
 
 /**
  * Immersive initial value (ST-10): the shell bridge is the sole truth source
@@ -65,10 +74,39 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
   const [notice, setNotice] = useState<string | null>(null)
   const [leftSwipe, setLeftSwipe] = useState(() => sidebarSwipeEnabled('left'))
   const [rightSwipe, setRightSwipe] = useState(() => sidebarSwipeEnabled('right'))
+  const [language, setLanguage] = useState<UiLanguageMode>(readUiLanguage)
+
+  const chooseLanguage = useCallback((next: UiLanguageMode) => {
+    setNotice(null)
+    const bridge = window.androidBridge?.setUiLanguage
+    if (bridge === undefined) {
+      setNotice(tr('切换语言需要安卓应用；在浏览器里请使用系统语言设置。',
+        'Switching the language needs the Android app; in a browser use the system language setting.'))
+      setLanguage(readUiLanguage())
+      return
+    }
+    let applied: UiLanguageMode = next
+    try {
+      applied = (bridge(next) as UiLanguageMode | undefined) ?? next
+    } catch {
+      setNotice(tr('语言没有保存：应用与页面的连接不可用——请重新打开应用后再试。',
+        'The language was not saved: the app and page lost their connection. Reopen the app and try again.'))
+      setLanguage(readUiLanguage())
+      return
+    }
+    setLanguage(applied)
+    // Reload so shell and engine rebuild with the new language.
+    try {
+      window.androidBridge?.reloadWebUI?.()
+    } catch {
+      // The preference is already saved; the next launch picks it up.
+    }
+  }, [])
 
   const toggleSidebarSwipe = useCallback((side: 'left' | 'right', enabled: boolean) => {
     if (!setSidebarSwipeEnabled(side, enabled)) {
-      setNotice('滑动设置没有保存：浏览器存储不可用。')
+      setNotice(tr('滑动设置没有保存：浏览器存储不可用。',
+        'The swipe setting was not saved: browser storage is unavailable.'))
       return
     }
     setNotice(null)
@@ -91,7 +129,8 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
     try {
       window.androidBridge.setImmersiveMode(enabled)
     } catch {
-      setNotice('设置没有生效：应用与页面的连接不可用——请重新打开应用后再试。')
+      setNotice(tr('设置没有生效：应用与页面的连接不可用——请重新打开应用后再试。',
+        'The setting did not apply: the app and page lost their connection. Reopen the app and try again.'))
       refreshImmersive()
       return
     }
@@ -101,33 +140,56 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
     if (readImmersive() !== enabled) {
       setNotice(
         enabled
-          ? '沉浸式状态栏没有开启：系统或应用未接受本次设置——可到系统设置里检查本应用的显示权限。'
-          : '沉浸式状态栏没有关闭：系统或应用未接受本次设置——请重试，或重新打开应用。',
+          ? tr('沉浸式状态栏没有开启：系统或应用未接受本次设置——可到系统设置里检查本应用的显示权限。',
+            'The immersive status bar was not enabled: the system or app rejected the change. Check this app display permission in system settings.')
+          : tr('沉浸式状态栏没有关闭：系统或应用未接受本次设置——请重试，或重新打开应用。',
+            'The immersive status bar was not disabled: the system or app rejected the change. Try again, or reopen the app.'),
       )
     }
   }, [refreshImmersive])
 
   return (
     <div data-plugin="android-general">
+      <label className="dsh-dev-row" data-dsh-ui-language="">
+        <span>{tr('语言', 'Language')}</span>
+        <select
+          value={language}
+          onChange={(e) => chooseLanguage(e.target.value as UiLanguageMode)}
+        >
+          {UI_LANGUAGE_MODES.map(mode => (
+            <option key={mode} value={mode}>{languageLabel(mode)}</option>
+          ))}
+        </select>
+      </label>
+      <p className="dsh-dev-hint">
+        {tr('界面文字会随选择切换；跟随系统时使用手机的语言设置。',
+          'The interface follows this choice; following the system uses your phone language.')}
+      </p>
       <label className="dsh-dev-row dsh-dev-switch">
         <input
           type="checkbox"
           checked={immersive}
           onChange={(e) => toggleImmersive(e.target.checked)}
         />
-        <span>沉浸式状态栏</span>
+        <span>{tr('沉浸式状态栏', 'Immersive status bar')}</span>
       </label>
-      <p className="dsh-dev-hint">常态隐藏系统状态栏，边缘滑动临时呼出；关闭后常驻显示。</p>
+      <p className="dsh-dev-hint">
+        {tr('常态隐藏系统状态栏，边缘滑动临时呼出；关闭后常驻显示。',
+          'Hides the system status bar; swipe from the edge to show it briefly. When off it stays visible.')}
+      </p>
       <label className="dsh-dev-row dsh-dev-switch" data-dsh-sidebar-swipe="left">
         <input type="checkbox" checked={leftSwipe} onChange={(e) => toggleSidebarSwipe('left', e.target.checked)} />
-        <span>左侧栏滑动</span>
+        <span>{tr('左侧栏滑动', 'Swipe from the left edge')}</span>
       </label>
       <label className="dsh-dev-row dsh-dev-switch" data-dsh-sidebar-swipe="right">
         <input type="checkbox" checked={rightSwipe} onChange={(e) => toggleSidebarSwipe('right', e.target.checked)} />
-        <span>右侧栏滑动</span>
+        <span>{tr('右侧栏滑动', 'Swipe from the right edge')}</span>
       </label>
       {/* 两侧栏各一行说明会把「屏幕外侧窄边保留给系统手势」逐字重复两遍；合成一行说清同一件事。 */}
-      <p className="dsh-dev-hint">手机内容区左右滑动开合两侧栏；屏幕外侧窄边保留给系统手势。</p>
+      <p className="dsh-dev-hint">
+        {tr('手机内容区左右滑动开合两侧栏；屏幕外侧窄边保留给系统手势。',
+          'Swipe the content area to open either sidebar; the outer edge stays with system gestures.')}
+      </p>
       {notice !== null && <p className="dsh-dev-warn">{notice}</p>}
     </div>
   )
