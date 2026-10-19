@@ -197,6 +197,7 @@ object FileIncoming {
   /**
    * 定时清理（TTL 7 天）：删除超过保留窗口的临时文件（含子目录）、以及超过窗口的历史会话元数据行。
    * 幂等；在应用启动（onCreate）与每次文件入队前调用——不打扰未过期内容。
+   * 待发清单与 `.sessions` 仍引用的来件受与 [cleanupTmp] 相同的保护；目录不递归删除。
    * onTaskRemoved 的 cleanupTmp 仍保留（进程被系统回收时的即时全清礼仪）。
    */
   fun sweepExpired(context: Context) {
@@ -345,6 +346,9 @@ object FileIncoming {
 
   /** 待发清单：已落盘但引擎未确认受理的路径（冷启动 POST 早于 listen 曾静默丢件）。 */
   private fun pendingFile(context: Context): File = File(tmpWorkspace(context), PENDING_ENTRY)
+
+  /** One serialized read-modify-write owner for the pending ledger and its delivery attempts. */
+  private val pendingLock = Any()
 
   private fun enqueuePending(context: Context, path: String) {
     synchronized(pendingLock) {
