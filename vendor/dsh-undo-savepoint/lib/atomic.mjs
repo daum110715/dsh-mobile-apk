@@ -65,17 +65,32 @@ async function acquireStoreLock(key) {
   return () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 }
 export async function withStoreTransaction(cfg, action) {
-  const directory = dirname(resolve(cfg.autoDir));
-  await fs.mkdir(directory, { recursive: true });
-  const real = await fs.realpath(directory);
-  const key = process.platform === 'win32' ? real.toLowerCase() : real;
+  // Custom stores may share manualDir while keeping automatic snapshots in different roots.
+  // A lock only on the automatic root would let those writers mutate the shared manual store.
+  const directories = [dirname(resolve(cfg.autoDir))];
+  if (typeof cfg.manualDir === 'string' && cfg.manualDir.trim()) directories.push(resolve(cfg.manualDir));
+  const keys = [];
+  for (const directory of directories) {
+    await fs.mkdir(directory, { recursive: true });
+    const real = await fs.realpath(directory);
+    keys.push(process.platform === 'win32' ? real.toLowerCase() : real);
+  }
+  const resources = [...new Set(keys)].sort();
   const inherited = transactions.getStore();
-  if (inherited?.key === key && inherited.active) return action();
+  if (inherited?.active && resources.every(key => inherited.keys.includes(key))) return action();
   if (inherited?.active) throw new Error('Nested undo transactions cannot switch stores');
-  return serializeUpdate(key + '/.undo-transaction', async () => {
-    const release = await acquireStoreLock(key);
-    const scope = { key, active: true };
-    try { return await transactions.run(scope, action); }
-    finally { scope.active = false; await release(); }
+  return serializeUpdate(JSON.stringify(resources), async () => {
+    const releases = [];
+    const scope = { keys: resources, active: true };
+    try {
+      for (const key of resources) releases.push(await acquireStoreLock(key));
+      return await transactions.run(scope, action);
+    } finally {
+      scope.active = false;
+      // Also release earlier locks when acquiring a later overlapping resource failed.
+      const results = await Promise.allSettled(releases.reverse().map(release => release()));
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
+    }
   });
 }

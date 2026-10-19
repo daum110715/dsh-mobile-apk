@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { withStoreTransaction } from '../../vendor/dsh-undo-savepoint/lib/atomic.mjs';
 
 const root = await fs.mkdtemp(join(tmpdir(), 'dsh-undo-store-'));
 process.env.DSH_UNDO_ROOT = join(root, 'legacy');
@@ -14,6 +15,51 @@ const cfg = { manualDir: join(root, 'manual'), autoDir: join(root, 'auto'),
 await Promise.all([cfg.homeDir, cfg.profileDir].map(dir => fs.mkdir(dir, { recursive: true })));
 const blob = Buffer.from('old orphan fixture reused by a new snapshot');
 const hash = core.sha1Hex(blob);
+
+test('custom automatic roots still exclude writers sharing a manual directory', async () => {
+  const a = { autoDir: join(root, 'custom-a', 'auto'), manualDir: join(root, 'shared-manual') };
+  const b = { autoDir: join(root, 'custom-b', 'auto'), manualDir: a.manualDir };
+  let announce, release;
+  const ready = new Promise(resolve => { announce = resolve; });
+  const held = withStoreTransaction(a, async () => {
+    announce();
+    await new Promise(resolve => { release = resolve; });
+  });
+  await ready;
+  try {
+    await assert.rejects(withStoreTransaction(b, () => assert.fail('overlapping writer entered')), { code: 'UNDO_STORE_BUSY' });
+    const url = new URL('../../vendor/dsh-undo-savepoint/lib/atomic.mjs', import.meta.url).href;
+    const child = spawn(process.execPath, ['--input-type=module', '-e',
+      `import {withStoreTransaction} from ${JSON.stringify(url)};
+       await withStoreTransaction(${JSON.stringify(b)}, () => { throw new Error('overlapping child entered'); })
+         .catch(error => { if(error.code !== 'UNDO_STORE_BUSY') throw error; console.log(error.code); });`],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', data => { output += data; });
+    const [code] = await once(child, 'exit');
+    assert.equal(code, 0);
+    assert.match(output, /UNDO_STORE_BUSY/);
+  } finally { release(); await held; }
+  assert.equal(await withStoreTransaction(b, () => 'released'), 'released');
+});
+
+test('failed multi-resource acquisition releases its earlier locks', async () => {
+  const shared = join(root, 'z-shared-manual');
+  const a = { autoDir: join(root, '0-partial', 'auto'), manualDir: shared };
+  const b = { autoDir: join(root, '1-owner', 'auto'), manualDir: shared };
+  const independent = { autoDir: a.autoDir, manualDir: join(root, 'y-independent-manual') };
+  let announce, release;
+  const ready = new Promise(resolve => { announce = resolve; });
+  const held = withStoreTransaction(b, async () => {
+    announce();
+    await new Promise(resolve => { release = resolve; });
+  });
+  await ready;
+  try {
+    await assert.rejects(withStoreTransaction(a, () => assert.fail('partial acquisition entered')), { code: 'UNDO_STORE_BUSY' });
+    assert.equal(await withStoreTransaction(independent, () => 'no leaked lock'), 'no leaked lock');
+  } finally { release(); await held; }
+});
 
 test('separate process cannot compact while a writer holds the OS lock; killed writer releases it', { timeout: 15000 }, async () => {
   await core.writeBlob(cfg, hash, blob);
