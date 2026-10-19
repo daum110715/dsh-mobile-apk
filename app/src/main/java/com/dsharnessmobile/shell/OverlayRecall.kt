@@ -46,8 +46,8 @@ class OverlayRecall(private val svc: OverlayService) {
    * 进入隐藏态：按球的最后位置把条贴到**最近的水平边缘**（左半屏贴左、右半屏贴右）。
    * 幂等——已在场时直接返回，重复调用不会在屏上留第二条。
    */
-  internal fun show(ballX: Int, ballY: Int, ballSize: Int) {
-    if (isShowing()) return
+  internal fun show(ballX: Int, ballY: Int, ballSize: Int): Boolean {
+    if (isShowing()) return true
     val metrics = svc.resources.displayMetrics
     val at = recallStripPlacement(
       ballX, ballY, ballSize,
@@ -76,9 +76,20 @@ class OverlayRecall(private val svc: OverlayService) {
       x = at[0]
       y = at[1]
     }
-    stripView = strip
-    stripParams = lp
-    try { svc.wm.addView(strip, lp) } catch (_: Exception) {}
+    return try {
+      svc.wm.addView(strip, lp)
+      // Publish the state only after WindowManager accepted the window. A failed addView used
+      // to leave stripView non-null, which made isShowing() reject every retry while the user
+      // could see neither the strip nor the hidden ball.
+      stripView = strip
+      stripParams = lp
+      true
+    } catch (t: Exception) {
+      LogCollector.log("dsh-overlay", "recall strip addView failed: " + (t.message ?: t.javaClass.simpleName))
+      stripView = null
+      stripParams = null
+      false
+    }
   }
 
   /** 退出隐藏态：收条（幂等）。窗口此时可能已被系统回收，异常按「已经不在」处理。 */

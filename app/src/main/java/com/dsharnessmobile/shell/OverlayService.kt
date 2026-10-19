@@ -118,6 +118,8 @@ class OverlayService : Service() {
    * docs/0.14.9-preview-OVERLAY-BALL-HIDE.md §4「明确不做」。
    */
   internal var hidden = false
+  /** The ball window is currently attached to WindowManager. State may outlive a failed addView. */
+  internal var ballAttached = false
   /** 面板是否被用户手势占用（长按状态行期间）——自动收起守卫，同族于 hasDraft()。 */
   internal var panelOccupied = false
 
@@ -312,10 +314,27 @@ class OverlayService : Service() {
       y = params.y + ballSize / 2 - haloSize / 2
     }
     haloParams = haloP
-    try { wm.addView(halo, haloP) } catch (_: Exception) {}
+    var haloOk = false
+    try { wm.addView(halo, haloP); haloOk = true } catch (t: Exception) {
+      LogCollector.log("dsh-overlay", "halo addView failed: " + (t.message ?: t.javaClass.simpleName))
+    }
 
-    wm.addView(root, params)
-    rootView = root
+    try {
+      wm.addView(root, params)
+      rootView = root
+      ballAttached = true
+    } catch (t: Exception) {
+      // onCreate calls buildRoot synchronously. An uncaught BadTokenException or SecurityException
+      // used to take down the whole service. Withdraw the detached halo and leave the state empty
+      // so a later explicit start can retry (#428 item 16).
+      LogCollector.log("dsh-overlay", "ball addView failed: " + (t.message ?: t.javaClass.simpleName))
+      if (haloOk) removeWindow(halo)
+      haloView = null
+      rootView = null
+      ballAttached = false
+      stopSelf()
+      return
+    }
     attachBallTouch(ball)
     // 键盘顶起面板：由独立面板窗口的系统 ADJUST_PAN 原生实现（showPanel 注释）。
     // 球窗口收不到 IME insets（与键盘零相交的窗口系统不派发，实测 bottom=0 visible=false），
@@ -344,13 +363,13 @@ class OverlayService : Service() {
 
   private fun showPanel() {
     if (expanded) return
+    if (rootView == null || !ballAttached) {
+      flashStatus("悬浮球未就绪，请重新打开悬浮球")
+      return
+    }
     val dp = resources.displayMetrics.density
     if (panel.unitView == null) panel.buildUnit()
     val unit = panel.unitView ?: return
-    expanded = true
-    // 块H-A1「首次打开」：消费完成位——本次展开期常驻显示 A1 文案，下次收起再打开即回常态
-    // （详档 §3.2 判定 1：用户口径是「首次打开」，永久常驻会让「首次」二字失去意义）。
-    completion.consume()
     // 面板独立窗口（2026-09-03 键盘顶起重构）：IME insets 只随「与键盘相交的窗口」派发——
     // 球窗口贴顶时与键盘零相交（实测 ime bottom=0 visible=false），自监听原理性收不到。
     // 改面板独立窗口：focusable + ADJUST_PAN（默认），系统原生把面板整体顶到键盘上方、
@@ -372,7 +391,20 @@ class OverlayService : Service() {
     positionPanel()
     panel.refreshSessionPicker()
     unit.visibility = View.VISIBLE
-    try { wm.addView(unit, pp) } catch (_: Exception) {}
+    try {
+      wm.addView(unit, pp)
+    } catch (t: Exception) {
+      // Do not leave "expanded" true, a fade-in animation or page padding behind when the
+      // panel was never attached. The ball remains the retry path (#428 item 17).
+      LogCollector.log("dsh-overlay", "panel addView failed: " + (t.message ?: t.javaClass.simpleName))
+      panelParams = null
+      unit.visibility = View.GONE
+      flashStatus("面板未能展开，请重试")
+      return
+    }
+    expanded = true
+    // 块H-A1「首次打开」：挂载成功后才消费完成位。addView 失败时保留文案，下一次打开仍能看到。
+    completion.consume()
     unit.post { positionPanel() }   // 首帧拿到真实宽高后再精确对位一次
     unit.alpha = 0f
     unit.animate().alpha(1f).setDuration(200).start()
@@ -445,7 +477,26 @@ class OverlayService : Service() {
     hidden = true
     removeWindow(rootView)
     removeWindow(haloView)
-    recall.show(p?.x ?: 0, p?.y ?: 0, ballSizeDp)
+    // If the strip cannot be attached, retain the ball. Otherwise the only route back to the
+    // overlay disappears with no visible control left on screen (#422 item 1).
+    if (!recall.show(p?.x ?: 0, p?.y ?: 0, ballSizeDp)) {
+      hidden = false
+      val rp = rootParams
+      var haloOk = false
+      haloView?.let { h -> haloParams?.let { hp -> try { wm.addView(h, hp); haloOk = true } catch (_: Exception) {} } }
+      var ballOk = false
+      rootView?.let { r -> if (rp != null) try { wm.addView(r, rp); ballOk = true } catch (_: Exception) {} }
+      ballAttached = ballOk
+      if (ballOk) {
+        if (haloOk) { syncHalo(); setHalo(deriveHalo()) }
+        flashStatus("召回条未能显示，悬浮球已保留")
+        return
+      }
+      // Both the strip and the ball failed. The service has no usable surface left, so leave
+      // hiding in a consistent state (so an explicit restart can recover) and end cleanly.
+      stopSelf()
+      return
+    }
     emitFrame()
   }
 
@@ -461,7 +512,6 @@ class OverlayService : Service() {
    */
   internal fun recallBall() {
     if (!hidden) return
-    hidden = false
     val spot = recall.ballPlacementForRecall(ballSizeDp, edgeMarginPx)
     recall.hide()
     val rp = rootParams
@@ -470,10 +520,22 @@ class OverlayService : Service() {
       rp.y = spot[1]
       clampBallPos(rp)
     }
-    haloView?.let { h -> haloParams?.let { hp -> try { wm.addView(h, hp) } catch (_: Exception) {} } }
-    rootView?.let { r -> rp?.let { params -> try { wm.addView(r, params) } catch (_: Exception) {} } }
-    syncHalo()
-    setHalo(deriveHalo())
+    var haloOk = false
+    haloView?.let { h -> haloParams?.let { hp -> try { wm.addView(h, hp); haloOk = true } catch (_: Exception) {} } }
+    var ballOk = false
+    rootView?.let { r -> rp?.let { params -> try { wm.addView(r, params); ballOk = true } catch (t: Exception) {
+      LogCollector.log("dsh-overlay", "recall ball addView failed: " + (t.message ?: t.javaClass.simpleName))
+    } } }
+    ballAttached = ballOk
+    if (!ballOk) {
+      if (haloOk) removeWindow(haloView)
+      hidden = true
+      recall.show(rp?.x ?: 0, rp?.y ?: 0, ballSizeDp)
+      flashStatus("悬浮球未能恢复，请重试")
+      return
+    }
+    hidden = false
+    if (haloOk) { syncHalo(); setHalo(deriveHalo()) }
     emitFrame()
   }
 
