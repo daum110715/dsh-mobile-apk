@@ -1997,9 +1997,9 @@ async function applySnapshot(cfg, snap) {
   const hashes = new Map();
   for (const file of (snap.files ?? [])) {
     const spec = findSpec(file.name);
-    if (!spec) continue;
+    if (!spec) { missing.push(`${file.name}: unknown snapshot file, skipped`); continue; }
     const src = join(snap._dir, file.name);
-    if (!(await pathExists(src))) continue;
+    if (!(await pathExists(src))) { missing.push(`${file.name}: snapshot file missing`); continue; }
     let buf = await fs.readFile(src);
     let sensitiveNote = null;
     if (SENSITIVE_DESTS.has(file.name)) {

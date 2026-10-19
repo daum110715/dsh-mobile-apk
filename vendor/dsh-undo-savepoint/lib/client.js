@@ -93,6 +93,7 @@ window.__ModuleLoader__.load({
 			"boot.crash.patch": " 疑似插件挂载/加载失败——建议回退到最近正常快照",
 			"boot.rollback": "回退到最后正常状态",
 			"restart.required": "已回退。重启 DSH 后恢复内容才会生效。",
+			"restore.partial": "仅恢复部分内容；以下文件未恢复，原文件保持不变：{files}",
 			"safe.mode": "安全模式",
 			"safe.on.confirm": "开启安全模式:除撤销系统外的所有用户插件将被临时禁用,并会中和会导致 DSH 无法启动的插件清单(bundle)条目(先自动快照并备份配置),重启 DSH 后生效。继续?",
 			"safe.off.confirm": "退出安全模式:恢复进入前的完整插件配置,重启 DSH 后生效。继续?",
@@ -203,6 +204,7 @@ window.__ModuleLoader__.load({
 			"boot.crash.patch": " Likely a plugin mount/load failure — roll back to a recent good snapshot",
 			"boot.rollback": "Roll back to last good state",
 			"restart.required": "Rolled back. A DSH restart is required for the restored state to take effect.",
+			"restore.partial": "Partially restored. These files were not restored; their current contents are unchanged: {files}",
 			"safe.mode": "Safe mode",
 			"safe.on.confirm": "Enable SAFE MODE? All user plugins except the undo system will be temporarily disabled, and profile bundles that would prevent DSH from booting will be neutralized (a snapshot and config backups are taken first). Takes effect after a DSH restart.",
 			"safe.off.confirm": "Exit SAFE MODE? The full plugin set from before safe mode will be restored. Takes effect after a DSH restart.",
@@ -302,11 +304,15 @@ window.__ModuleLoader__.load({
 		/** After a successful undo/redo/restore the config files changed; the page
 		 * reloads so the UI re-reads them (settings UI does not hot-follow files). */
 		function maybeReload(r, label) {
-			if (r && r.ok && !r.unchanged && (label === "undo" || label === "redo" || label === "restore")) {
+			if (r && r.ok && !r.unchanged && !(r.missing && r.missing.length) && (label === "undo" || label === "redo" || label === "restore")) {
 				setTimeout(() => { try { location.reload(); } catch (e) { /* noop */ } }, 350);
 			}
 		}
-		function publishResult(r, label) {
+		function restoreWarning(r, t) {
+            return r && r.ok && Array.isArray(r.missing) && r.missing.length
+                ? t("restore.partial", { files: r.missing.join(", ") }) : "";
+        }
+        function publishResult(r, label, t) {
 			let text = "";
 			if (r && r.ok) {
 				if (r.message) {
@@ -318,7 +324,9 @@ window.__ModuleLoader__.load({
 			} else {
 				text = "失败:" + ((r && (r.error && (r.error.message || r.error) || r)) || "unknown");
 			}
-			try { window.dispatchEvent(new CustomEvent(RESULT_EVENT, { detail: { ok: !!(r && r.ok), text } })); } catch (e) { /* noop */ }
+			const warning = restoreWarning(r, t);
+            if (warning) text = warning;
+            try { window.dispatchEvent(new CustomEvent(RESULT_EVENT, { detail: { ok: !!(r && r.ok) && !warning, text } })); } catch (e) { /* noop */ }
 		}
 		const KIND_KEYS = { manual: "type.manual", auto: "type.auto", baseline: "type.baseline", "pre-restore": "type.pre-restore" };
 		const LOC_KEYS = { manual: "loc.manual", auto: "loc.auto", legacy: "loc.legacy" };
@@ -391,17 +399,17 @@ window.__ModuleLoader__.load({
 				setBusy(true);
 				try {
 					const r = await api(path, "POST");
-					publishResult(r, label);
+					publishResult(r, label, t);
 					maybeReload(r, label);
 					let text;
 					if (r && r.ok) {
-						text = r.message || (label === "undo" ? t("ok.undo", { id: r.targetId || "" }) : label === "redo" ? t("ok.redo") : t("ok.snapshot", { id: (r && r.snapshot && r.snapshot.id) || "" }));
+						text = restoreWarning(r, t) || r.message || (label === "undo" ? t("ok.undo", { id: r.targetId || "" }) : label === "redo" ? t("ok.redo") : t("ok.snapshot", { id: (r && r.snapshot && r.snapshot.id) || "" }));
 					} else if (r && r.error && r.error.code === 'busy') {
 						text = t("err.busy");
 					} else {
 						text = t("err", { msg: (r && (r.error && (r.error.message || r.error))) || "unknown" });
 					}
-					flash(!!(r && r.ok), text);
+					flash(!!(r && r.ok) && !restoreWarning(r, t), text);
 					// 手动快照落地后立刻刷新徽章(不用等 30s 轮询)
 					if (label === "snapshot" && r && r.ok) refreshStat();
 				} finally {
@@ -468,7 +476,7 @@ window.__ModuleLoader__.load({
 				setBusy(true);
 				try {
 					const r = await api("/api/undo/message", "POST", { id: item.id });
-					if (r && r.ok) { setMsgOk(true); setMsg(t("msg.ok")); load(); publishResult(r, "message"); }
+					if (r && r.ok) { setMsgOk(true); setMsg(t("msg.ok")); load(); publishResult(r, "message", t); }
 					else { setMsgOk(false); setMsg(t("msg.err", { msg: (r && (r.error && (r.error.message || r.error))) || "unknown" })); }
 				} finally { setBusy(false); }
 			};
@@ -529,12 +537,12 @@ window.__ModuleLoader__.load({
 				setBusy(true);
 				try {
 					const r = await api(path, "POST", body);
-					publishResult(r, label);
+					publishResult(r, label, t);
 					maybeReload(r, label);
 					if (r && r.ok && r.needsRestart) window.alert(t("restart.required"));
-					setMsgOk(!!(r && r.ok));
+					setMsgOk(!!(r && r.ok) && !restoreWarning(r, t));
 					if (r && r.ok) {
-						setMsg(r.message || t("ok.undo", { id: r.targetId || "" }));
+						setMsg(restoreWarning(r, t) || r.message || t("ok.undo", { id: r.targetId || "" }));
 					} else if (r && r.error && r.error.code === 'busy') {
 						setMsg(t("err.busy"));
 					} else {
