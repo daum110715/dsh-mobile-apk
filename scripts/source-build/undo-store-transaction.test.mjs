@@ -10,7 +10,7 @@ const root = await fs.mkdtemp(join(tmpdir(), 'dsh-undo-store-'));
 process.env.DSH_UNDO_ROOT = join(root, 'legacy');
 const core = await import('../../vendor/dsh-undo-savepoint/lib/core.mjs');
 const cfg = { manualDir: join(root, 'manual'), autoDir: join(root, 'auto'),
-  homeDir: join(root, 'home'), profileDir: join(root, 'profile'), pluginDirs: [], profileName: 'web', keepAuto: 1, keepPre: 1 };
+  settingsFile: join(root, 'settings.json'), homeDir: join(root, 'home'), profileDir: join(root, 'profile'), pluginDirs: [], profileName: 'web', keepAuto: 1, keepPre: 1 };
 await Promise.all([cfg.homeDir, cfg.profileDir].map(dir => fs.mkdir(dir, { recursive: true })));
 const blob = Buffer.from('old orphan fixture reused by a new snapshot');
 const hash = core.sha1Hex(blob);
@@ -100,6 +100,28 @@ test('concurrent snapshot creation and message appends publish complete data', a
   await Promise.all(Array.from({ length: 20 }, (_, index) => core.appendMessageOp(cfg, { batchId: 'batch-fixture', op: { index, beforeHash: hash } })));
   assert.equal((await core.readMessageOps(cfg, 'batch-fixture')).ops.length, 20);
   await assert.rejects(core.writeBlob(cfg, 'a'.repeat(40), blob), /hash mismatch/);
+});
+
+test('interrupted tool reservations remain referenced and are not pruned or replayed', async () => {
+  const bytes = Buffer.from('pending before image');
+  const beforeHash = core.sha1Hex(bytes);
+  await core.writeBlob(cfg, beforeHash, bytes);
+  await core.appendMessageOp(cfg, { batchId: 'pending-fixture', op: { operationId: 'op-1', phase: 'pending', beforeHash, path: join(root, 'tool-output') } });
+  await core.pruneMessageOps({ ...cfg, keepMessageOps: 0 });
+  assert.equal((await core.readMessageOps(cfg, 'pending-fixture')).ops.length, 1);
+  await core.undoCompact(cfg);
+  assert.deepEqual(await core.readBlob(cfg, beforeHash), bytes);
+  const undone = await core.undoMessage(cfg, 'pending-fixture');
+  assert.equal(undone.changed.length, 0);
+  assert.equal(undone.skipped.length, 1);
+  await core.completeMessageOp(cfg, 'pending-fixture', 'op-1', { phase: 'done', afterExists: false });
+  const batch = await core.readMessageOps(cfg, 'pending-fixture');
+  assert.equal(batch.ops.length, 1);
+  assert.equal(batch.ops[0].phase, 'done');
+  const file = join(core.messageOpsDir(cfg), 'corrupt-fixture.json');
+  await fs.writeFile(file, '{old damaged bytes');
+  await assert.rejects(core.appendMessageOp(cfg, { batchId: 'corrupt-fixture', op: { beforeHash } }));
+  assert.equal(await fs.readFile(file, 'utf8'), '{old damaged bytes');
 });
 
 test.after(async () => { await fs.rm(root, { recursive: true, force: true }); });

@@ -2496,8 +2496,8 @@ async function undoCandidates(cfg, list) {
   return candidates;
 }
 async function appendRollbackLog(cfg, entry) {
-  const file = join(dirname(cfg.settingsFile), 'rollback-log.jsonl');
   try {
+    const file = join(dirname(cfg.settingsFile), 'rollback-log.jsonl');
     await serializeUpdate(file, async () => {
       let text = '';
       try { text = await fs.readFile(file, 'utf8'); }
@@ -2523,11 +2523,26 @@ async function appendMessageOpUnlocked(cfg, batch) {
   const dir = messageOpsDir(cfg);
   await fs.mkdir(dir, { recursive: true });
   const file = join(dir, `${batch.batchId}.json`);
-  let b = await readMessageOps(cfg, batch.batchId);
+  let b;
+  try { b = JSON.parse((await fs.readFile(file, 'utf8')).replace(/^\uFEFF/, '')); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (b && !Array.isArray(b.ops)) throw new Error('invalid message batch; original retained');
   if (!b) b = { batchId: batch.batchId, messageId: batch.messageId ?? null, startedAt: new Date().toISOString(), ops: [] };
   b.ops.push(batch.op);
   await atomicWrite(file, JSON.stringify(b, null, 2));
   return b;
+}
+/** 完成工具执行前的持久预留；不追加重复 op，也不覆盖损坏的旧批次。 */
+async function completeMessageOp(cfg, batchId, operationId, patch) {
+  return withStoreTransaction(cfg, async () => {
+    const file = join(messageOpsDir(cfg), `${batchId}.json`);
+    const batch = JSON.parse((await fs.readFile(file, 'utf8')).replace(/^\uFEFF/, ''));
+    if (!Array.isArray(batch.ops)) throw new Error('invalid message batch; original retained');
+    const op = batch.ops.find(item => item.operationId === operationId);
+    if (!op) throw new Error('message operation reservation missing');
+    Object.assign(op, patch);
+    await atomicWrite(file, JSON.stringify(batch, null, 2));
+  });
 }
 /** 列出最近批次（降序）。 */
 async function listMessageOps(cfg, limit = 200) {
@@ -2552,7 +2567,7 @@ async function pruneMessageOpsUnlocked(cfg) {
   const keep = Number.isFinite(cfg.keepMessageOps) ? cfg.keepMessageOps : 200;
   const dir = messageOpsDir(cfg);
   if (!(await pathExists(dir))) return { removed: 0 };
-  const batches = await listMessageOps(cfg, 100000);
+  const batches = (await listMessageOps(cfg, 100000)).filter(batch => !batch.ops.some(op => op.phase === 'pending'));
   let removed = 0;
   for (const b of batches.slice(keep)) {
     const p = join(dir, `${b.id}.json`);
@@ -2581,6 +2596,7 @@ async function undoMessageUnlocked(cfg, id) {
   // （>8MB）跳过备份，防内存峰值；这些 blob 不入引用清单，之后由 undoCompact 回收。
   const backedUp = new Set();
   for (const op of ops) {
+    if (op.phase === 'pending') continue;
     if (!op?.path || backedUp.has(op.path)) continue;
     backedUp.add(op.path);
     try {
@@ -2591,6 +2607,7 @@ async function undoMessageUnlocked(cfg, id) {
     } catch { /* 当前不存在：无需备份 */ }
   }
   for (const op of ops) {
+    if (op.phase === 'pending') { skipped.push({ path: op.path, reason: 'tool execution was interrupted; pending recovery retained' }); continue; }
     try {
       if (op.afterExists !== undefined && !guarded.has(op.path)) {
         guarded.add(op.path);
@@ -2651,10 +2668,12 @@ async function collectReferencedBlobs(cfg) {
     try { entries = await fs.readdir(base, { withFileTypes: true }); }
     catch (error) { if (error.code === 'ENOENT') continue; throw error; }
     for (const entry of entries) {
+      if (entry.isSymbolicLink()) throw new Error(`Cannot safely compact a linked snapshot entry: ${join(base, entry.name)}`);
       if (!entry.isDirectory()) continue;
       const directory = join(base, entry.name);
-      if (!SNAP_ID_RE.test(entry.name) && !(await pathExists(join(directory, 'manifest.json')))) continue;
-      const snap = await readManifest(directory);
+      let snap;
+      try { snap = await readManifest(directory); }
+      catch (error) { if (error.code === 'ENOENT' && !SNAP_ID_RE.test(entry.name)) continue; throw error; }
       if (!Array.isArray(snap.files) || !Array.isArray(snap.plugins ?? []) || !Array.isArray(snap.profileFiles ?? [])) {
         throw new Error(`Cannot safely compact invalid snapshot: ${directory}`);
       }
@@ -3268,6 +3287,7 @@ export {
   messageOpsDir,
   readMessageOps,
   appendMessageOp,
+  completeMessageOp,
   listMessageOps,
   pruneMessageOps,
   undoMessage,
