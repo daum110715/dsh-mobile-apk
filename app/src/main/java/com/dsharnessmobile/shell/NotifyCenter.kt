@@ -797,7 +797,11 @@ object NotifyCenter {
     val kind = entry.kind.lowercase()
     val face = when (kind) {
       "resolve" -> {
-        cancel(app, entry.eventId)
+        // Commit the durable removal before any in-memory/system cancellation. The source cursor
+        // remains retryable if the journal write fails, so the resolve can be applied again.
+        if (!NotifySuppressQueue.canSettleInteractive(app)) return Result.ERROR
+        cancelSystemNotification(app, entry.eventId)
+        if (!NotifySuppressQueue.settleInteractive(app, entry.eventId)) return Result.ERROR
         return Result.RESOLVED
       }
       "silent" -> Face.SILENT
@@ -943,11 +947,16 @@ object NotifyCenter {
   fun cancel(context: Context, eventId: String) {
     if (eventId.isEmpty()) return
     val app = context.applicationContext
+    cancelSystemNotification(app, eventId)
+    NotifySuppressQueue.settleInteractive(app, eventId)
+    LogCollector.log("dsh-notify", "cancel(eventId=" + eventId + ")")
+  }
+
+  private fun cancelSystemNotification(app: Context, eventId: String) {
     val manager = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     for (face in listOf(Face.QUESTION, Face.APPROVAL)) {
       manager.cancel(stableId("dsh-" + face.category + ":" + eventId))
     }
-    LogCollector.log("dsh-notify", "cancel(eventId=" + eventId + ")")
   }
 
   /** 结算后撤掉弹窗（NT-19：审批结算后立即 cancel，不留历史）。 */
