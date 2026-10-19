@@ -81,6 +81,7 @@ import {
   runDoctor,
   runDoctorFix,
   appendMessageOp,
+  completeMessageOp,
   listMessageOps,
   pruneMessageOps,
   undoMessage,
@@ -948,20 +949,26 @@ export function apply(ctx, config = {}) {
           if (buf && buf.length > 262144) { await executeOnce(); return; }
           const beforeHash = buf ? sha1Hex(buf) : null;
           if (buf) await writeBlob(cfg, beforeHash, buf);
-          await executeOnce();
-          // #34：记录工具执行后的内容指纹。撤回守卫据此跳过被后续消息改写的
-          // 文件。执行后超过 256KB 的只记 afterExists 不记指纹（守卫退化为
-          // 仅存在性比对），与快照采集的体积上限保持一致。
-          let afterHash = null;
-          let afterExists = false;
-          try {
-            const afterBuf = await fs.readFile(p);
-            afterExists = true;
-            if (afterBuf.length <= 262144) afterHash = sha1Hex(afterBuf);
-          } catch { /* 执行后文件已不存在 */ }
           const batch = ensureBatch(exec);
-          await appendMessageOp(cfg, { batchId: batch.batchId, messageId: batch.messageId, op: { tool: name, path: p, beforeHash, beforeExists: !!buf, afterHash, afterExists, ts: Date.now() } });
-          await pruneMessageOps(cfg);
+          const operationId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          await appendMessageOp(cfg, { batchId: batch.batchId, messageId: batch.messageId,
+            op: { operationId, phase: 'pending', tool: name, path: p, beforeHash, beforeExists: !!buf, ts: Date.now() } });
+          let completed = false;
+          try {
+            const result = await executeOnce();
+            completed = true;
+            return result;
+          } finally {
+            let afterHash = null, afterExists = false;
+            try {
+              const afterBuf = await fs.readFile(p);
+              afterExists = true;
+              if (afterBuf.length <= 262144) afterHash = sha1Hex(afterBuf);
+            } catch { /* absent after tool execution */ }
+            await completeMessageOp(cfg, batch.batchId, operationId,
+              { phase: completed ? 'done' : 'failed', afterHash, afterExists });
+            await pruneMessageOps(cfg);
+          }
           });
         } catch (e) {
           try { ctx.logger.warn(`[dsh-undo-savepoint] msg-ops pre-execute hook degraded: ${String(e?.message ?? e)}`); } catch { /* noop */ }

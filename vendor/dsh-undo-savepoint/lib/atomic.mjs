@@ -22,6 +22,10 @@ export async function atomicWrite(target, bytes) {
         await new Promise(resolve => setTimeout(resolve, 10 * (attempt + 1)));
       }
     }
+    if (process.platform !== 'win32') {
+      const directory = await fs.open(dirname(target), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
   } finally {
     await handle?.close().catch(() => {});
     await fs.rm(temporary, { force: true }).catch(() => {});
@@ -67,6 +71,7 @@ export async function withStoreTransaction(cfg, action) {
   const key = process.platform === 'win32' ? real.toLowerCase() : real;
   const inherited = transactions.getStore();
   if (inherited?.key === key && inherited.active) return action();
+  if (inherited?.active) throw new Error('Nested undo transactions cannot switch stores');
   return serializeUpdate(key + '/.undo-transaction', async () => {
     const release = await acquireStoreLock(key);
     const scope = { key, active: true };
