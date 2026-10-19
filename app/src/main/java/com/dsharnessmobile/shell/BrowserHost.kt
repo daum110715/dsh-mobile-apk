@@ -1880,21 +1880,53 @@ a{display:inline-block;margin-top:16px;padding:10px 20px;border-radius:8px;backg
     }
   }
 
-  private fun shotOp(args: JSONObject, target: ControlTarget): JSONObject = controlOnMain(target) {
-    val browser = target.tab?.view ?: return@controlOnMain targetFailure(target, "browser-not-created")
-    try {
-      if (browser.width <= 0 || browser.height <= 0) return@controlOnMain targetFailure(target, "viewport-unavailable")
-      val bitmap = Bitmap.createBitmap(browser.width, browser.height, Bitmap.Config.ARGB_8888)
+  private data class ShotCapture(val bitmap: Bitmap?, val reply: JSONObject)
+
+  private fun shotOp(args: JSONObject, target: ControlTarget): JSONObject {
+    // Native control requests run on the control worker. Never block the UI waiting for a posted draw.
+    if (Looper.myLooper() == Looper.getMainLooper()) return targetFailure(target, "screenshot-worker-required")
+    val captured = java.util.concurrent.CompletableFuture<ShotCapture>()
+    main.post {
+      if (captured.isCancelled) return@post
+      var bitmap: Bitmap? = null
       try {
-        browser.draw(Canvas(bitmap))
-        val dir = File(File(activity.filesDir, "home/tmp"), "dsh-tmp").apply { mkdirs() }
-        val file = File.createTempFile("browser-shot-", ".png", dir)
-        FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        pageReply(target).put("ok", true).put("path", file.absolutePath).put("bytes", file.length())
-          .put("width", bitmap.width).put("height", bitmap.height).put("health", "ok")
-          .apply { if (!args.optBoolean("inline", false)) put("note", "截图落在应用私有目录的引擎可读路径；工具层读完即删。") }
-      } finally { bitmap.recycle() }
-    } catch (t: Throwable) { targetFailure(target, "shot-failed:" + t.javaClass.simpleName) }
+        val reply = controlOnMain(target) {
+          val browser = target.tab?.view ?: return@controlOnMain targetFailure(target, "browser-not-created")
+          if (browser.width <= 0 || browser.height <= 0) return@controlOnMain targetFailure(target, "viewport-unavailable")
+          bitmap = Bitmap.createBitmap(browser.width, browser.height, Bitmap.Config.ARGB_8888)
+          browser.draw(Canvas(bitmap!!))
+          pageReply(target).put("ok", true).put("width", browser.width).put("height", browser.height)
+        }
+        if (!captured.complete(ShotCapture(bitmap, reply))) bitmap?.recycle()
+      } catch (t: Throwable) {
+        bitmap?.recycle()
+        captured.complete(ShotCapture(null, targetFailure(target, "shot-failed:" + t.javaClass.simpleName)))
+      }
+    }
+    val shot = try {
+      captured.get(8, TimeUnit.SECONDS)
+    } catch (_: java.util.concurrent.TimeoutException) {
+      // A late draw either loses complete() and recycles its bitmap, or already completed and is consumed here.
+      if (captured.cancel(false)) return controlTimeout()
+      captured.get()
+    } catch (_: InterruptedException) {
+      if (!captured.cancel(false)) captured.getNow(null)?.bitmap?.recycle()
+      Thread.currentThread().interrupt()
+      return controlTimeout()
+    }
+    val bitmap = shot.bitmap ?: return shot.reply
+    var output: File? = null
+    try {
+      val dir = File(File(activity.filesDir, "home/tmp"), "dsh-tmp").apply { mkdirs() }
+      val file = File.createTempFile("browser-shot-", ".png", dir)
+      output = file
+      FileOutputStream(file).use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) { "PNG compression failed" } }
+      return shot.reply.put("path", file.absolutePath).put("bytes", file.length()).put("health", "ok")
+        .apply { if (!args.optBoolean("inline", false)) put("note", "截图落在应用私有目录的引擎可读路径；工具层读完即删。") }
+    } catch (t: Throwable) {
+      output?.delete()
+      return targetFailure(target, "shot-failed:" + t.javaClass.simpleName)
+    } finally { bitmap.recycle() }
   }
 
   // ── async plumbing ────────────────────────────────────────────────────────
