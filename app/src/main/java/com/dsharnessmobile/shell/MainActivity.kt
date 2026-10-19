@@ -913,7 +913,9 @@ class MainActivity : ComponentActivity() {
           view.loadUrl(url)
           return true
         }
-        downloadSaver.openInExternalBrowser(request.url)
+        if (!downloadSaver.openInExternalBrowser(request.url)) {
+          showTestNotification("无法打开链接 / Cannot open link", "未找到可用浏览器，请安装浏览器后重试 / Install a browser and retry.")
+        }
         return true
       }
 
