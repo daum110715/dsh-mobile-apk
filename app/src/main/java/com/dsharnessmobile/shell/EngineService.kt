@@ -345,7 +345,7 @@ class EngineService : Service() {
       try {
         context.applicationContext
           .getSharedPreferences(LIFECYCLE_PREFS, android.content.Context.MODE_PRIVATE)
-          .edit().putBoolean(KEY_USER_SHUTDOWN, value).apply()
+          .edit().putBoolean(KEY_USER_SHUTDOWN, value).commit()
       } catch (_: Throwable) {
       }
     }

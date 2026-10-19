@@ -199,4 +199,11 @@ class ForegroundPageRecoveryWiringTest {
     assertTrue(ordered(startup, "startupRecoverThenProbe(", "if (engineAlreadyRunning)"))
     assertFalse(source("MainActivity.kt").contains("autoHealOwnership("))
   }
+
+  @Test fun userShutdownFlagMustReachDiskBeforeProcessExit() {
+    val service = source("EngineService.kt")
+    val writer = between(service, "fun setUserShutdown(", "fun isUserShutdownPersisted(")
+    assertTrue("the shutdown marker is read across a new process and must be committed", writer.contains("putBoolean(KEY_USER_SHUTDOWN, value).commit()"))
+    assertFalse(writer.contains("putBoolean(KEY_USER_SHUTDOWN, value).apply()"))
+  }
 }
