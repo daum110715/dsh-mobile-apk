@@ -100,7 +100,7 @@ object RootGrant {
     }
     if (!consentValidFor(consentRevision, currentRevision)) {
       return JSONObject().put("ok", false).put("code", CODE_CONSENT_REQUIRED)
-        .put("guidance", UiText.t(context, "先勾选「已阅读」并查看免责声明，才能开启 AI root 权限（免责声明内容更新后需重新确认）。", "Read and accept the disclaimer before turning on model root access. A disclaimer update requires a new confirmation."))
+        .put("guidance", UiText.t(context, "先阅读并同意免责声明，才能开启 AI root 权限。", "Read and accept the disclaimer to enable AI root access."))
     }
     // Shizuku-root and explicitly granted su are independent root transports.
     // Neither route bypasses the effective current-revision AI consent at dispatch.
@@ -218,7 +218,7 @@ object RootGrant {
       // 诚实性说明（issue 要求：做不到技术隔离时不得把不成立的隔离写成事实）：
       .put(
         "honesty",
-        UiText.t(context, "本开关是策略门与知情同意门，不是技术沙箱：通道以 root 运行时，任意 shell 命令在该通道下本就无限制。", "This is a policy and consent gate, not a sandbox: while the channel runs as root, any shell command through it is unrestricted."),
+        UiText.t(context, "这是知情同意门，不是沙箱：root 通道下的命令不受限制。", "This is a consent gate, not a sandbox: commands over the root channel are unrestricted."),
       )
   }
 

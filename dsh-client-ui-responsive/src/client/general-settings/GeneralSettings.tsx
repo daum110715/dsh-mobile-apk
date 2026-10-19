@@ -78,19 +78,19 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
 
   const chooseLanguage = useCallback((next: UiLanguageMode) => {
     setNotice(null)
-    const bridge = window.androidBridge?.setUiLanguage
-    if (bridge === undefined) {
-      setNotice(tr('切换语言需要安卓应用；在浏览器里请使用系统语言设置。',
-        'Switching the language needs the Android app; in a browser use the system language setting.'))
+    const api = window.androidBridge
+    if (api?.setUiLanguage === undefined) {
+      setNotice(tr('需在安卓应用内切换。', 'Switch this in the Android app.'))
       setLanguage(readUiLanguage())
       return
     }
     let applied: UiLanguageMode = next
     try {
-      applied = (bridge(next) as UiLanguageMode | undefined) ?? next
+      // Keep the bridge as the receiver: detaching the method (const f = api.setUiLanguage)
+      // drops the Java object and every call throws "non-injected object".
+      applied = (api.setUiLanguage(next) as UiLanguageMode | undefined) ?? next
     } catch {
-      setNotice(tr('语言没有保存：应用与页面的连接不可用——请重新打开应用后再试。',
-        'The language was not saved: the app and page lost their connection. Reopen the app and try again.'))
+      setNotice(tr('没有保存，请重开应用再试。', 'Not saved. Reopen the app and try again.'))
       setLanguage(readUiLanguage())
       return
     }
@@ -105,8 +105,8 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
 
   const toggleSidebarSwipe = useCallback((side: 'left' | 'right', enabled: boolean) => {
     if (!setSidebarSwipeEnabled(side, enabled)) {
-      setNotice(tr('滑动设置没有保存：浏览器存储不可用。',
-        'The swipe setting was not saved: browser storage is unavailable.'))
+      setNotice(tr('没有保存，浏览器存储不可用。',
+        'Not saved: browser storage is unavailable.'))
       return
     }
     setNotice(null)
@@ -129,8 +129,8 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
     try {
       window.androidBridge.setImmersiveMode(enabled)
     } catch {
-      setNotice(tr('设置没有生效：应用与页面的连接不可用——请重新打开应用后再试。',
-        'The setting did not apply: the app and page lost their connection. Reopen the app and try again.'))
+      setNotice(tr('设置没有生效，请重开应用再试。',
+        'Setting not applied. Reopen the app and try again.'))
       refreshImmersive()
       return
     }
@@ -140,10 +140,10 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
     if (readImmersive() !== enabled) {
       setNotice(
         enabled
-          ? tr('沉浸式状态栏没有开启：系统或应用未接受本次设置——可到系统设置里检查本应用的显示权限。',
-            'The immersive status bar was not enabled: the system or app rejected the change. Check this app display permission in system settings.')
-          : tr('沉浸式状态栏没有关闭：系统或应用未接受本次设置——请重试，或重新打开应用。',
-            'The immersive status bar was not disabled: the system or app rejected the change. Try again, or reopen the app.'),
+          ? tr('沉浸式状态栏没有开启，请检查显示权限。',
+            'Immersive status bar not enabled. Check the display permission in system settings.')
+          : tr('状态栏没有恢复，请重试。',
+            'Status bar not restored. Try again.'),
       )
     }
   }, [refreshImmersive])
@@ -167,8 +167,7 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
         </span>
       </label>
       <p className="dsh-dev-hint">
-        {tr('界面文字会随选择切换；跟随系统时使用手机的语言设置。',
-          'The interface follows this choice; following the system uses your phone language.')}
+        {tr('跟随系统时使用手机语言。', 'Follow system uses the phone language.')}
       </p>
       <label className="dsh-dev-row dsh-dev-switch">
         <input
@@ -179,8 +178,8 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
         <span>{tr('沉浸式状态栏', 'Immersive status bar')}</span>
       </label>
       <p className="dsh-dev-hint">
-        {tr('常态隐藏系统状态栏，边缘滑动临时呼出；关闭后常驻显示。',
-          'Hides the system status bar; swipe from the edge to show it briefly. When off it stays visible.')}
+        {tr('隐藏状态栏，边缘滑动可临时呼出。',
+          'Hides the status bar; swipe from the edge to show it.')}
       </p>
       <label className="dsh-dev-row dsh-dev-switch" data-dsh-sidebar-swipe="left">
         <input type="checkbox" checked={leftSwipe} onChange={(e) => toggleSidebarSwipe('left', e.target.checked)} />
@@ -192,8 +191,8 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
       </label>
       {/* 两侧栏各一行说明会把「屏幕外侧窄边保留给系统手势」逐字重复两遍；合成一行说清同一件事。 */}
       <p className="dsh-dev-hint">
-        {tr('手机内容区左右滑动开合两侧栏；屏幕外侧窄边保留给系统手势。',
-          'Swipe the content area to open either sidebar; the outer edge stays with system gestures.')}
+        {tr('内容区左右滑动开合侧栏。',
+          'Swipe the content area to open a sidebar.')}
       </p>
       {notice !== null && <p className="dsh-dev-warn">{notice}</p>}
     </div>

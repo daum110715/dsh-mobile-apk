@@ -319,7 +319,7 @@ export function DevSection({ renderSlot }: DevSectionProps) {
           checked={devLog}
           onChange={(e) => toggleLog(e.target.checked)}
         />
-        <span>开发者调试日志</span>
+        <span>{tr('调试日志', 'Debug log')}</span>
       </label>
 
       {/* 0.13.2 W7：悬浮球（实时工具流 + 停止）。
@@ -331,21 +331,21 @@ export function DevSection({ renderSlot }: DevSectionProps) {
           checked={overlayOn}
           onChange={(e) => toggleOverlay(e.target.checked)}
         />
-        <span>悬浮球（任意界面可见的任务面板入口）</span>
+        <span>{tr('悬浮球（任务面板入口）', 'Floating ball (task panel)')}</span>
       </label>
       {/* P5-6 只要求「点名的两处不是同一个东西」，不再复述另一页的完整语义（那由该页自己说）。 */}
-      <p className="dsh-dev-hint">点开可看实时工具调用、可一键停止；与「手机控制」页的「虚拟屏浮窗」不是同一个东西。</p>
+      <p className="dsh-dev-hint">{tr('点开可看工具调用并随时停止；它不是手机控制页的虚拟屏浮窗。', 'Tap it to watch tool calls and stop them. It is not the virtual screen window in Phone control.')}</p>
       {overlayMsg !== null && <p className="dsh-dev-hint">{overlayMsg}</p>}
 
       {/* 0.13.1 W4：配置导入/导出（安全手改通道；引擎读私有目录，改共享目录副本无效） */}
       <div className="dsh-dev-row">
-        <button type="button" className="dsh-dev-btn" onClick={exportConfig}>导出配置</button>
-        <button type="button" className="dsh-dev-btn" onClick={importConfig}>导入配置</button>
+        <button type="button" className="dsh-dev-btn" onClick={exportConfig}>{tr('导出配置', 'Export config')}</button>
+        <button type="button" className="dsh-dev-btn" onClick={importConfig}>{tr('导入配置', 'Import config')}</button>
       </div>
       {configMsg !== null && <p className="dsh-dev-hint">{configMsg}</p>}
       {/* 数据安全说明必须保留（配置不含密钥）；路径保留（用户要拿它去改）。 */}
       <p className="dsh-dev-hint">
-        导出到 Documents/dshdata/exports/config/settings.yaml，改完点「导入配置」生效。导出不含 API 密钥。
+        {tr('导出到 Documents/dshdata/exports/config/settings.yaml，改完点「导入配置」生效。导出不含 API 密钥。', 'Exported to Documents/dshdata/exports/config/settings.yaml; edit it there, then tap Import config. API keys are not included.')}
       </p>
 
       {/* 0.14.1 块 E（详档 §4.3）：运行时缓存清理——白名单制、先给可回收体积再执行、逐项落审计。 */}
@@ -354,7 +354,7 @@ export function DevSection({ renderSlot }: DevSectionProps) {
       {/* 0.14.8 提级：模型能力补齐已从开发者选项**提级**为设置页一级分区「模型能力」。
           用户反馈在设置页找不到它（入口原先只在这里，而真实用户不走开发者选项）。
           同一功能双实现是审查档 §5 的结构性根因，故这里只留指路、不再渲染同一组控件。 */}
-      <p className="dsh-dev-hint">补齐第三方模型的思考档位等能力在「设置 → 模型能力」里。</p>
+      <p className="dsh-dev-hint">{tr('第三方模型能力在「设置 → 模型能力」里。', 'Third-party model options live in Settings > Model capabilities.')}</p>
 
       {/* 0.14.6（用户指令「更新不应该是只更新快照，应该是下载 apk 然后更新」）：应用自更新入口。
           此前该状态机与入口只存在于引导页渲染器里，而健康态 showWeb() 把引导页藏起来
@@ -364,13 +364,13 @@ export function DevSection({ renderSlot }: DevSectionProps) {
 
       {/* 0.14.1 批 3（P3-5）：通知设置已从开发者选项**提级**为设置页一级分区「通知」。
           这里只留指路（同功能双实现是审查档 §5 的结构性根因，故不重复渲染同一组开关）。 */}
-      <p className="dsh-dev-hint">通知的提醒方式（含「关掉提问提醒会发生什么」）在「设置 → 通知」里。</p>
+      <p className="dsh-dev-hint">{tr('提醒方式在「设置 → 通知」里。', 'Alert options live in Settings > Notifications.')}</p>
 
       {/* F5.1/D15：文件直达临时工作区（占用展示 + 一键清理；PRD R16 手动清理 + 占用展示） */}
       {incomingBytes !== null && (
         <div className="dsh-dev-row">
           <span>
-            文件直达临时工作区占用：{fmtBytes(incomingBytes)}
+            {tr('文件直达临时工作区占用：', 'Temporary workspace: ')}{fmtBytes(incomingBytes)}
           </span>
           {/* S3-14：破坏性操作一律先确认（旧实现单击即删，与同页「运行时缓存清理」的二次确认不一致）。 */}
           <button

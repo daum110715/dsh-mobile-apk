@@ -319,8 +319,15 @@ class MainActivity : ComponentActivity() {
     applyGuidePhase(
       GuidePhase.Error,
       getString(R.string.ds_client_plugin_fail_title),
-      getString(R.string.ds_client_plugin_fail_hint, engineFlow.clientPluginFailureReason),
+      getString(R.string.ds_client_plugin_fail_hint, clientPluginFailureReason()),
     )
+  }
+
+  /** Failed plugin ids in the active language; the hint template owns the surrounding sentence. */
+  private fun clientPluginFailureReason(): String {
+    val ids = engineFlow.clientPluginFailureIds
+    if (ids.isEmpty()) return UiText.t(this, "未点名具体条目", "unnamed entries")
+    return UiText.t(this, "条目 " + ids.joinToString(","), "entries " + ids.joinToString(","))
   }
 
   /** Automatic page refreshes coalesce while paused and never issue background navigation. */
@@ -609,7 +616,7 @@ class MainActivity : ComponentActivity() {
         applyGuidePhase(
           GuidePhase.Error,
           getString(R.string.ds_client_plugin_fail_title),
-          getString(R.string.ds_client_plugin_fail_hint, engineFlow.clientPluginFailureReason),
+          getString(R.string.ds_client_plugin_fail_hint, clientPluginFailureReason()),
         )
       }
     }

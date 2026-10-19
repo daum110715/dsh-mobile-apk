@@ -280,9 +280,14 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
         val text = when {
           result == null -> ""
           skipped.isNotEmpty() -> ""
-          result.optString("reason") == "repair-result-unknown" -> "属主维护结果仍不明，请等待结算；不要重复请求。"
-          !result.optBoolean("ok") -> "属主维护未完成（已修复 $healed 项 / 失败 $failures 项）——请复制诊断日志后重试。"
-          healed > 0 -> "已自动修复 $healed 个 root 属主条目（root 通道写盘遗留）——点上方按钮重试启动。"
+          result.optString("reason") == "repair-result-unknown" ->
+            UiText.t(activity, "属主维护结果仍不明，请稍候。", "Ownership maintenance is still unresolved; please wait.")
+          !result.optBoolean("ok") -> UiText.t(activity,
+            "属主维护未完成（修复 $healed / 失败 $failures），请导出日志后重试。",
+            "Ownership maintenance incomplete (fixed $healed, failed $failures). Export the log and retry.")
+          healed > 0 -> UiText.t(activity,
+            "已自动修复 $healed 个属主条目，请重试启动。",
+            "Fixed $healed ownership entries automatically; retry startup.")
           else -> ""
         }
         if (text.isNotEmpty() && lastGuidePhase == GuidePhase.Error && startupOwnershipRepairAllowed)
@@ -302,26 +307,34 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
     val ctx = activity.applicationContext
     val unproven = pending?.optBoolean("dispatched") == true || pending?.optBoolean("unknown") == true
     val terminationNote = if (unproven) {
-      "\n\n注意：这条隔离记录的状态不可信（可能留有「已派发特权工作」的痕迹）。清除它**不能证明**那次特权工作已经结束" +
-        "（应用侧看不到外部 su 子进程 / Shizuku 服务是否仍在跑）。如果清完之后出现异常，请重启设备再排查。"
+      UiText.t(activity,
+        "\n\n注意：这条记录可能仍有已派发的特权工作。若之后出现异常，请重启设备。",
+        "\n\nNote: this record may still have dispatched privileged work. Restart the device if problems follow.")
     } else {
       ""
     }
     runCatching {
       android.app.AlertDialog.Builder(activity)
-        .setTitle("维护隔离尚未结算")
+        .setTitle(UiText.t(activity, "维护隔离尚未结算", "Maintenance lease not settled"))
         .setMessage(
-          (pending?.optString("guidance").orEmpty().ifBlank { "已有特权工作尚未结算，暂不修改运行时。" }) +
-            "\n\n如果那条 root 通道（Shizuku / su）确实已经不存在，可以清除隔离标记后重试启动。" +
-            "清除只会丢掉隔离状态，不会改动任何文件属主。" + terminationNote,
+          (pending?.optString("guidance").orEmpty().ifBlank {
+            UiText.t(activity, "已有特权工作尚未结算，暂不修改运行时。",
+              "Privileged work is not settled; the runtime stays untouched.")
+          }) +
+            UiText.t(activity,
+              "\n\n若那条 root 通道确实已不存在，可清除隔离后重试；这不会改动文件属主。",
+              "\n\nIf that root channel is gone, clear the lease and retry; file ownership is untouched.") +
+            terminationNote,
         )
         .setPositiveButton("清除隔离并重试") { _, _ ->
           val result = ShizukuTransport.forceClearMaintenanceLease(ctx)
           if (result.optBoolean("ok")) {
             val unproven = result.optBoolean("terminationUnproven")
             pushHint(
-              if (unproven) "已清除维护隔离，正在重试启动（该记录含已派发痕迹，终止无法证明；若异常请重启设备）。"
-              else "已清除维护隔离，正在重试启动。",
+              if (unproven) UiText.t(activity,
+                "已清除隔离，正在重试（可能有已派发工作；若异常请重启设备）。",
+                "Lease cleared; retrying (dispatched work may remain; restart the device if needed).")
+              else UiText.t(activity, "已清除隔离，正在重试启动。", "Lease cleared; retrying startup."),
               HintSource.PHASE, sticky = unproven,
             )
             activity.engineFlow.engineRetryCount = 0
@@ -329,14 +342,18 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
             activity.startEngineFlow()
           } else {
             pushHint(
-              result.optString("guidance").ifBlank { "清除未成功，请重试或重启设备。" },
+              result.optString("guidance").ifBlank {
+                UiText.t(activity, "清除未成功，请重试或重启设备。", "Clear failed; retry or restart the device.")
+              },
               HintSource.PHASE, sticky = true,
             )
           }
         }
-        .setNegativeButton("取消", null)
+        .setNegativeButton(UiText.t(activity, "取消", "Cancel"), null)
         .show()
-    }.onFailure { applyGuideHint("无法弹出确认框：" + it.javaClass.simpleName) }
+    }.onFailure {
+      applyGuideHint(UiText.t(activity, "无法弹出确认框：", "Could not open the dialog: ") + it.javaClass.simpleName)
+    }
   }
 
   fun buildGuideView(): LinearLayout {
@@ -662,19 +679,19 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
   }
 
   private fun defaultHint(phase: GuidePhase): String = when (phase) {
-    GuidePhase.Starting -> UiText.t(activity, "首次启动会解压内嵌运行时，请保持应用在前台。", "The first start extracts the embedded runtime; keep the app in the foreground.")
+    GuidePhase.Starting -> UiText.t(activity, "首次启动会解压运行时，请保持前台。", "First start unpacks the runtime; stay in the app.")
     GuidePhase.Extracting -> extractHintBody()
     // 0.14.6：这句只允许出现在**引擎快照更新**相位。APK 自更新路径不再把相位设成 Updating
     // （更新动作只占用次级提示/次级按钮，不占用主按钮与状态行），故此处不会误导成「在更新应用」。
-    GuidePhase.Updating -> UiText.t(activity, "正在检查运行时快照更新（与安装新版本 APK 是两件事）。", "Checking for a runtime snapshot update (separate from installing a new APK).")
-    GuidePhase.Recovering -> UiText.t(activity, "看门狗正在拉起引擎，通常几秒内恢复。", "The watchdog is restarting the engine; it usually recovers within seconds.")
-    GuidePhase.Undoing -> UiText.t(activity, "正在把配置/插件回滚到最后良好快照（自动回撤）。", "Rolling configuration and plugins back to the last good snapshot.")
+    GuidePhase.Updating -> UiText.t(activity, "正在检查运行时更新。", "Checking for a runtime update.")
+    GuidePhase.Recovering -> UiText.t(activity, "正在自动恢复引擎，通常几秒。", "Recovering the engine; usually a few seconds.")
+    GuidePhase.Undoing -> UiText.t(activity, "正在回滚到上个良好快照。", "Rolling back to the last good snapshot.")
     // 缺陷 D（fx-2）：失败页的默认副文案要说清「这个按钮现在做什么」——
     // 旧文案只提「重试」，而按钮此刻已被改成安全模式入口（文案与事实必须对齐）。
     GuidePhase.Error -> startupFailureHint(activity, activity.engineManager.lastStartRefusalCode)
-    GuidePhase.Closed -> UiText.t(activity, "引擎已停止，不会自动恢复。", "The engine is stopped; it will not restart on its own.")
-    GuidePhase.Idle -> UiText.t(activity, "引擎就绪后将进入 ", "Once the engine is ready, ") + UserCopy.APP_NAME + UiText.t(activity, "。", " opens.")
-    GuidePhase.Info -> UiText.t(activity, "运行时随安装包一起更新：安装新版 APK 即完成升级。", "The runtime updates with the app: installing a new APK completes the upgrade.")
+    GuidePhase.Closed -> UiText.t(activity, "引擎已停止，不会自动恢复。", "Engine stopped; it will not restart by itself.")
+    GuidePhase.Idle -> UiText.t(activity, "引擎就绪后将进入 ", "When ready, the app opens ") + UserCopy.APP_NAME + UiText.t(activity, "。", ".")
+    GuidePhase.Info -> UiText.t(activity, "运行时随 APK 一起更新。", "The runtime updates with the APK.")
   }
 
   /**
@@ -687,8 +704,8 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
   private fun extractHintBody(): String =
     UiText.t(
       activity,
-      "正在写入内嵌 Termux 环境（首次启动需数分钟，请勿关闭应用）。",
-      "Writing the embedded Termux environment (the first start takes a few minutes; keep the app open).",
+      "正在解压运行时，需数分钟，请勿关闭。",
+      "Unpacking the runtime; this takes a few minutes. Keep the app open.",
     )
 
   private fun setStatusPulse(on: Boolean) {

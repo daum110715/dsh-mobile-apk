@@ -217,9 +217,7 @@ export function ApkUpdateRow() {
       {/* 精简（0.14.7-B D5）：保留「更新的是什么、怎么校验、何时发起」「权限缺失怎么办」
           这些用户真要拿来做决定的信息；去掉与本行按钮状态逐字重复的流程复述。 */}
       <p className="dsh-dev-hint">
-        更新的是应用安装包（APK）：从 GitHub 发布页按本机 ABI 选包，下载走镜像链并校验体积与 sha256，
-        再拉起系统安装器。全程只在你点击时发起，不自动检查或下载；缺「安装未知应用」权限会先打开授权页。
-        安装包落在 Documents/dshdata/updates。
+        {tr('更新应用安装包（APK）：按本机 ABI 从 GitHub 发布页取包，校验体积与 sha256 后交给系统安装器。只在你点击时下载；缺「安装未知应用」权限会先打开授权页。', 'Updates the app APK: the matching ABI comes from the GitHub release, and its size and sha256 are verified before the system installer opens. Downloads start only when you tap; a missing install permission opens the grant page first.')}
       </p>
     </div>
   )

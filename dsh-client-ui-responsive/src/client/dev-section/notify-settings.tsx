@@ -236,7 +236,7 @@ export function NotifySettingsRow() {
             setSelfCheck(readSelfCheck())
           }}
         >
-          通知自检
+          {tr('通知自检', 'Check notifications')}
         </button>
         <button
           type="button"
@@ -251,7 +251,7 @@ export function NotifySettingsRow() {
             if (!ok) setMessage({ text: tr('该系统没有「应用通知设置」页——请在系统设置里手动找到本应用的通知项', 'This system has no app notification page. Find this app in system settings instead.') })
           }}
         >
-          系统通知设置
+          {tr('系统通知设置', 'System notification settings')}
         </button>
       </div>
       {/* S3-26：自证「哪几类真的能到达」。渠道状态看上面的自检，这里看**实际到达效果**——
@@ -274,7 +274,7 @@ export function NotifySettingsRow() {
             )
           }}
         >
-          发送测试通知
+          {tr('发送测试通知', 'Send a test notification')}
         </button>
       </div>
       {selfCheckTried && selfCheck === null && (
@@ -289,8 +289,7 @@ export function NotifySettingsRow() {
           </p>
           {degradedRows.length > 0 ? (
             <p className="dsh-dev-warn">
-              {tr('系统已降级以下通知：', 'The system muted these channels: ')}「{degradedRows.map((row) => row.label ?? row.category ?? tr('未知渠道', 'unknown channel')).join(tr('、', ', '))}」
-              应用无法调回，需在系统设置里恢复（可从右侧按钮进入）。
+              {tr('系统已降级以下通知：', 'The system muted these channels: ')}{degradedRows.map((row) => row.label ?? row.category ?? tr('未知渠道', 'unknown channel')).join(tr('、', ', '))}{tr('。应用无法调回，需在系统设置里恢复（可从右侧按钮进入）。', '. The app cannot undo this; restore it in system settings (use the button on the right).')}
             </p>
           ) : (
             <p className="dsh-dev-hint">{tr('系统未降级任何通知渠道。', 'No notification channel is muted by the system.')}</p>
@@ -320,7 +319,7 @@ export function NotifySettingsRow() {
                   if (!ok) setMessage({ text: tr('无法打开该渠道的系统设置页——请在系统设置里手动查找', 'The channel settings page did not open. Find it in system settings.') })
                 }}
               >
-                打开该渠道设置
+                {tr('打开该渠道设置', 'Open channel settings')}
               </button>
             </div>
           ))}

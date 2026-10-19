@@ -36,12 +36,12 @@ internal class GuideManagementController(
   fun build() {
     management = column()
     management.addView(label(t("管理中心", "Management"), 26f))
-    management.addView(label(t("DeepCode · 应用与运行环境管理", "DeepCode · App and runtime"), 14f))
+    management.addView(label(t("DeepCode · 应用与运行时", "DeepCode · App and runtime"), 14f))
     // Keep the same update Button instance so ApkUpdateController retains all states and actions.
-    row(t("打开控制台", "Open console"), t("查看终端与运行日志", "Terminal and runtime logs")) {
+    row(t("打开控制台", "Open console"), t("终端与运行日志", "Terminal and logs")) {
       activity.startActivity(Intent(activity, ConsoleActivity::class.java))
     }
-    row(t("插件管理", "Plugins"), t("启停插件与编辑配置", "Enable, disable, and configure")) { showPlugins() }
+    row(t("插件管理", "Plugins"), t("启停与配置", "Enable and configure")) { showPlugins() }
     (chrome.updateButton.parent as? ViewGroup)?.removeView(chrome.updateButton)
     management.addView(chrome.updateButton.apply {
       minHeight = dp(72)
@@ -51,7 +51,7 @@ internal class GuideManagementController(
       background = DsUi.ripple(DsUi.roundRect(activity.getColor(R.color.ds_surface), dp(8).toFloat()), activity.getColor(R.color.ds_accent_soft))
       layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) }
     })
-    row(t("存储管理", "Storage"), t("私有数据、容量与公共导出目录", "Private data, space, shared exports")) { showStorage() }
+    row(t("存储管理", "Storage"), t("数据、容量与导出", "Data, space, exports")) { showStorage() }
     languageRow()
     feedback = label("", 14f)
     management.addView(feedback)
@@ -106,12 +106,7 @@ internal class GuideManagementController(
     if (destination == "home") navigate("management") else navigate("home")
   }
 
-  /**
-   * Language row: three choices, applied to the shell and dsh at once.
-   *
-   * A tap on the row cycles system -> zh -> en, so the setting works without a
-   * spinner; the subtitle always shows the active mode.
-   */
+  /** Language row: a tap cycles system -> zh -> en for both the shell and dsh. */
   private fun languageRow() {
     val words = column().apply { setPadding(dp(20), dp(12), dp(20), dp(12)) }
     val title = label(t("界面语言", "Language"), 16f).apply { setPadding(0, 0, 0, 0) }

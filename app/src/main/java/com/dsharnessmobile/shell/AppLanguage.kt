@@ -184,9 +184,16 @@ internal object AppLanguage {
         block.add("  config:")
         block.add("    preference: $locale")
       }
+      // Separator blank lines belong to the document, not to the row: drop them before
+      // deciding whether the row still carries any config worth keeping.
+      while (block.size > 1 && block.last().isBlank()) block.removeAt(block.lastIndex)
       val onlyId = block.size == 1 || (block.size == 2 && block[1].trim() == "config:")
       if (locale == null && onlyId) {
         lines.subList(start, end).clear()
+        // The removed row took its trailing blank line with it; keep exactly one separator.
+        if (start < lines.size && lines[start].isBlank() && (start == 0 || lines[start - 1].isBlank())) {
+          lines.removeAt(start)
+        }
       } else {
         lines.subList(start, end).clear()
         lines.addAll(start, block)

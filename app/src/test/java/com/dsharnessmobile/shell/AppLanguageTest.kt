@@ -59,6 +59,14 @@ class AppLanguageTest {
     assertTrue(!updated.contains("preference:"))
   }
 
+  /** A trailing locale row with only `config:` must not leave an empty stub behind. */
+  @Test
+  fun followingTheSystemDropsATrailingEmptyLocaleStub() {
+    val original = "- id: next\n  config:\n    enabled: false\n\n- id: locale\n  config:\n"
+    val updated = AppLanguage.withDshLocalePreference(original, null)
+    assertEquals("- id: next\n  config:\n    enabled: false\n", updated)
+  }
+
   @Test
   fun leavesInsertChildrenAlone() {
     val original = "- insert:\n  - id: locale\n    config:\n      preference: zh\n"
