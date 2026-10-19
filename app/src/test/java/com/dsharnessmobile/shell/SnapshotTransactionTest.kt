@@ -14,6 +14,44 @@ class SnapshotTransactionTest {
 
   private val preserved = setOf("sessions", "settings.yaml", ".credentials.yaml")
 
+  @Test fun failedAtomicTextPublicationKeepsOldBytes() {
+    val dir = tempDir()
+    try {
+      val target = File(dir, "package.json")
+      val old = "{\"用户\":\"旧配置\"}\n".toByteArray(Charsets.UTF_8)
+      target.writeBytes(old)
+      var calls = 0
+      try {
+        SnapshotTransaction.writeTextAtomic(target, "{\"new\":true}", "fixture", publish = { temporary, live ->
+          calls++
+          assertTrue(old.contentEquals(live.readBytes()))
+          assertEquals("{\"new\":true}", temporary.readText())
+          false
+        }) { org.json.JSONObject(it) }
+        throw AssertionError("publication failure must abort")
+      } catch (error: SnapshotFsException) {
+        assertEquals(CODE_ATOMIC_WRITE, error.code)
+      }
+      assertEquals(1, calls)
+      assertTrue("failed replacement must not truncate the old configuration", old.contentEquals(target.readBytes()))
+      assertFalse(dir.listFiles().orEmpty().any { it.name.endsWith(".tmp") })
+    } finally { dir.deleteRecursively() }
+  }
+
+  @Test fun atomicTextPublicationPublishesCompleteValidatedContent() {
+    val dir = tempDir()
+    try {
+      val target = File(dir, "package.json").apply { writeText("{\"old\":true}") }
+      SnapshotTransaction.writeTextAtomic(target, "{\"new\":true}", "fixture") { org.json.JSONObject(it) }
+      assertEquals("{\"new\":true}", target.readText())
+      try {
+        SnapshotTransaction.writeTextAtomic(target, "{broken", "fixture") { org.json.JSONObject(it) }
+        throw AssertionError("invalid JSON must be rejected")
+      } catch (_: org.json.JSONException) { }
+      assertEquals("{\"new\":true}", target.readText())
+    } finally { dir.deleteRecursively() }
+  }
+
   @Test
   fun activatesFactoryEntriesAndNeverTouchesUserData() {
     val filesDir = tempDir()
