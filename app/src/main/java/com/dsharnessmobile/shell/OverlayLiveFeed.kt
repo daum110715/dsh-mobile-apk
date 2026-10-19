@@ -13,6 +13,13 @@ class OverlayLiveFeed(private val svc: OverlayService) {
     /** 单次 drain 读取上限（#178 契约：生产者 bridge 每行一次 appendFileSync、行长硬上限
      *  240/160 字符；256KB 内必含整行边界，溢出部分因按消费量推进而自然留到下一轮）。 */
     private const val LIVE_READ_CAP_BYTES = 256 * 1024
+
+    /** Return the byte count through the last newline; zero means the buffer ends in a partial line. */
+    internal fun completeLineBytes(buf: ByteArray, length: Int = buf.size): Int {
+      val n = length.coerceIn(0, buf.size)
+      for (i in n - 1 downTo 0) if (buf[i] == '\n'.code.toByte()) return i + 1
+      return 0
+    }
   }
 
   private var watcher: FileObserver? = null
@@ -59,10 +66,9 @@ class OverlayLiveFeed(private val svc: OverlayService) {
   }
 
   /**
-   * live 行消费（0.13.8 #178 行边界修复）：只消费到最后一个 `\n`，偏移按**消费量**推进——
-   * 原实现 `readOffset = len` 把未消费的截断部分/半行一并跳过（偏移记账 ≠ 消费量）；
-   * 多字节截断与半行随「找不到换行就不推进」自然消失。CAP 提为具名常量并写明契约
-   * （生产者 bridge 每行一次 appendFileSync、行长硬上限 240/160 字符）。
+   * live 行消费（0.13.8 #178 行边界修复）：只消费到最后一个 `\n`，偏移按**消费的字节数**推进。
+   * `readOffset` 是 RandomAccessFile 的字节位置，而 UTF-8 文本的 `lastIndexOf` 是字符下标；
+   * 中文摘要只要出现一次，字符数就小于字节数，旧实现会从已消费区域重读并重复计数。
    */
   private fun drainLive() {
     val f = liveFile()
@@ -76,11 +82,10 @@ class OverlayLiveFeed(private val svc: OverlayService) {
           raf.seek(readOffset)
           val buf = ByteArray((len - readOffset).toInt().coerceAtMost(LIVE_READ_CAP_BYTES))
           raf.readFully(buf)
-          val text = String(buf, Charsets.UTF_8)
-          val lastNewline = text.lastIndexOf('\n')
-          if (lastNewline < 0) return // 半行：等下次补齐，偏移不动
-          val consumable = text.substring(0, lastNewline)
-          readOffset += lastNewline + 1 // 只推进到已消费边界（非 len）
+          val consumed = completeLineBytes(buf)
+          if (consumed == 0) return // 半行：等下次补齐，偏移不动
+          val consumable = String(buf, 0, consumed, Charsets.UTF_8)
+          readOffset += consumed // 字节偏移只按字节推进；字符下标会让中文行重复消费
           for (line in consumable.split("\n")) {
             val t = line.trim()
             if (t.isNotEmpty()) lines.add(t)
