@@ -722,6 +722,8 @@ window.__ModuleLoader__.load({
 								] }),
 								msg !== null && (0, react_jsx_runtime.jsx)("span", {
 									className: styles.msg + " " + (msgOk ? styles.ok : styles.err),
+									role: msgOk ? undefined : "alert",
+									style: msgOk ? undefined : { whiteSpace: "pre-wrap", overflow: "visible", textOverflow: "clip", maxWidth: "100%", minWidth: 0, wordBreak: "break-word", flex: "1 1 auto", userSelect: "text" },
 									children: msg
 								}),
 								snaps !== null && (0, react_jsx_runtime.jsx)("span", { className: styles.hint, children: t("panel.updated", { n: snaps.length }) })
