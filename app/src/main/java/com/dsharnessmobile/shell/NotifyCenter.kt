@@ -633,6 +633,9 @@ object NotifyCenter {
     /** DEF-NOTIFY-02：投递过程抛异常（已吞掉并落探针），绝不让异常冒到 MuxClient 读线程。 */
     ERROR,
 
+    /** 交互事件暂时无法投递；已持久化到延后队列，源偏移可安全推进。 */
+    DEFERRED_RETRY,
+
     /**
      * P3 去重：同一通知身份 + 同一内容在 [DEDUP_WINDOW_MS] 内被重复投递，后到的那次丢弃。
      *
@@ -776,7 +779,15 @@ object NotifyCenter {
       // DEF-NOTIFY-02：投递异常绝不能冒泡到 MuxClient 的读线程——那会整条应答流断开重连，
       // 之后所有提问/审批通知一起消失（而且只在 logcat 留一行 Log.w）。这里吞掉并留下探针。
       NotifyProbe.log(app, "dsh-notify", "notifyEvent THREW kind=" + entry.kind + ": " + t)
-      Result.ERROR
+      // The exception has already been caught. Persist a waiting interaction before allowing
+      // the cursor to advance, so a transient failure can neither lose the answer surface nor
+      // poison every later event. If persistence itself fails, ERROR retains the cursor.
+      val interactive = Face.of(entry.kind.lowercase())?.interactive == true
+      if (interactive && NotifySuppressQueue.enqueue(app, entry, "retry:" + NotifySuppressQueue.identity(entry))) {
+        Result.DEFERRED_RETRY
+      } else {
+        Result.ERROR
+      }
     }
   }
 
@@ -815,6 +826,15 @@ object NotifyCenter {
     if (!hasPermission(app)) {
       NotifyProbe.log(app, "dsh-notify", "notify skipped (POST_NOTIFICATIONS not granted): " + face.category)
       listener?.onPermissionDenied()
+      // A waiting question or approval must outlive the permission state. Persist it before the
+      // source cursor moves; report/silent events remain ordinary permission denials.
+      if (face.interactive) {
+        return if (NotifySuppressQueue.enqueue(app, entry, "retry:" + NotifySuppressQueue.identity(entry))) {
+          Result.DEFERRED_RETRY
+        } else {
+          Result.ERROR
+        }
+      }
       return Result.PERMISSION_DENIED
     }
     if (face == Face.REPORT && NotifySuppressQueue.isSettled(app, entry)) return Result.DUPLICATE_SUPPRESSED
