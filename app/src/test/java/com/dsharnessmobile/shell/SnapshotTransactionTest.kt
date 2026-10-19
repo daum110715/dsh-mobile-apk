@@ -1548,6 +1548,35 @@ class SnapshotTransactionTest {
     }
   }
 
+  @Test
+  fun unparseableUserPackageJsonIsPreservedAndReported() {
+    val filesDir = tempDir()
+    try {
+      val live = File(filesDir, "live").apply { mkdirs() }
+      val stage = SnapshotTransaction.stageRoot(filesDir)
+      writeRuntime(live, "old-node", "old-profile")
+      writeRuntime(stage, "new-node", "new-profile")
+      val userManifest = File(live, "home/.dsh/profiles/web/package.json")
+      userManifest.writeText("user broken json")
+      File(stage, "home/.dsh/profiles/web/package.json").writeText("{\"dependencies\":{\"@factory/new\":\"2.0.0\"}}")
+
+      val notes = SnapshotTransaction.swap(
+        filesDir = filesDir,
+        stagedRoot = stage,
+        usrDir = File(live, "usr"),
+        homeDir = File(live, "home"),
+        preservedNames = preserved,
+        fingerprint = "fp-malformed",
+        startedAt = 1L,
+      )
+
+      assertEquals("user broken json", userManifest.readText())
+      assertTrue(notes.any { it.contains("package.json") && it.contains("跳过") && it.contains("JSON") })
+    } finally {
+      SnapshotFs.deletePath(filesDir)
+    }
+  }
+
   /** 正证（C）：cordis.patch.yml 合并后必须非空（空 patch = 静默丢掉全部装配条目）。 */
   @Test
   fun mergedPatchYamlIsNonEmptyAndKeepsBothSides() {

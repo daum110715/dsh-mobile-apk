@@ -1079,7 +1079,7 @@ internal object SnapshotTransaction {
         }
       }
       attrs.isRegularFile -> when {
-        staged.absolutePath in userFacingFiles && staged.name == "package.json" -> mergePackageJson(staged, live)
+        staged.absolutePath in userFacingFiles && staged.name == "package.json" -> mergePackageJson(staged, live, notes)
         staged.absolutePath in userFacingFiles && staged.name == "cordis.patch.yml" -> mergePatchYamlById(staged, live, notes)
         else -> {
           // 【issue #274 ③】工厂件在此**整体覆盖** live。旧实现直接 REPLACE_EXISTING：
@@ -1170,9 +1170,17 @@ internal object SnapshotTransaction {
    * package.json 并集：live 为基座（用户 pin 权威），工厂新增的 dependencies 键与
    * dsh.profile.bundles 条目补入；同名冲突保留 live。JSON 解析失败按原样保留 live（宁缺毋滥）。
    */
-  private fun mergePackageJson(staged: File, live: File) {
-    val liveText = if (SnapshotFs.exists(live)) live.readText() else ""
-    val stagedText = try { staged.readText() } catch (_: Throwable) { return }
+  private fun mergePackageJson(staged: File, live: File, notes: MutableList<String>) {
+    val liveText = try {
+      if (SnapshotFs.exists(live)) live.readText() else ""
+    } catch (e: Throwable) {
+      notes += "package.json 合并跳过（用户文件不可读，未覆盖）: " + live.absolutePath + " - " + (e.message ?: e.javaClass.simpleName)
+      return
+    }
+    val stagedText = try { staged.readText() } catch (e: Throwable) {
+      notes += "package.json 合并跳过（工厂件不可读）: " + staged.absolutePath + " - " + (e.message ?: e.javaClass.simpleName)
+      return
+    }
     if (liveText.isBlank()) {
       // live 缺失（部分新装）：直接落工厂件
       Files.copy(
@@ -1181,7 +1189,10 @@ internal object SnapshotTransaction {
       )
       return
     }
-    val merged = ProfilePackageManifest.merge(liveText, stagedText) ?: return
+    val merged = ProfilePackageManifest.merge(liveText, stagedText) ?: run {
+      notes += "package.json 合并跳过（JSON 无法解析，保留用户文件）: " + live.absolutePath
+      return
+    }
     // issue #274 ②：原子写 + 写后 JSON 可解析性校验（失败留 .pre-*，见 writeTextAtomic）。
     writeTextAtomic(live, merged, "package.json") { validateJson(it, "package.json") }
   }
