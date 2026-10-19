@@ -46,10 +46,13 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
   /** 导出结果回传 WebView：UI 插件经 window.__dshExportResult 弹软件内结果框。
    *  （自 MainActivity 迁入；调试日志导出复用同一弹窗通道。） */
   internal fun pushExportResult(ok: Boolean, detail: String) {
+    if (activity.isFinishing || activity.isDestroyed || !activity.webViewReady) return
+    val targetView = activity.webView
     val title = if (ok) "导出成功" else "导出失败"
     val payload = "{\"ok\":" + ok + ",\"title\":" + jsString(title) + ",\"detail\":" + jsString(detail) + "}"
-    activity.webView.post {
-      activity.webView.evaluateJavascript(
+    targetView.post {
+      if (activity.isFinishing || activity.isDestroyed || !activity.webViewReady || activity.webView !== targetView) return@post
+      targetView.evaluateJavascript(
         "window.__dshExportResult && window.__dshExportResult(" + payload + ")", null,
       )
     }
@@ -112,12 +115,14 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
         }
         val finalPath = saved
         activity.runOnUiThread {
+          if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
           activity.showTestNotification("会话日志已导出", "已保存到 $finalPath")
           pushExportResult(true, "已保存到 $finalPath")
         }
       } catch (t: Throwable) {
         val message = t.message ?: "未知错误"
         activity.runOnUiThread {
+          if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
           activity.showTestNotification("导出失败", message)
           pushExportResult(false, message)
         }
