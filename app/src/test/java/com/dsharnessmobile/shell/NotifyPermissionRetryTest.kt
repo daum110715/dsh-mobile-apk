@@ -43,6 +43,13 @@ class NotifyPermissionRetryTest {
   }
 
   @Test
+  fun caughtExceptionAlsoDefersReportsSoOnePoisonRowCannotBlockTheStream() {
+    val body = functionBody(source("NotifyCenter.kt"), "fun notifyEvent(")
+    assertTrue("known non-interactive kinds are replayable", body.contains("setOf(\"resolve\""))
+    assertTrue("the replay path is not restricted to interactive faces", !body.contains("val interactive"))
+  }
+
+  @Test
   fun drainRetriesRetainedInteractions() {
     val body = functionBody(source("NotifyStore.kt"), "fun drain(context: Context, trigger: String)")
     assertTrue("retained interactive items are retried", body.contains("retryRetained("))

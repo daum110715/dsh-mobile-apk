@@ -779,11 +779,12 @@ object NotifyCenter {
       // DEF-NOTIFY-02：投递异常绝不能冒泡到 MuxClient 的读线程——那会整条应答流断开重连，
       // 之后所有提问/审批通知一起消失（而且只在 logcat 留一行 Log.w）。这里吞掉并留下探针。
       NotifyProbe.log(app, "dsh-notify", "notifyEvent THREW kind=" + entry.kind + ": " + t)
-      // The exception has already been caught. Persist a waiting interaction before allowing
-      // the cursor to advance, so a transient failure can neither lose the answer surface nor
-      // poison every later event. If persistence itself fails, ERROR retains the cursor.
-      val interactive = Face.of(entry.kind.lowercase())?.interactive == true
-      if (interactive && NotifySuppressQueue.enqueue(app, entry, "retry:" + NotifySuppressQueue.identity(entry))) {
+      // The exception has already been caught. Persist the event before allowing the cursor to
+      // advance, so a transient failure cannot poison every later event. Unknown kinds still
+      // fail closed with ERROR because they have no reliable replay semantics; resolve is queued
+      // like any other event and replays its cancel action.
+      val replayable = entry.kind.lowercase() in setOf("resolve", "silent", "todo", "report", "question", "approval")
+      if (replayable && NotifySuppressQueue.enqueue(app, entry, "retry:" + NotifySuppressQueue.identity(entry))) {
         Result.DEFERRED_RETRY
       } else {
         Result.ERROR
