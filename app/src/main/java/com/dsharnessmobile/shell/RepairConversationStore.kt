@@ -1,1 +1,195 @@
-package com.dsharnessmobile.shellimport java.io.Fileimport java.util.UUIDimport org.json.JSONArrayimport org.json.JSONObject/** A compact reference shown in the native conversation drawer. */internal data class RepairConversationRef(val id: String, val title: String)/** * A durable repair conversation. Request history and visible events are stored * separately: history keeps provider responses byte-for-byte stable, while * events reproduce tool cards and notices without changing model context. */internal data class RepairConversation(  val id: String,  val title: String,  val history: JSONArray,  val events: JSONArray,  val modelIdentity: String? = null,  val reasoningEffort: String? = null,)/** Private JSON storage for the native repair chat. No external runtime is used. */internal object RepairConversationStore {  private const val MAX_CONVERSATIONS = 50  private const val INDEX_FILE = "index.json"  private val lock = Any()  fun list(rootDir: File): List<RepairConversationRef> = synchronized(lock) {    val refs = readIndex(rootDir) ?: recoverIndex(rootDir)    refs.mapNotNull { ref ->      val id = ref.optString("id")      if (!validId(id) || !sessionFile(rootDir, id).isFile) return@mapNotNull null      RepairConversationRef(id, ref.optString("title").ifBlank { "修复会话" })    }  }  fun create(rootDir: File, title: String = "新的修复"): RepairConversation = synchronized(lock) {    val id = UUID.randomUUID().toString()    val session = RepairConversation(id, title, JSONArray(), JSONArray())    writeSession(rootDir, session)    updateIndex(rootDir, id, title) { indexed -> indexed.removeAll { it.optString("id") == id } }    session  }  fun load(rootDir: File, id: String): RepairConversation? = synchronized(lock) {    if (!validId(id)) return null    val file = sessionFile(rootDir, id)    if (!file.isFile) return null    val root = runCatching { JSONObject(file.readText()) }.getOrNull() ?: return null    val title = root.optString("title").ifBlank { "修复会话" }    RepairConversation(      id = root.optString("id").takeIf(::validId) ?: id,      title = title,      history = root.optJSONArray("history") ?: JSONArray(),      events = root.optJSONArray("events") ?: JSONArray(),      modelIdentity = root.optString("modelIdentity").takeIf { it.isNotBlank() },      reasoningEffort = root.optString("reasoningEffort").takeIf { it.isNotBlank() },    )  }  fun save(rootDir: File, session: RepairConversation) = synchronized(lock) {    require(validId(session.id)) { "invalid conversation id" }    writeSession(rootDir, session)    updateIndex(rootDir, session.id, session.title) { indexed ->      indexed.removeAll { it.optString("id") == session.id }    }  }  fun delete(rootDir: File, id: String) = synchronized(lock) {    if (!validId(id)) return@synchronized    sessionFile(rootDir, id).delete()    val refs = readIndex(rootDir) ?: return@synchronized    writeIndex(rootDir, refs.filter { it.optString("id") != id })  }  private fun validId(id: String): Boolean = id.matches(Regex("[A-Za-z0-9-]{8,80}"))  private fun root(rootDir: File): File =    File(rootDir, "native-repair/conversations").apply { mkdirs() }  private fun sessionFile(rootDir: File, id: String): File {    require(validId(id)) { "invalid conversation id" }    return File(root(rootDir), "session-" + id + ".json")  }  /**   * null 表示索引存在但不可读或不是 JSON 数组。这不是“没有会话”：把它当成空列表会让   * [prune] 删除所有 session 文件。缺失索引才返回空列表。   */  private fun readIndex(rootDir: File): MutableList<JSONObject>? {    val file = File(root(rootDir), INDEX_FILE)    if (!file.isFile) return mutableListOf()    val array = runCatching { JSONArray(file.readText()) }.getOrNull() ?: return null    val result = mutableListOf<JSONObject>()    for (i in 0 until array.length()) {      val entry = array.optJSONObject(i) ?: return null      val id = entry.optString("id")      if (!validId(id)) return null      result += JSONObject(entry.toString())    }    return result  }  /**   * Persist the navigation cache without treating persistence as authorization to delete   * session files. Only ids explicitly evicted from a successfully read index are removed.   */  private fun updateIndex(    rootDir: File,    id: String,    title: String,    beforeInsert: (MutableList<JSONObject>) -> Unit,  ) {    val previous = readIndex(rootDir)    val refs = previous ?: recoverIndex(rootDir)    beforeInsert(refs)    refs.add(0, JSONObject().put("id", id).put("title", title))    val retained = refs.distinctBy { it.optString("id") }.take(MAX_CONVERSATIONS)    writeIndex(rootDir, retained)    if (previous == null) return    val retainedIds = retained.mapTo(HashSet()) { it.optString("id") }    val evicted = previous.map { it.optString("id") }.filter { it.isNotEmpty() && it !in retainedIds }    prune(rootDir, evicted)  }  /**   * Rebuild the index from the durable session files when index.json is damaged.   * Session files remain the source of record; the index is only a navigational cache.   * Keeping the legacy JSON fields untouched lets older builds continue reading them.   */  private fun recoverIndex(rootDir: File): MutableList<JSONObject> {    val refs = mutableListOf<JSONObject>()    val files = root(rootDir).listFiles { file ->      file.name.startsWith("session-") && file.name.endsWith(".json")    }.orEmpty().sortedByDescending { it.lastModified() }    for (file in files) {      val id = file.name.removePrefix("session-").removeSuffix(".json")      if (!validId(id)) continue      val parsed = runCatching { JSONObject(file.readText()) }.getOrNull() ?: continue      val storedId = parsed.optString("id").takeIf(::validId) ?: id      if (storedId != id) continue      val title = parsed.optString("title").ifBlank { "修复会话" }      refs += JSONObject().put("id", id).put("title", title)      if (refs.size >= MAX_CONVERSATIONS) break    }    runCatching { writeIndex(rootDir, refs) }    return refs  }  private fun writeIndex(rootDir: File, refs: List<JSONObject>) {    val array = JSONArray()    refs.forEach { array.put(JSONObject(it.toString())) }    atomicWrite(File(root(rootDir), INDEX_FILE), array.toString())  }  private fun writeSession(rootDir: File, session: RepairConversation) {    val root = JSONObject()      .put("id", session.id)      .put("title", session.title)      .put("history", JSONArray(session.history.toString()))      .put("events", JSONArray(session.events.toString()))    session.modelIdentity?.let { root.put("modelIdentity", it) }    session.reasoningEffort?.let { root.put("reasoningEffort", it) }    atomicWrite(sessionFile(rootDir, session.id), root.toString())  }  /** Delete only files whose ids the index explicitly evicted; never sweep the directory. */  private fun prune(rootDir: File, evictedIds: Collection<String>) {    for (id in evictedIds.toSet()) {      if (!validId(id)) continue      sessionFile(rootDir, id).delete()    }  }  private fun atomicWrite(target: File, text: String) {    val temp = File.createTempFile(target.name + ".", ".tmp", target.parentFile)    try {      java.io.FileOutputStream(temp).use { output ->        output.write(text.toByteArray(Charsets.UTF_8))        output.flush()        output.fd.sync()      }      java.nio.file.Files.move(        temp.toPath(), target.toPath(),        java.nio.file.StandardCopyOption.ATOMIC_MOVE,        java.nio.file.StandardCopyOption.REPLACE_EXISTING,      )    } finally {      temp.delete()    }  }}
+package com.dsharnessmobile.shell
+
+import java.io.File
+import java.util.UUID
+import org.json.JSONArray
+import org.json.JSONObject
+
+/** A compact reference shown in the native conversation drawer. */
+internal data class RepairConversationRef(val id: String, val title: String)
+
+/**
+ * A durable repair conversation. Request history and visible events are stored
+ * separately: history keeps provider responses byte-for-byte stable, while
+ * events reproduce tool cards and notices without changing model context.
+ */
+internal data class RepairConversation(
+  val id: String,
+  val title: String,
+  val history: JSONArray,
+  val events: JSONArray,
+  val modelIdentity: String? = null,
+  val reasoningEffort: String? = null,
+)
+
+/** Private JSON storage for the native repair chat. No external runtime is used. */
+internal object RepairConversationStore {
+  private const val MAX_CONVERSATIONS = 50
+  private const val INDEX_FILE = "index.json"
+  private val lock = Any()
+
+  fun list(rootDir: File): List<RepairConversationRef> = synchronized(lock) {
+    val refs = readIndex(rootDir) ?: recoverIndex(rootDir)
+    refs.mapNotNull { ref ->
+      val id = ref.optString("id")
+      if (!validId(id) || !sessionFile(rootDir, id).isFile) return@mapNotNull null
+      RepairConversationRef(id, ref.optString("title").ifBlank { "修复会话" })
+    }
+  }
+
+  fun create(rootDir: File, title: String = "新的修复"): RepairConversation = synchronized(lock) {
+    val id = UUID.randomUUID().toString()
+    val session = RepairConversation(id, title, JSONArray(), JSONArray())
+    writeSession(rootDir, session)
+    updateIndex(rootDir, id, title) { indexed -> indexed.removeAll { it.optString("id") == id } }
+    session
+  }
+
+  fun load(rootDir: File, id: String): RepairConversation? = synchronized(lock) {
+    if (!validId(id)) return null
+    val file = sessionFile(rootDir, id)
+    if (!file.isFile) return null
+    val root = runCatching { JSONObject(file.readText()) }.getOrNull() ?: return null
+    val title = root.optString("title").ifBlank { "修复会话" }
+    RepairConversation(
+      id = root.optString("id").takeIf(::validId) ?: id,
+      title = title,
+      history = root.optJSONArray("history") ?: JSONArray(),
+      events = root.optJSONArray("events") ?: JSONArray(),
+      modelIdentity = root.optString("modelIdentity").takeIf { it.isNotBlank() },
+      reasoningEffort = root.optString("reasoningEffort").takeIf { it.isNotBlank() },
+    )
+  }
+
+  fun save(rootDir: File, session: RepairConversation) = synchronized(lock) {
+    require(validId(session.id)) { "invalid conversation id" }
+    writeSession(rootDir, session)
+    updateIndex(rootDir, session.id, session.title) { indexed ->
+      indexed.removeAll { it.optString("id") == session.id }
+    }
+  }
+
+  fun delete(rootDir: File, id: String) = synchronized(lock) {
+    if (!validId(id)) return@synchronized
+    sessionFile(rootDir, id).delete()
+    val refs = readIndex(rootDir) ?: return@synchronized
+    writeIndex(rootDir, refs.filter { it.optString("id") != id })
+  }
+
+  private fun validId(id: String): Boolean = id.matches(Regex("[A-Za-z0-9-]{8,80}"))
+
+  private fun root(rootDir: File): File =
+    File(rootDir, "native-repair/conversations").apply { mkdirs() }
+
+  private fun sessionFile(rootDir: File, id: String): File {
+    require(validId(id)) { "invalid conversation id" }
+    return File(root(rootDir), "session-" + id + ".json")
+  }
+
+  /**
+   * null 表示索引存在但不可读或不是 JSON 数组。这不是“没有会话”：把它当成空列表会让
+   * [prune] 删除所有 session 文件。缺失索引才返回空列表。
+   */
+  private fun readIndex(rootDir: File): MutableList<JSONObject>? {
+    val file = File(root(rootDir), INDEX_FILE)
+    if (!file.isFile) return mutableListOf()
+    val array = runCatching { JSONArray(file.readText()) }.getOrNull() ?: return null
+    val result = mutableListOf<JSONObject>()
+    for (i in 0 until array.length()) {
+      val entry = array.optJSONObject(i) ?: return null
+      val id = entry.optString("id")
+      if (!validId(id)) return null
+      result += JSONObject(entry.toString())
+    }
+    return result
+  }
+
+  /**
+   * Persist the navigation cache without treating persistence as authorization to delete
+   * session files. Only ids explicitly evicted from a successfully read index are removed.
+   */
+  private fun updateIndex(
+    rootDir: File,
+    id: String,
+    title: String,
+    beforeInsert: (MutableList<JSONObject>) -> Unit,
+  ) {
+    val previous = readIndex(rootDir)
+    val refs = previous ?: recoverIndex(rootDir)
+    beforeInsert(refs)
+    refs.add(0, JSONObject().put("id", id).put("title", title))
+    val retained = refs.distinctBy { it.optString("id") }.take(MAX_CONVERSATIONS)
+    writeIndex(rootDir, retained)
+    if (previous == null) return
+    val retainedIds = retained.mapTo(HashSet()) { it.optString("id") }
+    val evicted = previous.map { it.optString("id") }.filter { it.isNotEmpty() && it !in retainedIds }
+    prune(rootDir, evicted)
+  }
+
+  /**
+   * Rebuild the index from the durable session files when index.json is damaged.
+   * Session files remain the source of record; the index is only a navigational cache.
+   * Keeping the legacy JSON fields untouched lets older builds continue reading them.
+   */
+  private fun recoverIndex(rootDir: File): MutableList<JSONObject> {
+    val refs = mutableListOf<JSONObject>()
+    val files = root(rootDir).listFiles { file ->
+      file.name.startsWith("session-") && file.name.endsWith(".json")
+    }.orEmpty().sortedByDescending { it.lastModified() }
+    for (file in files) {
+      val id = file.name.removePrefix("session-").removeSuffix(".json")
+      if (!validId(id)) continue
+      val parsed = runCatching { JSONObject(file.readText()) }.getOrNull() ?: continue
+      val storedId = parsed.optString("id").takeIf(::validId) ?: id
+      if (storedId != id) continue
+      val title = parsed.optString("title").ifBlank { "修复会话" }
+      refs += JSONObject().put("id", id).put("title", title)
+      if (refs.size >= MAX_CONVERSATIONS) break
+    }
+    runCatching { writeIndex(rootDir, refs) }
+    return refs
+  }
+
+  private fun writeIndex(rootDir: File, refs: List<JSONObject>) {
+    val array = JSONArray()
+    refs.forEach { array.put(JSONObject(it.toString())) }
+    atomicWrite(File(root(rootDir), INDEX_FILE), array.toString())
+  }
+
+  private fun writeSession(rootDir: File, session: RepairConversation) {
+    val root = JSONObject()
+      .put("id", session.id)
+      .put("title", session.title)
+      .put("history", JSONArray(session.history.toString()))
+      .put("events", JSONArray(session.events.toString()))
+    session.modelIdentity?.let { root.put("modelIdentity", it) }
+    session.reasoningEffort?.let { root.put("reasoningEffort", it) }
+    atomicWrite(sessionFile(rootDir, session.id), root.toString())
+  }
+
+  /** Delete only files whose ids the index explicitly evicted; never sweep the directory. */
+  private fun prune(rootDir: File, evictedIds: Collection<String>) {
+    for (id in evictedIds.toSet()) {
+      if (!validId(id)) continue
+      sessionFile(rootDir, id).delete()
+    }
+  }
+
+  private fun atomicWrite(target: File, text: String) {
+    val temp = File.createTempFile(target.name + ".", ".tmp", target.parentFile)
+    try {
+      java.io.FileOutputStream(temp).use { output ->
+        output.write(text.toByteArray(Charsets.UTF_8))
+        output.flush()
+        output.fd.sync()
+      }
+      java.nio.file.Files.move(
+        temp.toPath(), target.toPath(),
+        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+      )
+    } finally {
+      temp.delete()
+    }
+  }
+}
