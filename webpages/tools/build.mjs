@@ -113,6 +113,7 @@ function render(indexHtml, styles, data, jsonLd) {
   return indexHtml
     .replace('/*__STYLES__*/', () => styles)
     .replace('__JSONLD__', () => JSON.stringify(jsonLd))
+    .replace('__TAG__', () => data.tag)
     .replace('__RELEASE_DATA__', () => JSON.stringify(data));
 }
 
@@ -163,9 +164,9 @@ function buildJsonLd(data) {
   };
 }
 
-/** 极简校验：模板占位符必须被完全替换。 */
+/** 极简校验：模板占位符必须被完全替换。新增占位符必须同时进这里与 render()。 */
 function assertRendered(html) {
-  for (const token of ['__STYLES__', '__RELEASE_DATA__', '__JSONLD__']) {
+  for (const token of ['__STYLES__', '__RELEASE_DATA__', '__JSONLD__', '__TAG__']) {
     if (html.includes(token)) throw new Error('占位符未被替换：' + token);
   }
 }
