@@ -87,7 +87,7 @@ internal object RepairYaml {
         val key = unquote(pair.first)
         val inline = pair.second.trim()
         values[key] = when {
-          inline.isEmpty() -> childOrEmpty(indent)
+          inline.isEmpty() -> childOrEmpty(indent, allowIndentlessSequence = true)
           inline == "{}" -> RepairYamlValue.Mapping(LinkedHashMap())
           inline == "[]" -> RepairYamlValue.Sequence(mutableListOf())
           inline.startsWith("|") || inline.startsWith(">") ->
@@ -116,7 +116,7 @@ internal object RepairYaml {
             val valuesInItem = LinkedHashMap<String, RepairYamlValue>()
             val first = splitKey(rest)!!
             val firstValue = first.second.trim()
-            valuesInItem[unquote(first.first)] = if (firstValue.isEmpty()) childOrEmpty(objectIndent)
+            valuesInItem[unquote(first.first)] = if (firstValue.isEmpty()) childOrEmpty(objectIndent, allowIndentlessSequence = true)
               else scalarOrFlow(firstValue)
             while (index < lines.size && lines[index].indent == objectIndent &&
               !lines[index].text.startsWith("-")) {
@@ -125,7 +125,7 @@ internal object RepairYaml {
                 ?: throw IllegalArgumentException("expected mapping key: " + child.text)
               index++
               val tail = pair.second.trim()
-              valuesInItem[unquote(pair.first)] = if (tail.isEmpty()) childOrEmpty(objectIndent)
+              valuesInItem[unquote(pair.first)] = if (tail.isEmpty()) childOrEmpty(objectIndent, allowIndentlessSequence = true)
                 else scalarOrFlow(tail)
             }
             values += RepairYamlValue.Mapping(valuesInItem)
@@ -136,7 +136,11 @@ internal object RepairYaml {
       return RepairYamlValue.Sequence(values)
     }
 
-    private fun childOrEmpty(parentIndent: Int): RepairYamlValue {
+    private fun childOrEmpty(parentIndent: Int, allowIndentlessSequence: Boolean = false): RepairYamlValue {
+      if (allowIndentlessSequence && index < lines.size && lines[index].indent == parentIndent &&
+        (lines[index].text == "-" || lines[index].text.startsWith("- "))) {
+        return sequence(parentIndent)
+      }
       if (index >= lines.size || lines[index].indent <= parentIndent) {
         return RepairYamlValue.Mapping(LinkedHashMap())
       }
