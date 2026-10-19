@@ -144,4 +144,25 @@ class EngineManagerWriteSafetyTest {
       root.deleteRecursively()
     }
   }
+
+  @Test
+  fun publicRepoProvisionHasOneProcessWideGateAndAtomicStatus() {
+    val source = listOf(
+      File("src/main/java/com/dsharnessmobile/shell/EngineManager.kt"),
+      File("app/src/main/java/com/dsharnessmobile/shell/EngineManager.kt"),
+    ).first { it.isFile }.readText()
+    val provision = source.substringAfter("internal fun provisionPublicRepo(")
+      .substringBefore("private fun provisionPublicRepoLocked(")
+    val locked = source.substringAfter("private fun provisionPublicRepoLocked(")
+      .substringBefore("private fun isSymlink(")
+
+    assertTrue("entry must acquire the process-wide gate", provision.contains("publicRepoProvisionLock.tryLock()"))
+    assertTrue("a concurrent caller must observe rather than duplicate the work",
+      provision.contains("return publicRepoStatus()"))
+    assertTrue("the gate must be released on every path", provision.contains("finally") && provision.contains("unlock()"))
+    assertTrue("the status line must use the durable replacement primitive",
+      locked.contains("replaceFileDurably(") && locked.contains("publicRepoStatusFile()"))
+    assertTrue("the lock must be companion-scoped, not per manager instance",
+      source.substringAfter("companion object {").contains("private val publicRepoProvisionLock"))
+  }
 }

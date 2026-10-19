@@ -1130,6 +1130,27 @@ class EngineManager(private val context: Context, private val pickToken: String?
     PublicRepoStatus.UNKNOWN
   }
 
+  /**
+   * Serialises public-repo provisioning across every manager instance in this process.
+   *
+   * `onCreate`, `onResume` and engine startup all call [provisionPublicRepo], and the engine
+   * service has its own manager. A try-lock is deliberate: a caller that would do the same work
+   * while another attempt is in flight returns the current durable status instead of launching a
+   * second mkdir/write sequence. The lock is process-scoped because all entry points live in this
+   * application process and the shared target is one public directory.
+   */
+  internal fun provisionPublicRepo(trigger: String): PublicRepoStatus {
+    if (!publicRepoProvisionLock.tryLock()) {
+      Log.i(TAG, "public export repo provision already in flight; joined existing attempt (trigger=" + trigger + ")")
+      return publicRepoStatus()
+    }
+    try {
+      return provisionPublicRepoLocked(trigger)
+    } finally {
+      publicRepoProvisionLock.unlock()
+    }
+  }
+
   /** 上一次尝试的细节与触发来源（诊断用；空串 = 无）。 */
   internal fun publicRepoLastAttempt(): String = try {
     val raw = publicRepoStatusFile().takeIf { it.exists() }?.readText()
@@ -1170,7 +1191,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
    *
    * @param trigger 触发来源（onCreate / onResume / engineStart），写进落盘行供诊断。
    */
-  internal fun provisionPublicRepo(trigger: String): PublicRepoStatus {
+  private fun provisionPublicRepoLocked(trigger: String): PublicRepoStatus {
     val dshData = dshDataDir
     var status: PublicRepoStatus
     var detail: String
@@ -1207,8 +1228,9 @@ class EngineManager(private val context: Context, private val pickToken: String?
       detail = t.javaClass.simpleName + ": " + (t.message ?: "")
     }
     try {
-      publicRepoStatusFile().writeText(
-        PublicRepoProvision.encode(status, trigger, detail, System.currentTimeMillis()),
+      replaceFileDurably(
+        publicRepoStatusFile(),
+        PublicRepoProvision.encode(status, trigger, detail, System.currentTimeMillis()).toByteArray(Charsets.UTF_8),
       )
     } catch (t: Throwable) {
       Log.w(TAG, "public repo status write failed", t)
@@ -2488,6 +2510,9 @@ description: 手机操控纪律：无障碍语义树优先、ref 语义点击/�
 
     /** Process-level start CAS: visible across EngineManager instances (double-start race guard). */
     val STARTING = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** One public-repo provision at a time across MainActivity and EngineService managers. */
+    private val publicRepoProvisionLock = java.util.concurrent.locks.ReentrantLock()
 
     /** 快照刷新进行中（companion 级：MainActivity 与 EngineService 各持 EngineManager 实例，实例字段
      *  互不可见——同 STARTING CAS 道理）。看门狗自愈拉起在此期间必须止步：刷新先备份再全量解压
