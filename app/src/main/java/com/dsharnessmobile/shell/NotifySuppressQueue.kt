@@ -37,17 +37,14 @@ object NotifySuppressQueue {
   /** 延后条目存活上限：超时即丢弃（防退后台弹一堆陈旧汇报）。 */
   const val TTL_MS = 5 * 60 * 1000L
 
-  /** 队列容量上限：保留最新的 N 条（同 key 已合并）。 */
+  /** 普通报告队列容量（同 key 合并）。Interactive events have no capacity eviction. */
   const val MAX_PENDING = 8
+
+  /** Maximum unexpired waiting questions/approvals retained durably. */
+  const val MAX_INTERACTIVE = 256
 
   /** 单次补投上限：其余留到下一次 tick，避免退后台瞬间弹一串。 */
   const val MAX_DELIVER_PER_FLUSH = 3
-
-  /**
-   * 交互事件（提问/审批）的等待上限。报告可随 TTL 消散，等待回答的事件不能：引擎侧没有超时，
-   * 丢掉一条就等于让任务永久挂起。这里用一年表达“不因队列 TTL 删除”，用户在设置里可恢复通知权限。
-   */
-  const val INTERACTIVE_TTL_MS = 365L * 24L * 60L * 60L * 1000L
 
   /** 自续 tick 间隔：队列非空期间每 [FLUSH_TICK_MS] 复评一次（前台则继续等）。 */
   const val FLUSH_TICK_MS = 30_000L
@@ -58,12 +55,18 @@ object NotifySuppressQueue {
   /** 纯函数：延后条目是否已过 TTL。 */
   fun isExpired(enqueuedAt: Long, now: Long, ttlMs: Long = TTL_MS): Boolean = now - enqueuedAt >= ttlMs
 
-  /** Retained interactive items ignore the report TTL but still respect the bounded queue. */
+  /** Interactive entries never expire from waiting for a user answer. */
   internal fun expiredAt(item: Pending, now: Long): Boolean =
-    isExpired(item.enqueuedAt, now, ttlFor(item.entry))
+    if (NotifyCenter.Face.of(item.entry.kind.lowercase())?.interactive == true) false
+    else isExpired(item.enqueuedAt, now)
 
-  private fun ttlFor(entry: NotifyEntry): Long =
-    if (NotifyCenter.Face.of(entry.kind.lowercase())?.interactive == true) INTERACTIVE_TTL_MS else TTL_MS
+  private fun interactive(entry: NotifyEntry): Boolean =
+    NotifyCenter.Face.of(entry.kind.lowercase())?.interactive == true
+
+  /** Pure settlement predicate: a resolved or locally answered waiting item must not replay. */
+  internal fun shouldRetire(item: Pending, resolveEventId: String, answeredEventId: String): Boolean =
+    item.entry.eventId.isNotBlank() &&
+      (item.entry.eventId == resolveEventId || item.entry.eventId == answeredEventId)
 
   /**
    * 纯函数：把一条新条目并入队列。同 key 覆盖（后写覆盖前写且移到队尾）、清掉已过期项、
@@ -77,9 +80,16 @@ object NotifySuppressQueue {
     ttlMs: Long = TTL_MS,
     max: Int = MAX_PENDING,
   ): List<Pending> {
-    val kept = existing.filterNot { it.key == key || isExpired(it.enqueuedAt, now, ttlMs) }
+    val kept = existing.filterNot {
+      it.key == key || (!interactive(it.entry) && isExpired(it.enqueuedAt, now, ttlMs))
+    }
     val next = kept + Pending(key, entry, now)
-    return if (next.size <= max) next else next.takeLast(max)
+    if (next.size <= max) return next
+    // Capacity evicts only ordinary reports. An interactive item is never dropped to make room,
+    // because the engine has no timeout and that would strand its task.
+    val overflow = next.size - max
+    val evicted = next.filter { !interactive(it.entry) }.take(overflow).toSet()
+    return next.filterNot { it in evicted }
   }
 
   /**
@@ -92,9 +102,7 @@ object NotifySuppressQueue {
     ttlMs: Long = TTL_MS,
     limit: Int = MAX_DELIVER_PER_FLUSH,
   ): Pair<List<Pending>, Int> {
-    fun expiredAt(p: Pending) =
-      if (NotifyCenter.Face.of(p.entry.kind.lowercase())?.interactive == true) isExpired(p.enqueuedAt, now, ttlFor(p.entry))
-      else isExpired(p.enqueuedAt, now, ttlMs)
+    fun expiredAt(p: Pending) = if (interactive(p.entry)) false else isExpired(p.enqueuedAt, now, ttlMs)
     val expired = queue.count { expiredAt(it) }
     val live = queue.filterNot { expiredAt(it) }
     val deliver = if (live.size <= limit) live else live.takeLast(limit)
@@ -108,7 +116,6 @@ object NotifySuppressQueue {
 
   private const val JOURNAL_KEY = "notify.deferred.v1"
   private const val BACKUP_PREFIX = "notify.deferred.backup."
-  private const val MAX_BACKUPS = 4
   private const val BACKUP_TIME_PREFIX = "notify.deferred.backupAt."
   private const val MAX_SETTLED = 32
   private var settled: Map<String, Long> = emptyMap()
@@ -241,27 +248,11 @@ object NotifySuppressQueue {
       pendingRecoveryRaw = null
       journalWritable = true
       NotifyProbe.log(app, TAG, "suppress deferred original journal backed up; writes resumed")
-      pruneBackups(app)
     } else {
       journalWritable = false
       NotifyProbe.log(app, TAG, "suppress deferred journal backup failed; writes remain locked")
     }
     return ok
-  }
-
-  /** Keep only recent encrypted originals; never touch a backup whose live recovery is pending. */
-  private fun pruneBackups(app: Context, keep: Int = MAX_BACKUPS) {
-    try {
-      val prefs = NotifyCenter.prefs(app)
-      val current = pendingRecoveryRaw?.let { backupKey(it) }
-      prefs.all.keys.asSequence().filter { it.startsWith(BACKUP_PREFIX) && it != current }
-        .sortedBy { prefs.getLong(BACKUP_TIME_PREFIX + it, 0L) }
-        .drop(keep).forEach { key ->
-          prefs.edit().remove(key).remove(BACKUP_TIME_PREFIX + key).commit()
-        }
-    } catch (t: Throwable) {
-      NotifyProbe.log(app, TAG, "suppress deferred backup prune failed: " + t.message)
-    }
   }
 
   private fun load(app: Context) {
@@ -321,6 +312,39 @@ object NotifySuppressQueue {
     queue.any { identity(it.entry) == identity(entry) }
   }
 
+  /** Whether an engine resolve can be settled; if the journal cannot be written it may not be. */
+  fun canSettleInteractive(context: Context): Boolean = synchronized(lock) {
+    load(context.applicationContext)
+    if (!journalWritable) retryRecoveryBackup(context.applicationContext)
+    journalWritable
+  }
+
+  /**
+   * Engine resolve/answer settlement removes the waiting event by its stable identity. The live
+   * journal is committed first; a failed write leaves the durable item so the source can retry.
+   */
+  fun settleInteractive(context: Context, eventId: String, kind: String = ""): Boolean {
+    if (eventId.isBlank()) return false
+    val app = context.applicationContext
+    val now = System.currentTimeMillis()
+    synchronized(lock) {
+      load(app)
+      if (!journalWritable) retryRecoveryBackup(app)
+      if (!journalWritable) return false
+      val matches = { it: Pending ->
+        it.entry.eventId == eventId && (kind.isBlank() || it.entry.kind.equals(kind, ignoreCase = true))
+      }
+      val remaining = queue.filterNot(matches)
+      if (remaining.size == queue.size) return true
+      val removed = queue.filter(matches)
+      val done = (settled + removed.associate { identity(it.entry) to now })
+        .entries.toList().takeLast(MAX_SETTLED).associate { it.key to it.value }
+      if (!persist(app, remaining, done)) return false
+    }
+    NotifyProbe.log(app, TAG, "suppress deferred interactive settled: eventId=" + eventId)
+    return true
+  }
+
   fun restore(context: Context) {
     val app = context.applicationContext
     try {
@@ -368,12 +392,17 @@ object NotifySuppressQueue {
       if (done.containsKey(identity(entry))) return true
       // Source replay must not extend the TTL or move an older report behind its successor.
       if (queue.any { identity(it.entry) == identity(entry) }) return true
-      val next = if (queue.size > MAX_PENDING) {
-        // A salvage may exceed MAX_PENDING. Keep every waiting item until delivery drains it;
-        // repeated source deliveries are already collapsed by identity above.
-        queue + Pending(key, entry, now)
-      } else merge(queue, entry, key, now)
-      val removed = queue.filterNot { next.contains(it) }.associate { identity(it.entry) to now }
+      val interactiveCount = queue.count { interactive(it.entry) }
+      if (interactive(entry) && interactiveCount >= MAX_INTERACTIVE) {
+        lastDropReason = "interactive-capacity"
+        NotifyProbe.log(app, TAG, "suppress deferred full; waiting card not enqueued (source cursor retained)")
+        return false
+      }
+      val next = if (queue.size > MAX_PENDING) queue + Pending(key, entry, now) else merge(queue, entry, key, now)
+      // Only ordinary entries that were actually removed by the report policy can be settled here.
+      val removed = queue.filterNot { next.contains(it) }
+        .filter { !interactive(it.entry) }
+        .associate { identity(it.entry) to now }
       val completed = (done + removed).entries.toList().takeLast(MAX_SETTLED).associate { it.key to it.value }
       if (!persist(app, next, completed)) return false
     }

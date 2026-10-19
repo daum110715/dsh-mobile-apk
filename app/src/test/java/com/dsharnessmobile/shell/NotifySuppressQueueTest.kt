@@ -123,6 +123,52 @@ class NotifySuppressQueueTest {
   }
 
   @Test
+  fun anOldQuestionAndANewReportNeverDisplaceTheQuestion() {
+    val q = NotifyEntry(kind = "question", eventId = "q-old", title = "仍等你回答")
+    val old = listOf(NotifySuppressQueue.Pending("retry:q-old", q, 1_000L))
+    val now = 1_000L + NotifySuppressQueue.TTL_MS * 2
+    val next = NotifySuppressQueue.merge(old, entry("new-report"), "report:s1", now)
+    assertTrue("an unexpired waiting question must survive report housekeeping", next.any { it.entry == q })
+    assertEquals("the new report is also retained", 2, next.size)
+  }
+
+  @Test
+  fun nineDistinctQuestionsAreAllRetained() {
+    var q = emptyList<NotifySuppressQueue.Pending>()
+    for (i in 0 until 9) {
+      val e = NotifyEntry(kind = "question", eventId = "q$i", title = "question $i")
+      q = NotifySuppressQueue.merge(q, e, "retry:q$i", 1_000L + i)
+    }
+    assertEquals("capacity must never evict waiting questions", 9, q.size)
+    assertEquals(9, q.map { it.entry.eventId }.toSet().size)
+  }
+
+  @Test
+  fun captureThenExpectedEventOrderUsesThePureRetirementPredicate() {
+    val q = NotifyEntry(kind = "question", eventId = "q-done", title = "waiting")
+    val queued = NotifySuppressQueue.Pending("retry:q-done", q, 1_000L)
+    assertFalse("an answer still waiting must not be retired",
+      NotifySuppressQueue.shouldRetire(queued, resolveEventId = "", answeredEventId = ""))
+    assertTrue("engine resolve retires the matching durable item",
+      NotifySuppressQueue.shouldRetire(queued, resolveEventId = "q-done", answeredEventId = ""))
+    assertTrue("a locally accepted answer retires the same item",
+      NotifySuppressQueue.shouldRetire(queued, resolveEventId = "", answeredEventId = "q-done"))
+  }
+
+  @Test
+  fun aFullReportQueueEvictsOnlyReports() {
+    var q = emptyList<NotifySuppressQueue.Pending>()
+    for (i in 0 until NotifySuppressQueue.MAX_PENDING) {
+      q = NotifySuppressQueue.merge(q, entry("r$i", "s$i"), "report:s$i", 1_000L + i)
+    }
+    val question = NotifyEntry(kind = "question", eventId = "critical", title = "answer me")
+    q = NotifySuppressQueue.merge(q, question, "retry:critical", 2_000L)
+    assertTrue("the question is retained", q.any { it.entry == question })
+    assertEquals("room is made by evicting a report, never the question", NotifySuppressQueue.MAX_PENDING, q.size)
+    assertFalse("the oldest report may be evicted", q.any { it.entry.eventId == "r0" })
+  }
+
+  @Test
   fun deferredRetryNeverSettlesTheDurableItem() {
     assertFalse(NotifySuppressQueue.isSettledResult(NotifyCenter.Result.DEFERRED_RETRY))
     assertFalse(NotifySuppressQueue.isSettledResult(NotifyCenter.Result.PERMISSION_DENIED))
