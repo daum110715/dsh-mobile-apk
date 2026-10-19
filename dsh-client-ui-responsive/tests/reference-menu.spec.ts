@@ -41,6 +41,7 @@ function flush(): Promise<void> {
 }
 
 beforeEach(async () => {
+  vi.useRealTimers()
   // 本增强层是**移动形态专用**（#169-4 要求加门）：测试必须站在移动形态里，
   // 否则注入被门拦掉——这正是门生效的证明。
   document.documentElement.setAttribute('data-dsh-mobile-form', '')
@@ -60,10 +61,21 @@ afterEach(() => {
   enhancer.detach()
   document.documentElement.removeAttribute('data-dsh-mobile-form')
   document.body.innerHTML = ''
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
 describe('ReferenceMenuEnhancer', () => {
+  it('add 派发后菜单未关闭时保持真实失败回执', async () => {
+    const box = document.querySelector('[data-dsh-ref-check]') as HTMLElement
+    box.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    const add = document.querySelector('[data-dsh-ref-add]') as HTMLElement
+    expect(add).not.toBeNull()
+    add.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await new Promise((resolve) => setTimeout(resolve, 750))
+    expect(document.querySelector('[data-dsh-ref-bar]')?.textContent).toContain('已插入 0 项')
+  })
+
   it('adds a leading checkbox to every row', () => {
     expect(document.querySelectorAll('[data-dsh-ref-check]')).toHaveLength(2)
   })

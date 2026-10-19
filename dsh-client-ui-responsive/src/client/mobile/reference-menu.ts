@@ -438,8 +438,8 @@ export class ReferenceMenuEnhancer {
     const row = this.findRow(key)
     if (row === null) return false
     row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
-    await this.waitFor(() => document.querySelector(MENU_SELECTOR) === null || this.findRow(key) === null, 600)
-    return true
+    // 点击只证明事件已派发；菜单未关闭或该行仍在场时，不能把「上游尚未接收」记成已插入。
+    return await this.waitFor(() => document.querySelector(MENU_SELECTOR) === null || this.findRow(key) === null, 600)
   }
 
   /** The row whose stable key matches（#169-5：不再按显示文本取第一个同名行）。 */
