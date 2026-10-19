@@ -303,6 +303,10 @@ export class SessionNotifyState {
     this.summaries.delete(id)
     this.bodies.delete(id)
     this.presented.delete(id)
+    // 同属本会话的表必须同处回收；只删轮次内容会留下随会话数单调增长的标题与待办节流键。
+    this.titles.delete(id)
+    this.todoAt.delete(id)
+    this.todoSig.delete(id)
     void turn
   }
 

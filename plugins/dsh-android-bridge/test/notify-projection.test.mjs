@@ -171,6 +171,19 @@ test('汇报：新一轮开始清空上一轮摘要与产出（不串轮）', ()
   assert.deepEqual(r.presentedFiles, [])
 })
 
+test('会话级投影表随新一轮回收：标题恢复短标记，待办节流不再沿用旧签名', () => {
+  const s = new SessionNotifyState()
+  s.setTitle('s1', '旧标题')
+  s.acceptTodo('s1', { done: 2, total: 4, current: '旧步骤' }, NOW, 0)
+  s.startTurn('s1', 2, NOW + 1)
+  assert.match(s.titleFor('s1'), /^会话 /)
+  assert.equal(
+    s.acceptTodo('s1', { done: 2, total: 4, current: '旧步骤' }, NOW + 1, 60_000),
+    true,
+    '新一轮同签名也须重新投递，不得被上一轮的节流键压掉',
+  )
+})
+
 // ── 待办进度（NT-06 的数据面）──
 
 test('待办进度：自己数 n/N 且当前项优先取 in_progress', () => {
