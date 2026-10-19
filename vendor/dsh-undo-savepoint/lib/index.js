@@ -87,6 +87,7 @@ import {
   undoCompact,
   ensureDesktopShortcut,
   writeBlob,
+  withStoreTransaction,
   currentState,
   sameState,
   undoCandidates,
@@ -934,17 +935,20 @@ export function apply(ctx, config = {}) {
         return msgBatch;
       };
       return ctx.on('tools/pre-execute', async (exec, next) => {
+        let executed = false;
+        const executeOnce = async () => { executed = true; return next(); };
         try {
           const name = exec?.name;
-          if (!name || !(cfg.fileToolWhitelist ?? []).includes(name)) return next();
+          if (!name || !(cfg.fileToolWhitelist ?? []).includes(name)) return executeOnce();
           const p = filePathFromToolArgs(name, exec?.args);
-          if (!p || !inWorkspaceScope(p)) return next();
+          if (!p || !inWorkspaceScope(p)) return executeOnce();
+          return await withStoreTransaction(cfg, async () => {
           let buf = null;
           try { buf = await fs.readFile(p); } catch { /* absent */ }
-          if (buf && buf.length > 262144) { await next(); return; }
+          if (buf && buf.length > 262144) { await executeOnce(); return; }
           const beforeHash = buf ? sha1Hex(buf) : null;
           if (buf) await writeBlob(cfg, beforeHash, buf);
-          await next();
+          await executeOnce();
           // #34：记录工具执行后的内容指纹。撤回守卫据此跳过被后续消息改写的
           // 文件。执行后超过 256KB 的只记 afterExists 不记指纹（守卫退化为
           // 仅存在性比对），与快照采集的体积上限保持一致。
@@ -957,10 +961,11 @@ export function apply(ctx, config = {}) {
           } catch { /* 执行后文件已不存在 */ }
           const batch = ensureBatch(exec);
           await appendMessageOp(cfg, { batchId: batch.batchId, messageId: batch.messageId, op: { tool: name, path: p, beforeHash, beforeExists: !!buf, afterHash, afterExists, ts: Date.now() } });
-          void pruneMessageOps(cfg).catch(() => { /* noop */ });
+          await pruneMessageOps(cfg);
+          });
         } catch (e) {
           try { ctx.logger.warn(`[dsh-undo-savepoint] msg-ops pre-execute hook degraded: ${String(e?.message ?? e)}`); } catch { /* noop */ }
-          try { await next(); } catch { /* noop */ }
+          if (!executed) { try { await executeOnce(); } catch { /* noop */ } }
         }
       });
     }, 'dsh-undo-savepoint.msgops');

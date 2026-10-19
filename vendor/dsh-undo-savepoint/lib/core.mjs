@@ -34,7 +34,7 @@ import { homedir } from 'node:os';
 import { t } from './i18n.mjs';
 // 零依赖 ZIP（V0.4.0 M1）：导出/导入用纯 Node 实现，跨三平台、与 PowerShell 双向互通。
 import { createZip, readZipBuffer } from './zip.mjs';
-import { atomicWrite, serializeUpdate } from './atomic.mjs';
+import { atomicWrite, serializeUpdate, withStoreTransaction } from './atomic.mjs';
 
 /** 展开 DSH_HOME 的 ~ / ~/ / ~\ 前缀（与宿主 expandHomePath 同语义），其余原样返回。 */
 function expandHomePrefix(p) {
@@ -171,13 +171,16 @@ async function readBlob(cfg, hash) {
   try { return await fs.readFile(join(blobDir(cfg), hash)); } catch { return null; }
 }
 async function writeBlob(cfg, hash, buf) {
-  const dir = blobDir(cfg);
-  const target = join(dir, hash);
-  if (await pathExists(target)) return;
-  await fs.mkdir(dir, { recursive: true });
-  const tmp = `${target}.tmp`;
-  await fs.writeFile(tmp, buf);
-  await fs.rename(tmp, target).catch(() => { /* 并发下另一个快照已写入，忽略 */ });
+  if (!/^[a-f0-9]{40}$/i.test(hash) || sha1Hex(buf).toLowerCase() !== hash.toLowerCase()) {
+    throw new Error('snapshot blob hash mismatch');
+  }
+  const target = join(blobDir(cfg), hash);
+  if (await pathExists(target)) {
+    const current = await fs.readFile(target);
+    if (sha1Hex(current).toLowerCase() !== hash.toLowerCase()) throw new Error(`corrupt snapshot blob: ${hash}`);
+    return;
+  }
+  await atomicWrite(target, buf);
 }
 
 /** 相对路径安全校验：恢复时防 manifest 被篡改后向任意路径写文件。 */
@@ -1468,15 +1471,19 @@ function canResolveAny(cfg, name) {
 }
 
 // ── 快照创建 / 列表 / 状态 ────────────────────────────────────────────────
-async function createSnapshot(cfg, kind, reason, opts = {}) {
+async function createSnapshot(cfg, ...args) {
+  return withStoreTransaction(cfg, () => createSnapshotUnlocked(cfg, ...args));
+}
+async function createSnapshotUnlocked(cfg, kind, reason, opts = {}) {
   const base = kind === 'manual' ? cfg.manualDir : cfg.autoDir;
   await fs.mkdir(base, { recursive: true });
   let id;
   do {
     id = makeId();
   } while (await pathExists(join(base, id)));
-  const dir = join(base, id);
-  await fs.mkdir(dir, { recursive: true });
+  const finalDir = join(base, id);
+  const dir = await fs.mkdtemp(join(base, '.pending-snapshot-'));
+  try {
   const files = [];
   const envVaultRefs = {};
   const redacted = [];
@@ -1529,7 +1536,12 @@ async function createSnapshot(cfg, kind, reason, opts = {}) {
   const profileBytes = profileFiles.reduce((n, f) => n + (f.size ?? 0), 0);
   snap.totalBytes = manifestBytes + configBytes + pluginBytes + profileBytes;
   await writeManifest(dir, snap);
+  await fs.rename(dir, finalDir);
   return snap;
+  } catch (error) {
+    await fs.rm(dir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function listSnapshots(cfg) {
@@ -1565,7 +1577,10 @@ function findSnapshot(list, id) {
  * @param {string} id 快照 id
  * @param {{note?:string, tags?:string[]}} patch 只更新传入的字段（note 传 null 清空；tags 传 [] 清空）
  */
-async function setSnapshotMeta(cfg, id, patch = {}) {
+async function setSnapshotMeta(cfg, ...args) {
+  return withStoreTransaction(cfg, () => setSnapshotMetaUnlocked(cfg, ...args));
+}
+async function setSnapshotMetaUnlocked(cfg, id, patch = {}) {
   const list = await listSnapshots(cfg);
   const s = findSnapshot(list, id);
   if (!s) return { ok: false, error: `snapshot not found: ${id}`, code: 'not-found' };
@@ -2239,9 +2254,14 @@ async function removeMountBlock(file) {
 }
 
 // ── 清理 / 迁移 ───────────────────────────────────────────────────────────
-async function pruneAuto(cfg, list) {
+async function pruneAuto(cfg, ...args) {
+  return withStoreTransaction(cfg, () => pruneAutoUnlocked(cfg, ...args));
+}
+async function pruneAutoUnlocked(cfg, _list) {
+  const list = await listSnapshots(cfg);
   const removed = { removedAuto: 0, removedPre: 0, removedBlobs: 0 };
   if (cfg.autoCleanup === false) return removed;
+  await collectReferencedBlobs(cfg);
   const inAuto = (s) => (s._store ?? dirLabel(cfg, s._dir)) === 'auto';
   const remove = async (snap) => {
     await fs.rm(snap._dir, { recursive: true, force: true });
@@ -2262,26 +2282,11 @@ async function pruneAuto(cfg, list) {
   removed.removedBlobs = await pruneOrphanBlobs(cfg, list);
   return removed;
 }
-async function pruneOrphanBlobs(cfg, list) {
-  const blob = blobDir(cfg);
-  if (!(await pathExists(blob))) return 0;
-  const refs = new Set();
-  for (const s of list) {
-    for (const p of (s.plugins ?? [])) {
-      for (const f of (p.files ?? [])) if (f.hash) refs.add(f.hash);
-    }
-    for (const f of (s.profileFiles ?? [])) if (f.hash) refs.add(f.hash);
-  }
-  let removed = 0;
-  for (const entry of await fs.readdir(blob, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    if (!refs.has(entry.name)) {
-      await fs.rm(join(blob, entry.name), { force: true });
-      removed++;
-    }
-  }
-  return removed;
+async function pruneOrphanBlobs(cfg, _list) {
+  const result = await undoCompact(cfg);
+  return result.removed;
 }
+
 async function markFlag(snap, flag, value) {
   return serializeUpdate(join(snap._dir, 'manifest.json'), async () => {
     let manifest;
@@ -2294,7 +2299,10 @@ async function markFlag(snap, flag, value) {
   });
 }
 
-async function migrateLegacy(cfg) {
+async function migrateLegacy(cfg, ...args) {
+  return withStoreTransaction(cfg, () => migrateLegacyUnlocked(cfg, ...args));
+}
+async function migrateLegacyUnlocked(cfg) {
   if (!(await pathExists(LEGACY_ROOT))) return 0;
   let moved = 0;
   for (const entry of await fs.readdir(LEGACY_ROOT, { withFileTypes: true })) {
@@ -2508,16 +2516,17 @@ async function readMessageOps(cfg, id) {
   catch { return null; }
 }
 /** 追加一条工具变更 op 到指定批次；批次不存在则创建。返回更新后的批次。 */
-async function appendMessageOp(cfg, batch) {
+async function appendMessageOp(cfg, ...args) {
+  return withStoreTransaction(cfg, () => appendMessageOpUnlocked(cfg, ...args));
+}
+async function appendMessageOpUnlocked(cfg, batch) {
   const dir = messageOpsDir(cfg);
   await fs.mkdir(dir, { recursive: true });
   const file = join(dir, `${batch.batchId}.json`);
   let b = await readMessageOps(cfg, batch.batchId);
   if (!b) b = { batchId: batch.batchId, messageId: batch.messageId ?? null, startedAt: new Date().toISOString(), ops: [] };
   b.ops.push(batch.op);
-  const tmp = `${file}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(b, null, 2), 'utf8');
-  await fs.rename(tmp, file);
+  await atomicWrite(file, JSON.stringify(b, null, 2));
   return b;
 }
 /** 列出最近批次（降序）。 */
@@ -2536,7 +2545,10 @@ async function listMessageOps(cfg, limit = 200) {
   return out.slice(0, limit);
 }
 /** 清理超出 keepMessageOps 的旧批次（不删 blob，blob 由快照清理统一管理）。 */
-async function pruneMessageOps(cfg) {
+async function pruneMessageOps(cfg, ...args) {
+  return withStoreTransaction(cfg, () => pruneMessageOpsUnlocked(cfg, ...args));
+}
+async function pruneMessageOpsUnlocked(cfg) {
   const keep = Number.isFinite(cfg.keepMessageOps) ? cfg.keepMessageOps : 200;
   const dir = messageOpsDir(cfg);
   if (!(await pathExists(dir))) return { removed: 0 };
@@ -2549,7 +2561,10 @@ async function pruneMessageOps(cfg) {
   return { removed };
 }
 /** 撤回一个消息批次：逆序恢复 before 内容 / 删除新建文件。 */
-async function undoMessage(cfg, id) {
+async function undoMessage(cfg, ...args) {
+  return withStoreTransaction(cfg, () => undoMessageUnlocked(cfg, ...args));
+}
+async function undoMessageUnlocked(cfg, id) {
   const dir = messageOpsDir(cfg);
   let batch;
   if (id && id !== 'latest') batch = await readMessageOps(cfg, id);
@@ -2627,36 +2642,62 @@ async function undoMessage(cfg, id) {
 /** 收集所有仍被引用的 blob：快照（插件/档案） + 消息批次 before 内容。 */
 async function collectReferencedBlobs(cfg) {
   const refs = new Set();
-  for (const s of await listSnapshots(cfg)) {
-    for (const p of (s.plugins ?? [])) for (const f of (p.files ?? [])) if (f.hash) refs.add(f.hash);
-    for (const f of (s.profileFiles ?? [])) if (f.hash) refs.add(f.hash);
+  const addHash = hash => {
+    if (typeof hash !== 'string' || !BLOB_NAME_RE.test(hash)) throw new Error('Cannot safely compact an invalid blob reference');
+    refs.add(hash);
+  };
+  for (const base of new Set(storeDirs(cfg))) {
+    let entries;
+    try { entries = await fs.readdir(base, { withFileTypes: true }); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const directory = join(base, entry.name);
+      if (!SNAP_ID_RE.test(entry.name) && !(await pathExists(join(directory, 'manifest.json')))) continue;
+      const snap = await readManifest(directory);
+      if (!Array.isArray(snap.files) || !Array.isArray(snap.plugins ?? []) || !Array.isArray(snap.profileFiles ?? [])) {
+        throw new Error(`Cannot safely compact invalid snapshot: ${directory}`);
+      }
+      for (const plugin of (snap.plugins ?? [])) {
+        if (!Array.isArray(plugin.files)) throw new Error(`Cannot safely compact invalid plugin snapshot: ${directory}`);
+        for (const file of plugin.files) addHash(file.hash);
+      }
+      for (const file of (snap.profileFiles ?? [])) addHash(file.hash);
+    }
   }
   const mdir = messageOpsDir(cfg);
   if (await pathExists(mdir)) {
     for (const e of await fs.readdir(mdir, { withFileTypes: true })) {
       if (!e.isFile() || !e.name.endsWith('.json')) continue;
-      try { const b = JSON.parse(await fs.readFile(join(mdir, e.name), 'utf8')); for (const op of (b.ops ?? [])) if (op.beforeHash) refs.add(op.beforeHash); } catch { /* broken */ }
+      const b = JSON.parse((await fs.readFile(join(mdir, e.name), 'utf8')).replace(/^\uFEFF/, ''));
+      if (!Array.isArray(b.ops)) throw new Error(`Cannot safely compact invalid message batch: ${e.name}`);
+      for (const op of b.ops) if (op.beforeHash != null) addHash(op.beforeHash);
     }
   }
   return refs;
 }
-/** 孤儿 blob GC（V0.4.0，P7）：删除不被任何快照/消息批次引用的 blob 与残留 .tmp。 */
-async function undoCompact(cfg) {
+/** 孤儿 blob GC（V0.4.0，P7）：仅删除未被引用的合法 blob；未知文件与临时文件原样保留。 */
+async function undoCompact(cfg, ...args) {
+  return withStoreTransaction(cfg, () => undoCompactUnlocked(cfg, ...args));
+}
+async function undoCompactUnlocked(cfg) {
   const refs = await collectReferencedBlobs(cfg);
   const dir = blobDir(cfg);
   if (!(await pathExists(dir))) return { ok: true, removed: 0, freed: 0 };
   let removed = 0, freed = 0;
   for (const e of await fs.readdir(dir, { withFileTypes: true })) {
     if (!e.isFile()) continue;
-    const isTmp = e.name.endsWith('.tmp');
-    if (!isTmp && refs.has(e.name)) continue; // 被引用：保留
+    if (!BLOB_NAME_RE.test(e.name) || refs.has(e.name)) continue; // 不猜测临时文件的归属
     const p = join(dir, e.name);
     try { freed += (await fs.stat(p)).size; } catch { /* gone */ }
     await fs.rm(p, { force: true }); removed++;
   }
   return { ok: true, removed, freed };
 }
-async function restore(cfg, mode, id, options = {}) {
+async function restore(cfg, ...args) {
+  return withStoreTransaction(cfg, () => restoreUnlocked(cfg, ...args));
+}
+async function restoreUnlocked(cfg, mode, id, options = {}) {
   if (hasOpenTurn()) return busyError();
   const syncDeps = options.syncDeps === true;
   const list = await listSnapshots(cfg);
@@ -2728,7 +2769,10 @@ async function restore(cfg, mode, id, options = {}) {
     cfg.suppressAuto--;
   }
 }
-async function removeSnapshot(cfg, id) {
+async function removeSnapshot(cfg, ...args) {
+  return withStoreTransaction(cfg, () => removeSnapshotUnlocked(cfg, ...args));
+}
+async function removeSnapshotUnlocked(cfg, id) {
   const list = await listSnapshots(cfg);
   const snap = findSnapshot(list, id ?? '');
   if (!snap) return { ok: false, error: t('undo.notFound', { id }) };
@@ -2832,7 +2876,10 @@ function decryptBuffer(buf, password) {
 function isEncryptedExport(buf) {
   return buf.subarray(0, ENC_MAGIC.length).equals(ENC_MAGIC);
 }
-async function exportSnapshots(cfg, password) {
+async function exportSnapshots(cfg, ...args) {
+  return withStoreTransaction(cfg, () => exportSnapshotsUnlocked(cfg, ...args));
+}
+async function exportSnapshotsUnlocked(cfg, password) {
   await fs.mkdir(EXPORT_ROOT, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const zip = join(EXPORT_ROOT, `dsh-undo-export-${ts}-${randomBytes(6).toString('hex')}.zip`);
@@ -2892,7 +2939,10 @@ function assertSafeZipEntry(name, what) {
   }
 }
 
-async function importSnapshots(cfg, zipPath, password) {
+async function importSnapshots(cfg, ...args) {
+  return withStoreTransaction(cfg, () => importSnapshotsUnlocked(cfg, ...args));
+}
+async function importSnapshotsUnlocked(cfg, zipPath, password) {
   if (!zipPath || !(await pathExists(zipPath))) return { ok: false, error: `file not found: ${zipPath ?? '(none)'}` };
   let imported = 0;
   let skipped = 0;
@@ -2929,7 +2979,7 @@ async function importSnapshots(cfg, zipPath, password) {
         const name = e.name.slice('blobs/'.length).normalize('NFC');
         if (!BLOB_NAME_RE.test(name)) { rejected++; continue; } // 非 sha1 命名的条目一律跳过（含穿越尝试）
         if (!(await pathExists(join(destBlob, name)))) {
-          await fs.writeFile(join(destBlob, name), e.data);
+          await writeBlob(cfg, name, e.data);
         }
       }
     }
@@ -2953,8 +3003,9 @@ async function importSnapshots(cfg, zipPath, password) {
       if (!SNAP_ID_RE.test(id)) { rejected++; continue; } // 非法快照 id（含 .. 穿越尝试）
       const dest = (kind === 'manual' ? cfg.manualDir : cfg.autoDir);
       if (await pathExists(join(dest, id))) { skipped++; continue; }
-      const destDir = join(dest, id);
-      await fs.mkdir(destDir, { recursive: true });
+      await fs.mkdir(dest, { recursive: true });
+      const destDir = await fs.mkdtemp(join(dest, ".pending-import-"));
+      try {
       // 将该目录名下（不含深层子目录？快照目录是平的）所有条目写入
       for (const e of entries) {
         if (!e.name.startsWith(`${dir}/`)) continue;
@@ -2963,7 +3014,12 @@ async function importSnapshots(cfg, zipPath, password) {
         if (!rel || rel.includes('/') || rel.includes('..')) continue; // 只取该快照目录下的顶层文件
         await fs.writeFile(join(destDir, rel.normalize('NFC')), e.data);
       }
+      await readManifest(destDir);
+      await fs.rename(destDir, join(dest, id));
       imported++;
+      } finally {
+        await fs.rm(destDir, { recursive: true, force: true });
+      }
     }
     return { ok: true, imported, skipped, rejected, source: zipPath };
   } catch (error) {
@@ -3114,6 +3170,7 @@ async function ensureDesktopShortcut(cfg = {}, inOpts = {}) {
 }
 
 export {
+  withStoreTransaction,
   t,
   DSH_HOME,
   LEGACY_ROOT,
