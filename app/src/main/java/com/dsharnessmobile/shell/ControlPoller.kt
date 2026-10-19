@@ -62,6 +62,16 @@ class ControlPoller(
     override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean = size > EXECUTED_LRU_CAPACITY
   }
 
+  /**
+   * Results that must survive a failed acknowledgement. Execution is an irreversible device
+   * action; once it happened, a retry of the same reqId has to replay the result rather than
+   * click again. A confirmed post removes the entry from this map.
+   */
+  private val completed = object : LinkedHashMap<String, JSONObject>(EXECUTED_LRU_CAPACITY, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, JSONObject>): Boolean =
+      size > EXECUTED_LRU_CAPACITY
+  }
+
   fun start() {
     if (!running.compareAndSet(false, true)) return
     thread = Thread({ loop() }, "dsh-control-poller").also {
@@ -126,6 +136,14 @@ class ControlPoller(
     val reqId = request.optString("reqId", "")
     if (reqId.isEmpty()) return
     // 0.13.8 #181：同一 reqId 只执行一次（有界 LRU；引擎侧 in-flight 门禁之外的壳侧兜底）
+    val opName = request.optString("op", "")
+    val cached = synchronized(completed) { completed[reqId] }
+    if (cached != null) {
+      val retry = post("/api/android/ui/result", envelope(token, reqId, cached))
+      if (retry.ok) synchronized(completed) { completed.remove(reqId) }
+      else LogCollector.log(TAG, "result replay failed for $opName (reqId=$reqId, HTTP ${retry.httpCode} ${retry.controlCode})")
+      return
+    }
     val firstRun = synchronized(executed) { executed.put(reqId, true) == null }
     if (!firstRun) {
       LogCollector.log(TAG, "duplicate delivery skipped (reqId=$reqId) — engine re-delivered an in-flight request")
@@ -152,7 +170,18 @@ class ControlPoller(
       // 回填失败不能沉默：模型侧会看到超时，日志里必须留下真因（L4）
       LogCollector.log(TAG, "result post failed for $op (HTTP ${posted.httpCode} ${posted.controlCode})")
     }
+    // The fallback result is the one the engine must receive. A connection failure is transient,
+    // so cache the exact final envelope; a non-2xx response is a definitive rejection.
+    if (!posted.ok && posted.httpCode == 0) {
+      synchronized(completed) { completed[reqId] = JSONObject(outcome.toString()) }
+      LogCollector.log(TAG, "result retained for replay after failed acknowledgement (reqId=$reqId)")
+    } else {
+      synchronized(completed) { completed.remove(reqId) }
+    }
   }
+
+  /** Counters for the durable result cache; exposed only for JVM regression coverage. */
+  internal fun retainedResultCount(): Int = synchronized(completed) { completed.size }
 
   /** 执行一次 op，归一成 {ok, data|error} 结果体。 */
   private fun runOp(op: String, args: JSONObject): JSONObject = try {
