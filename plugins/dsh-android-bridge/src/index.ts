@@ -554,6 +554,32 @@ function collectText(x: unknown): string {
 }
 
 /**
+ * 前台执行结果（`resolve` 后的 `ShellExecution`）的统一读取。
+ *
+ * 壳侧既有服务装配的是 `run(spec)` 薄投影，测试夹具也可能直接给结果对象；生产宿主则
+ * 返回带 `result()` 的执行句柄。先尊重 `run()` 的返回值，只有它是执行句柄时才投影；
+ * 这样不会把「spawn 成功」误当成「命令成功」，也不会破坏既有的测试替身。
+ */
+async function shellRunResult(value: unknown): Promise<Record<string, unknown>> {
+  if (value === null || typeof value !== 'object') return {}
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.result !== 'function') return candidate
+  try {
+    const result = await (candidate.result as () => unknown)()
+    return result !== null && typeof result === 'object' ? result as Record<string, unknown> : {}
+  } catch {
+    return { runError: true }
+  }
+}
+
+/** Termux 前台退出码；非数字或句柄尚未结算时返回 undefined，供调用方保守判失败。 */
+function shellExitCode(value: unknown): number | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const code = (value as Record<string, unknown>).exitCode
+  return typeof code === 'number' && Number.isSafeInteger(code) ? code : undefined
+}
+
+/**
  * 服务面：ctx.androidPrivilege —— 授权状态机（供 dsh-android-manage 等消费）。
  * 全部方法失败关闭：未授权 → 拒绝（return 未授权引导），不执行、不降级。
  */
@@ -1143,12 +1169,16 @@ export class AndroidPrivilegeService {
     try {
       const input = { command: line, cwd: '/', env: {} }
       const spec = this.#shellFace.resolve ? this.#shellFace.resolve(input) : input
-      const r = await this.#shellFace.run(spec)
+      const r = await shellRunResult(await this.#shellFace.run(spec))
+      if (shellExitCode(r) !== 0) {
+        return {
+          ok: false,
+          stdout: condenseRepeatedText(collectText(r.stdout) + collectText(r.stderr)),
+        }
+      }
       return {
         ok: true,
-        stdout: condenseRepeatedText(
-          collectText((r as Record<string, unknown>).stdout) + collectText((r as Record<string, unknown>).stderr),
-        ),
+        stdout: condenseRepeatedText(collectText(r.stdout) + collectText(r.stderr)),
       }
     } catch (e) {
       return { ok: false, stdout: '执行失败：' + String((e as Error).message) }
@@ -1464,6 +1494,7 @@ function tools(svc: AndroidPrivilegeService, shellFace?: { resolve?(spec: Record
           ok: { type: 'boolean', required: true },
           stdout: { type: 'string' },
           stderr: { type: 'string' },
+          exitCode: { type: 'integer' },
           text: { type: 'string' },
         },
       },
@@ -1495,11 +1526,28 @@ function tools(svc: AndroidPrivilegeService, shellFace?: { resolve?(spec: Record
         // 直接 run 会绕开环境注入导致通道命令找不到工具。
         const raw = { command, cwd: '/', env: {} }
         const spec = shellFace.resolve ? shellFace.resolve(raw) : raw
-        const r = await shellFace.run(spec)
+        const r = await shellRunResult(await shellFace.run(spec))
+        const exitCode = shellExitCode(r)
+        const stdout = condenseRepeatedText(collectText(r.stdout))
+        const stderr = condenseRepeatedText(collectText(r.stderr))
+        if (exitCode !== 0) {
+          const detail = [stdout, stderr].filter((part) => part !== '').join('\n')
+          const result = {
+            ok: false,
+            stdout,
+            stderr,
+            ...(exitCode === undefined ? {} : { exitCode }),
+            text: '命令退出' + (exitCode === undefined ? '状态不可读' : '码 ' + String(exitCode))
+              + (detail === '' ? '' : '：' + detail),
+          }
+          writeAudit({ action: 'termux-channel', args: { command }, result: 'command-failed', exitCode: exitCode ?? null })
+          return result
+        }
         return {
           ok: true,
-          stdout: condenseRepeatedText(collectText((r as Record<string, unknown>).stdout)),
-          stderr: condenseRepeatedText(collectText((r as { stderr?: unknown }).stderr)),
+          stdout,
+          stderr,
+          exitCode,
         }
       } catch (e) {
         return { ok: false, text: '执行失败：' + String((e as Error).message) }
