@@ -106,7 +106,22 @@ class PluginPatchOfflineTest {
   @Test
   fun `空清单时追加覆盖仍是合法 YAML 序列`() {
     val next = PluginPatchOffline.setEnabled("[]\n", "bad-plugin", null, false)!!
-    assertEquals("[]\n- id: bad-plugin\n  disabled: true\n", next)
+    assertEquals("- id: bad-plugin\n  disabled: true\n", next)
+    assertFalse("flow sequence and block item must not coexist", next.contains("[]"))
+    assertFalse(next.contains("[\n]"))
+  }
+
+  @Test
+  fun `空 flow sequence 被替换且不带前导空行`() {
+    val next = PluginPatchOffline.setEnabled("[]", "bad-plugin", null, false)!!
+    assertEquals("- id: bad-plugin\n  disabled: true\n", next)
+    assertTrue(next.lines().first().startsWith("- id:"))
+  }
+
+  @Test
+  fun `空的输入清单同样可追加`() {
+    val next = PluginPatchOffline.setEnabled("", "bad-plugin", null, false)!!
+    assertEquals("- id: bad-plugin\n  disabled: true\n", next)
   }
 
   /**

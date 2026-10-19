@@ -184,12 +184,22 @@ internal object PluginPatchOffline {
     if (enabled) return null
     val newline = if (patchText.contains("\r\n")) "\r\n" else "\n"
     val tail = StringBuilder()
-    // 覆盖块之间留一个空行，避免与前一条的 config 缩进粘连；空清单（[]）直接续写。
-    if (patchText.isNotEmpty() && !patchText.trimEnd().endsWith("[]")) tail.append(newline)
     tail.append("- id: ").append(quote(wanted)).append(newline)
     name?.takeIf { it.isNotBlank() }?.let { tail.append("  name: ").append(quote(it)).append(newline) }
     tail.append("  disabled: true").append(newline)
-    return patchText + tail.toString()
+    // A YAML document cannot be both a flow sequence ([]) and a block sequence.
+    // Replace the empty sequence rather than appending a block item after it.
+    val emptyList = Regex("""(?m)^[ \t]*\[\][ \t]*\r?$""")
+    val match = emptyList.find(patchText)
+    if (match != null) {
+      val before = patchText.substring(0, match.range.first)
+      val after = patchText.substring(match.range.last + 1).trimStart('\r', '\n', ' ', '\t')
+      if (after.isEmpty()) return before + tail.toString()
+      return before + tail + newline + after
+    }
+    val separator = if (patchText.isEmpty() || patchText.endsWith("\n")) "" else newline
+    val gap = if (patchText.isBlank()) "" else newline
+    return patchText + separator + gap + tail.toString()
   }
 
   /** 只改写 disabled: 的取值，保留缩进与行尾注释。 */
