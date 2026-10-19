@@ -74,13 +74,38 @@ class NotifySuppressQueueTest {
     NotifySuppressQueue.decodeJournal("{\"version\":2,\"pending\":[],\"settled\":{}}")
   }
 
-  @Test(expected = IllegalArgumentException::class)
-  fun oversizedJournalIsRejected() {
+  @Test
+  fun oversizedJournalKeepsTheNewestRecoverableEntries() {
     val q = List(NotifySuppressQueue.MAX_PENDING + 1) { NotifySuppressQueue.Pending("key$it", entry("e$it"), 1L) }
-    NotifySuppressQueue.decodeJournal(NotifySuppressQueue.encodeJournal(q, emptyMap()))
+    val recovered = NotifySuppressQueue.decodeJournal(NotifySuppressQueue.encodeJournal(q, emptyMap())).first
+    assertEquals(NotifySuppressQueue.MAX_PENDING, recovered.size)
+    assertEquals("e" + NotifySuppressQueue.MAX_PENDING, recovered.last().entry.eventId)
   }
 
-  @Test fun corruptOrUnknownJournalIsReadOnlyAndNeverOverwritten() {
+  @Test
+  fun damagedEnvelopeRetainsValidWaitingQuestions() {
+    val item = NotifyEntry(kind = "question", eventId = "q-1", title = "还等你回答")
+    val raw = "{\"pending\":[{\"key\":\"retry:q-1\",\"at\":1,\"entry\":" +
+      NotifySuppressQueue.encodeEntry(item).toString() + "}]}"
+    val (pending, settled) = NotifySuppressQueue.partialJournal(raw)
+    assertEquals(1, pending.size)
+    assertEquals(item, pending[0].entry)
+    assertTrue(settled.isEmpty())
+  }
+
+  @Test
+  fun permissionDeferredQuestionDoesNotExpireWithReportTtl() {
+    val t0 = 1_000L
+    val q = NotifyEntry(kind = "question", eventId = "q-1", title = "等待回答")
+    val pending = listOf(NotifySuppressQueue.Pending("retry:q-1", q, t0))
+    val later = t0 + NotifySuppressQueue.TTL_MS + 1
+    assertFalse("交互事件不得被报告 TTL 清掉", NotifySuppressQueue.expiredAt(pending[0], later))
+    val (deliver, expired) = NotifySuppressQueue.takeForFlush(pending, later)
+    assertEquals(1, deliver.size)
+    assertEquals(0, expired)
+  }
+
+  @Test fun corruptOrUnknownJournalRecoversReadableEntriesAndAllowsLaterWrites() {
     val malformed = "{not-json"
     val invalid = NotifySuppressQueue.readJournal(malformed) as NotifySuppressQueue.JournalRead.Invalid
     assertEquals(malformed, invalid.original)
@@ -91,10 +116,10 @@ class NotifySuppressQueueTest {
 
     var writes = 0
     val committed = NotifySuppressQueue.commitJournalIfAllowed(
-      listOf(NotifySuppressQueue.Pending("report:s", entry("e"), 1L)), emptyMap(), allowed = false,
+      listOf(NotifySuppressQueue.Pending("report:s", entry("e"), 1L)), emptyMap(), allowed = true,
     ) { writes++; true }
-    assertFalse(committed)
-    assertEquals("invalid persisted bytes must remain untouched", 0, writes)
+    assertTrue(committed)
+    assertEquals("a recovered journal must be writable", 1, writes)
   }
 
   private fun entry(id: String, session: String = "s1") = NotifyEntry(

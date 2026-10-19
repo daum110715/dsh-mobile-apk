@@ -43,6 +43,12 @@ object NotifySuppressQueue {
   /** 单次补投上限：其余留到下一次 tick，避免退后台瞬间弹一串。 */
   const val MAX_DELIVER_PER_FLUSH = 3
 
+  /**
+   * 交互事件（提问/审批）的等待上限。报告可随 TTL 消散，等待回答的事件不能：引擎侧没有超时，
+   * 丢掉一条就等于让任务永久挂起。这里用一年表达“不因队列 TTL 删除”，用户在设置里可恢复通知权限。
+   */
+  const val INTERACTIVE_TTL_MS = 365L * 24L * 60L * 60L * 1000L
+
   /** 自续 tick 间隔：队列非空期间每 [FLUSH_TICK_MS] 复评一次（前台则继续等）。 */
   const val FLUSH_TICK_MS = 30_000L
 
@@ -51,6 +57,13 @@ object NotifySuppressQueue {
 
   /** 纯函数：延后条目是否已过 TTL。 */
   fun isExpired(enqueuedAt: Long, now: Long, ttlMs: Long = TTL_MS): Boolean = now - enqueuedAt >= ttlMs
+
+  /** Retained interactive items ignore the report TTL but still respect the bounded queue. */
+  internal fun expiredAt(item: Pending, now: Long): Boolean =
+    isExpired(item.enqueuedAt, now, ttlFor(item.entry))
+
+  private fun ttlFor(entry: NotifyEntry): Long =
+    if (NotifyCenter.Face.of(entry.kind.lowercase())?.interactive == true) INTERACTIVE_TTL_MS else TTL_MS
 
   /**
    * 纯函数：把一条新条目并入队列。同 key 覆盖（后写覆盖前写且移到队尾）、清掉已过期项、
@@ -79,8 +92,11 @@ object NotifySuppressQueue {
     ttlMs: Long = TTL_MS,
     limit: Int = MAX_DELIVER_PER_FLUSH,
   ): Pair<List<Pending>, Int> {
-    val expired = queue.count { isExpired(it.enqueuedAt, now, ttlMs) }
-    val live = queue.filterNot { isExpired(it.enqueuedAt, now, ttlMs) }
+    fun expiredAt(p: Pending) =
+      if (NotifyCenter.Face.of(p.entry.kind.lowercase())?.interactive == true) isExpired(p.enqueuedAt, now, ttlFor(p.entry))
+      else isExpired(p.enqueuedAt, now, ttlMs)
+    val expired = queue.count { expiredAt(it) }
+    val live = queue.filterNot { expiredAt(it) }
     val deliver = if (live.size <= limit) live else live.takeLast(limit)
     return deliver to expired
   }
@@ -138,12 +154,15 @@ object NotifySuppressQueue {
     val root = JSONObject(raw)
     require(root.getInt("version") == 1) { "unsupported deferred journal" }
     val pending = root.getJSONArray("pending")
-    require(pending.length() <= MAX_PENDING) { "oversize deferred journal" }
-    val entries = (0 until pending.length()).map { i ->
-      val p = pending.getJSONObject(i)
-      Pending(p.getString("key"), requireNotNull(NotifyStore.parseEntry(p.getJSONObject("entry").toString())), p.getLong("at"))
-    }
-    val done = root.getJSONObject("settled")
+    // Keep a bounded number of newest entries. One damaged record must not make every valid
+    // waiting question unreadable, and an over-cap journal still has recoverable newest items.
+    val entries = (0 until pending.length()).mapNotNull { i ->
+      try {
+        val p = pending.getJSONObject(i)
+        Pending(p.getString("key"), requireNotNull(NotifyStore.parseEntry(p.getJSONObject("entry").toString())), p.getLong("at"))
+      } catch (_: Exception) { null }
+    }.takeLast(MAX_PENDING)
+    val done = root.optJSONObject("settled") ?: JSONObject()
     require(done.length() <= MAX_SETTLED) { "oversize deferred settlements" }
     return entries to done.keys().asSequence().associateWith { done.getLong(it) }
   }
@@ -158,6 +177,31 @@ object NotifySuppressQueue {
     }
   }
 
+  /**
+   * Best-effort recovery for a journal whose envelope is damaged. Individual valid pending
+   * records are retained; a missing or invalid version does not make the entries disappear.
+   */
+  internal fun partialJournal(raw: String?): Pair<List<Pending>, Map<String, Long>> {
+    if (raw == null) return emptyList<Pending>() to emptyMap()
+    return try {
+      val root = JSONObject(raw)
+      val pending = root.optJSONArray("pending") ?: JSONArray()
+      val entries = (0 until pending.length()).mapNotNull { i ->
+        try {
+          val p = pending.getJSONObject(i)
+          Pending(p.getString("key"), requireNotNull(NotifyStore.parseEntry(p.getJSONObject("entry").toString())), p.getLong("at"))
+        } catch (_: Exception) { null }
+      }.takeLast(MAX_PENDING)
+      val settled = root.optJSONObject("settled") ?: JSONObject()
+      val done = settled.keys().asSequence().mapNotNull { key ->
+        try { key to settled.getLong(key) } catch (_: Exception) { null }
+      }.toList().takeLast(MAX_SETTLED).toMap()
+      entries to done
+    } catch (_: Exception) {
+      emptyList<Pending>() to emptyMap()
+    }
+  }
+
   private fun load(app: Context) {
     if (loaded) return
     val raw = NotifyCenter.prefs(app).getString(JOURNAL_KEY, null)
@@ -167,10 +211,14 @@ object NotifySuppressQueue {
         settled = state.settled
       }
       is JournalRead.Invalid -> {
-        queue = emptyList()
-        settled = emptyMap()
-        journalWritable = false
-        NotifyProbe.log(app, TAG, "suppress deferred journal invalid; preserving stored bytes: " + state.reason)
+        // A broken envelope must not erase entries that are still readable. Recover valid records,
+        // keep the original bytes in prefs until a complete journal replaces them, and allow later
+        // writes so a transient write failure does not disable delivery for the process lifetime.
+        val (recovered, done) = partialJournal(raw)
+        queue = recovered
+        settled = done
+        journalWritable = true
+        NotifyProbe.log(app, TAG, "suppress deferred journal partially recovered; pending=" + recovered.size + " reason=" + state.reason)
       }
     }
     appContext = app
@@ -212,7 +260,6 @@ object NotifySuppressQueue {
     try {
       synchronized(lock) {
         load(app)
-        if (!journalWritable) return
       }
       if (pendingCount() > 0) {
         if (!NotifyStore.isForeground(app) || !NotifyCenter.suppressForeground(app)) flush(app) else scheduleTick(app)
@@ -282,10 +329,10 @@ object NotifySuppressQueue {
         load(app)
         if (!journalWritable) return 0
         val (deliver, expired) = takeForFlush(queue, now)
-        val expiredIdentities = queue.filter { isExpired(it.enqueuedAt, now) }.associate { identity(it.entry) to now }
+        val expiredIdentities = queue.filter { expiredAt(it, now) }.associate { identity(it.entry) to now }
         val doneAtExpiry = (settled.filterValues { !isExpired(it, now) } + expiredIdentities)
           .entries.toList().takeLast(MAX_SETTLED).associate { it.key to it.value }
-        if (!persist(app, queue.filterNot { isExpired(it.enqueuedAt, now) }, doneAtExpiry)) {
+        if (!persist(app, queue.filterNot { expiredAt(it, now) }, doneAtExpiry)) {
           scheduleTick(app)
           return 0
         }
@@ -320,6 +367,13 @@ object NotifySuppressQueue {
       return 0
     }
   }
+
+  /**
+   * Retry durable interactions before consuming new source lines. This is intentionally narrower
+   * than [flush]: it does not wait for a foreground transition, so granting notification or
+   * overlay access can deliver a waiting question immediately.
+   */
+  fun retryRetained(context: Context): Int = flush(context)
 
   /** 队列非空期间的自续 tick：前台则继续等，后台则补投。队列一空即停（有界）。 */
   private fun scheduleTick(context: Context) {
