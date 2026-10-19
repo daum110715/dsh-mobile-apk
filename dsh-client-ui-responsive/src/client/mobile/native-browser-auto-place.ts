@@ -123,8 +123,9 @@ export class NativeBrowserPlacement {
         workspace.reportFailure('browser-sidebar-operation-refused')
         if (session === mounted) mountedPending = true
       }
-      // A session with no layout occurrence, native tab, or pending placement can no longer
-      // produce work; keep it out of the next poll instead of refreshing it forever.
+      // The refresh command is the per-Session authority. A Session that is no longer listed by
+      // layout, has no native tab and has no pending placement cannot produce another action;
+      // keep it out of the next tick instead of polling it forever.
       if (!this.options.sessions().includes(session)
         && !this.options.tabs().some(tab => tab.sessionId === session)
         && workspace.getSnapshot().tabs.length === 0
