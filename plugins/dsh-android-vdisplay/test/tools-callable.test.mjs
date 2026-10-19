@@ -38,7 +38,9 @@ function strictFace() {
           enabled: true,
           state: 'active',
           displayId: 42,
-          ops: ['vdCreate', 'vdDestroy', 'vdLaunch', 'vdMoveTask', 'vdInfo'],
+          ops: ['vdCreate', 'vdDestroy', 'vdLaunch', 'vdMoveTask', 'vdInfo', 'vdLaunchApp', 'vdInput'],
+          // 壳侧 status.ops 与 VdisplayOps.handle 同源：两条可调用路径必须出现。
+          // 下一行是反向断言夹具；若壳侧漏报 vdLaunchApp/vdInput，本地测试会在这里被改回。
           transports: ['shizuku'],
           screens: [{
             alias: 'virtual-1', displayId: 42, kind: 'virtual', label: '虚拟屏幕 1', state: 'on',
@@ -172,12 +174,25 @@ test('native vdInput execution checks scope before Shizuku and honors the explic
   const end = source.indexOf('\n  /**', start + 1)
   assert.ok(start >= 0 && end > start, 'VdisplayController.input source block must exist')
   const body = source.slice(start, end)
-  assert.match(body, /if \(target != null\) recordOf\(target\) else selectedRecord\(\)/,
-    'explicit target must not be replaced by selectedRecord')
+  assert.match(body, /val record = resolveTarget\(target\)/,
+    'explicit target must be resolved with the shared, explicit-first helper')
+  const helperStart = source.indexOf('private fun resolveTarget')
+  const helper = source.slice(helperStart, source.indexOf('\n\n', helperStart))
+  assert.match(helper, /if \(target == null\) selectedRecord\(\) else recordOf\(target\)/,
+    'the shared helper must only fall back when target is omitted')
   assert.ok(body.indexOf('scope.inputDenial(record.alias)') < body.indexOf('ShizukuTransport.runController'),
     'scope refusal must happen before any Shizuku input dispatch')
   assert.match(body, /\.put\("code", denial\)\.put\("reason", denial\)/,
     'native refusal must carry the stable machine-readable denial code')
+})
+
+test('状态能力清单与 VdisplayOps 分发同源（含 vdLaunchApp / vdInput）', async () => {
+  const { readFileSync } = await import('node:fs')
+  const controller = readFileSync(KOTLIN_SOURCE, 'utf8')
+  const opsBody = controller.slice(controller.indexOf('private fun ops()'), controller.indexOf('/** Owned record for one alias'))
+  for (const op of ['vdCreate', 'vdDestroy', 'vdLaunch', 'vdMoveTask', 'vdInfo', 'vdLaunchApp', 'vdInput']) {
+    assert.match(opsBody, new RegExp('"' + op + '"'), 'status.ops 漏报 ' + op)
+  }
 })
 
 test('android_vdisplay_destroy 同样必须走通（同一缺陷类）', async () => {

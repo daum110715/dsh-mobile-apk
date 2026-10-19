@@ -132,7 +132,13 @@ object VdisplayController {
   /** Android display id of one owned virtual display (VirtualDisplay.getDisplay().getDisplayId()). */
   private val Record.displayId: Int get() = this.display.display.displayId
 
-  private fun ops(): JSONArray = JSONArray(listOf("vdCreate", "vdDestroy", "vdLaunch", "vdMoveTask", "vdInfo"))
+  /**
+   * 状态回报的能力清单必须与 [VdisplayOps.handle] 的分支同源。
+   * 少报 `vdLaunchApp` / `vdInput` 会让读状态的模型以为虚拟屏只能建/关/测试拉起。
+   */
+  private fun ops(): JSONArray = JSONArray(listOf(
+    "vdCreate", "vdDestroy", "vdLaunch", "vdMoveTask", "vdInfo", "vdLaunchApp", "vdInput",
+  ))
 
   /** Owned record for one alias, or null. */
   private fun recordOf(alias: String?): Record? = synchronized(lock) {
@@ -179,6 +185,10 @@ object VdisplayController {
   }
 
   private fun selectedRecord(): Record? = synchronized(lock) { records[selectedAlias] }
+
+  /** Explicit target wins; an unknown explicit target fails closed instead of using another screen. */
+  private fun resolveTarget(target: String?): Record? =
+    if (target == null) selectedRecord() else recordOf(target)
 
   /**
    * Realtime display registry: every DisplayManager display with a stable product alias.
@@ -313,6 +323,15 @@ object VdisplayController {
       if (ownerViewerId == null || ownerViewerId == requestingViewerId) Verdict.ATTACH else Verdict.OCCUPIED
   }
 
+  /** Pure target resolution used by every controller entry point (testable without a display). */
+  internal object TargetResolution {
+    /** @return true when [target] must be used and the selected alias must not override it. */
+    fun explicitWins(target: String?): Boolean = target != null
+
+    /** @return the alias that a caller should resolve, or null when there is no target. */
+    fun alias(target: String?, selected: String?): String? = if (target != null) target else selected
+  }
+
   /** Create one non-mirrored public display on a user gesture or controller operation. */
   fun create(context: Context, args: JSONObject? = null): JSONObject {
     val appContext = context.applicationContext
@@ -410,14 +429,30 @@ object VdisplayController {
           nextReader.surface,
           flags,
         ) ?: throw IllegalStateException("DisplayManager returned null VirtualDisplay")
-        records[alias] = Record(alias, created, nextReader, nextThread, width, height, dpi, owner = session)
-        if (selectedAlias == null) selectedAlias = alias
-        if (ownerSessionId == null && session != null) ownerSessionId = session
-        generation += 1
-        lastCode = "vdisplay-active"
-        lastGuidance = "$alias 已创建。"
-        Log.i(TAG, "created alias=$alias displayId=${created.display.displayId} size=${width}x$height dpi=$dpi generation=$generation")
-        return status(appContext)
+        val record = Record(alias, created, nextReader, nextThread, width, height, dpi, owner = session)
+        try {
+          records[alias] = record
+          if (selectedAlias == null) selectedAlias = alias
+          if (ownerSessionId == null && session != null) ownerSessionId = session
+          generation += 1
+          lastCode = "vdisplay-active"
+          lastGuidance = "$alias 已创建。"
+          Log.i(TAG, "created alias=$alias displayId=${created.display.displayId} size=${width}x$height dpi=$dpi generation=$generation")
+          return status(appContext)
+        } catch (t: Throwable) {
+          // 已登记的屏必须在失败路径完整回滚；仅关 reader/thread 会留下 active 但无画面的死记录。
+          records.remove(alias)
+          if (selectedAlias == alias) selectedAlias = records.keys.firstOrNull()
+          if (records.isEmpty()) ownerSessionId = null
+          runCatching { created.release() }
+          runCatching { nextReader.close() }
+          runCatching { nextThread.quitSafely() }
+          generation += 1
+          lastCode = if (t is SecurityException) "vd-denied-flags" else "vd-create-failed"
+          lastGuidance = t.javaClass.simpleName + ": " + (t.message ?: "")
+          Log.w(TAG, "create failed $lastGuidance")
+          return status(appContext).put("code", lastCode).put("guidance", lastGuidance)
+        }
       } catch (t: Throwable) {
         runCatching { nextReader?.close() }
         runCatching { nextThread?.quitSafely() }
@@ -525,6 +560,8 @@ object VdisplayController {
         record.viewerSurface = null
         runCatching { record.display.setSurface(record.reader.surface) }
       }
+      // viewerId 在此被置空；几何记录若不在这里删除，reclaim 已找不到它。
+      viewerBounds.remove(id)
       generation += 1
     }
     Log.i(TAG, "viewer=$id released")
@@ -543,7 +580,7 @@ object VdisplayController {
    */
   fun sendBackProbe(context: Context, args: JSONObject? = null): JSONObject {
     val target = args?.optString("target", "").orEmpty().ifBlank { null }
-    val record = selectedRecord() ?: recordOf(target)
+    val record = resolveTarget(target)
       ?: return status(context.applicationContext).put("ok", false).put("code", "screen-not-ready")
         .put("guidance", "虚拟屏幕尚未创建，无法测试跨屏输入。")
     val id = record.displayId
@@ -568,7 +605,7 @@ object VdisplayController {
   fun launchSettingsProbe(context: Context, args: JSONObject? = null): JSONObject {
     requireOwner("vdLaunch", args?.optString("session", "")?.takeIf { it.isNotBlank() })?.let { return it }
     val target = args?.optString("target", "").orEmpty().ifBlank { null }
-    val record = selectedRecord() ?: recordOf(target)
+    val record = resolveTarget(target)
       ?: return status(context.applicationContext).put("ok", false).put("code", "screen-not-ready")
         .put("guidance", "虚拟屏幕尚未创建，无法拉起测试应用。")
     val id = record.displayId
@@ -608,7 +645,7 @@ object VdisplayController {
   fun input(context: Context, verb: String, args: JSONObject, target: String? = null): JSONObject {
     val appContext = context.applicationContext
     // An explicit target is authoritative; never redirect its input to the selected display.
-    val record = (if (target != null) recordOf(target) else selectedRecord())
+    val record = resolveTarget(target)
       ?: return status(appContext).put("ok", false).put("code", "screen-not-ready")
         .put("guidance", "虚拟屏幕尚未创建，无法向其注入输入；可先 android_vdisplay_create。")
     val scope = ScreenScopePrefs.current(appContext)
@@ -682,7 +719,7 @@ object VdisplayController {
       return JSONObject().put("ok", false).put("code", "invalid-package")
         .put("guidance", "包名不合法：$pkg（须为 Android 包名文法，如 com.example.app）。")
     }
-    val record = selectedRecord() ?: recordOf(target)
+    val record = resolveTarget(target)
       ?: return status(appContext).put("ok", false).put("code", "screen-not-ready")
         .put("guidance", "虚拟屏幕尚未创建，无法在其上拉起应用；可先 android_vdisplay_create。")
     val id = record.displayId
@@ -807,6 +844,14 @@ object VdisplayController {
   internal fun activeSize(): Pair<Int, Int>? = synchronized(lock) {
     val record = records[selectedAlias] ?: records.values.firstOrNull() ?: return null
     record.width to record.height
+  }
+
+  /** Drop one Activity's viewer geometry when its host is destroyed. */
+  fun forgetViewer(context: Context, viewerId: String) {
+    val id = viewerId.trim().ifBlank { "files-sidebar" }
+    synchronized(lock) { viewerBounds.remove(id) }
+    Log.i(TAG, "viewer=$id geometry forgotten")
+    status(context.applicationContext)
   }
 
   /** 设置页「强制销毁」：无视会话归属销毁全部虚拟屏（用户三连点确认后调用）。 */

@@ -93,6 +93,7 @@ internal class VdisplayHost(
         root.removeView(surface)
       }
       view = null
+      VdisplayController.forgetViewer(root.context, viewerId)
       Unit
     }
   }
