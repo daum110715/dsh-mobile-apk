@@ -25,3 +25,14 @@ export async function atomicWrite(target, bytes) {
     await fs.rm(temporary, { force: true }).catch(() => {});
   }
 }
+
+const updates = new Map();
+/** 同一运行时的读改写必须整体串行；唯一临时名本身不能防止丢更新。 */
+export async function serializeUpdate(target, action) {
+  const key = (await import('node:path')).resolve(target);
+  const previous = updates.get(key) ?? Promise.resolve();
+  const pending = previous.catch(() => {}).then(action);
+  updates.set(key, pending);
+  try { return await pending; }
+  finally { if (updates.get(key) === pending) updates.delete(key); }
+}

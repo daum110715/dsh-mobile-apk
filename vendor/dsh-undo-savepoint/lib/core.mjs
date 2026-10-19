@@ -34,7 +34,7 @@ import { homedir } from 'node:os';
 import { t } from './i18n.mjs';
 // 零依赖 ZIP（V0.4.0 M1）：导出/导入用纯 Node 实现，跨三平台、与 PowerShell 双向互通。
 import { createZip, readZipBuffer } from './zip.mjs';
-import { atomicWrite } from './atomic.mjs';
+import { atomicWrite, serializeUpdate } from './atomic.mjs';
 
 /** 展开 DSH_HOME 的 ~ / ~/ / ~\ 前缀（与宿主 expandHomePath 同语义），其余原样返回。 */
 function expandHomePrefix(p) {
@@ -371,7 +371,7 @@ async function readManifest(dir) {
 }
 
 async function writeManifest(dir, snap) {
-  await fs.writeFile(join(dir, 'manifest.json'), JSON.stringify(snap, null, 2), 'utf8');
+  await atomicWrite(join(dir, 'manifest.json'), JSON.stringify(snap, null, 2));
 }
 
 /** All directories that may hold snapshots (manual, auto, legacy root). */
@@ -1569,12 +1569,14 @@ async function setSnapshotMeta(cfg, id, patch = {}) {
   const list = await listSnapshots(cfg);
   const s = findSnapshot(list, id);
   if (!s) return { ok: false, error: `snapshot not found: ${id}`, code: 'not-found' };
-  const { _dir, _store, ...manifest } = s;
-  const note = 'note' in patch ? patch.note : (manifest.note ?? null);
-  const tags = Array.isArray(patch.tags) ? patch.tags.map((x) => String(x).trim()).filter(Boolean) : (Array.isArray(manifest.tags) ? manifest.tags : []);
-  const updated = { ...manifest, note, tags };
-  await writeManifest(s._dir, updated);
-  return { ok: true, id, note, tags };
+  return serializeUpdate(join(s._dir, 'manifest.json'), async () => {
+    const { _dir, _store, ...manifest } = await readManifest(s._dir);
+    const note = 'note' in patch ? patch.note : (manifest.note ?? null);
+    const tags = Array.isArray(patch.tags) ? patch.tags.map((x) => String(x).trim()).filter(Boolean) : (Array.isArray(manifest.tags) ? manifest.tags : []);
+    const updated = { ...manifest, note, tags };
+    await writeManifest(s._dir, updated);
+    return { ok: true, id, note, tags };
+  });
 }
 /** 一键诊断（V0.4.0，D4/P5）。返回结构化健康报告；offline 局外也复用。 */
 async function runDoctor(cfg) {
@@ -2281,10 +2283,17 @@ async function pruneOrphanBlobs(cfg, list) {
   return removed;
 }
 async function markFlag(snap, flag, value) {
-  if (!(await pathExists(join(snap._dir, 'manifest.json')))) return;
-  snap[flag] = value;
-  await writeManifest(snap._dir, snap);
+  return serializeUpdate(join(snap._dir, 'manifest.json'), async () => {
+    let manifest;
+    try { manifest = await readManifest(snap._dir); }
+    catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    const { _dir, _store, ...current } = manifest;
+    current[flag] = value;
+    await writeManifest(snap._dir, current);
+    snap[flag] = value;
+  });
 }
+
 async function migrateLegacy(cfg) {
   if (!(await pathExists(LEGACY_ROOT))) return 0;
   let moved = 0;
@@ -2479,18 +2488,17 @@ async function undoCandidates(cfg, list) {
   return candidates;
 }
 async function appendRollbackLog(cfg, entry) {
+  const file = join(dirname(cfg.settingsFile), 'rollback-log.jsonl');
   try {
-    const dir = dirname(cfg.settingsFile);
-    await fs.mkdir(dir, { recursive: true });
-    const file = join(dir, 'rollback-log.jsonl');
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
-    let text = '';
-    try { text = await fs.readFile(file, 'utf8'); } catch { /* new file */ }
-    text += line;
-    const lines = text.split(/\r?\n/).filter(Boolean);
-    if (lines.length > 100) text = lines.slice(lines.length - 100).join('\n') + '\n';
-    await fs.writeFile(file, text, 'utf8');
-  } catch { /* logging must never break rollback */ }
+    await serializeUpdate(file, async () => {
+      let text = '';
+      try { text = await fs.readFile(file, 'utf8'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
+      const lines = [...text.split(/\r?\n/).filter(Boolean), line];
+      await atomicWrite(file, lines.slice(-100).join('\n') + '\n');
+    });
+  } catch { /* logging must never break rollback; old log retained */ }
 }
 
 // ── 消息级撤销（V0.4.0，P6：每条 AI 消息 → 文件变更清单 → 逆序回滚）────────
