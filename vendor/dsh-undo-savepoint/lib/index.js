@@ -937,6 +937,9 @@ export function apply(ctx, config = {}) {
       };
       return ctx.on('tools/pre-execute', async (exec, next) => {
         let executed = false;
+        const degrade = (error) => {
+          try { ctx.logger.warn(`[dsh-undo-savepoint] msg-ops pre-execute hook degraded: ${String(error?.message ?? error)}`); } catch { /* noop */ }
+        };
         const executeOnce = async () => { executed = true; return next(); };
         try {
           const name = exec?.name;
@@ -946,33 +949,42 @@ export function apply(ctx, config = {}) {
           return await withStoreTransaction(cfg, async () => {
           let buf = null;
           try { buf = await fs.readFile(p); } catch { /* absent */ }
-          if (buf && buf.length > 262144) { await executeOnce(); return; }
+          if (buf && buf.length > 262144) return await executeOnce();
           const beforeHash = buf ? sha1Hex(buf) : null;
           if (buf) await writeBlob(cfg, beforeHash, buf);
           const batch = ensureBatch(exec);
           const operationId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
           await appendMessageOp(cfg, { batchId: batch.batchId, messageId: batch.messageId,
             op: { operationId, phase: 'pending', tool: name, path: p, beforeHash, beforeExists: !!buf, ts: Date.now() } });
-          let completed = false;
+          const finalize = async (phase) => {
+            try {
+              let afterHash = null, afterExists = false;
+              try {
+                const afterBuf = await fs.readFile(p);
+                afterExists = true;
+                if (afterBuf.length <= 262144) afterHash = sha1Hex(afterBuf);
+              } catch { /* absent after tool execution */ }
+              await completeMessageOp(cfg, batch.batchId, operationId, { phase, afterHash, afterExists });
+              await pruneMessageOps(cfg);
+            } catch (error) {
+              // Completion and pruning are bookkeeping. A failed update leaves the
+              // pending reservation in place, which is safer than losing undo state.
+              degrade(error);
+            }
+          };
           try {
             const result = await executeOnce();
-            completed = true;
+            await finalize('done');
             return result;
-          } finally {
-            let afterHash = null, afterExists = false;
-            try {
-              const afterBuf = await fs.readFile(p);
-              afterExists = true;
-              if (afterBuf.length <= 262144) afterHash = sha1Hex(afterBuf);
-            } catch { /* absent after tool execution */ }
-            await completeMessageOp(cfg, batch.batchId, operationId,
-              { phase: completed ? 'done' : 'failed', afterHash, afterExists });
-            await pruneMessageOps(cfg);
+          } catch (error) {
+            await finalize('failed');
+            throw error;
           }
           });
         } catch (e) {
-          try { ctx.logger.warn(`[dsh-undo-savepoint] msg-ops pre-execute hook degraded: ${String(e?.message ?? e)}`); } catch { /* noop */ }
-          if (!executed) { try { await executeOnce(); } catch { /* noop */ } }
+          if (executed) throw e;
+          degrade(e);
+          return await executeOnce();
         }
       });
     }, 'dsh-undo-savepoint.msgops');
