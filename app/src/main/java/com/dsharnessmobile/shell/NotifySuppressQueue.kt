@@ -84,12 +84,22 @@ object NotifySuppressQueue {
       it.key == key || (!interactive(it.entry) && isExpired(it.enqueuedAt, now, ttlMs))
     }
     val next = kept + Pending(key, entry, now)
-    if (next.size <= max) return next
+    val ordinaryCount = next.count { !interactive(it.entry) }
+    if (ordinaryCount <= max) return next
     // Capacity evicts only ordinary reports. An interactive item is never dropped to make room,
     // because the engine has no timeout and that would strand its task.
-    val overflow = next.size - max
+    val overflow = ordinaryCount - max
     val evicted = next.filter { !interactive(it.entry) }.take(overflow).toSet()
     return next.filterNot { it in evicted }
+  }
+
+  /** Admission keeps rescued oversized journals intact until delivery drains them. */
+  internal fun admit(existing: List<Pending>, entry: NotifyEntry, key: String, now: Long): List<Pending>? {
+    if (interactive(entry) && existing.count { interactive(it.entry) } >= MAX_INTERACTIVE) return null
+    if (existing.count { !interactive(it.entry) } > MAX_PENDING) {
+      return if (interactive(entry)) existing + Pending(key, entry, now) else null
+    }
+    return merge(existing, entry, key, now)
   }
 
   /**
@@ -397,13 +407,12 @@ object NotifySuppressQueue {
       if (done.containsKey(identity(entry))) return true
       // Source replay must not extend the TTL or move an older report behind its successor.
       if (queue.any { identity(it.entry) == identity(entry) }) return true
-      val interactiveCount = queue.count { interactive(it.entry) }
-      if (interactive(entry) && interactiveCount >= MAX_INTERACTIVE) {
-        lastDropReason = "interactive-capacity"
-        NotifyProbe.log(app, TAG, "suppress deferred full; waiting card not enqueued (source cursor retained)")
+      val next = admit(queue, entry, key, now)
+      if (next == null) {
+        lastDropReason = "deferred-capacity"
+        NotifyProbe.log(app, TAG, "suppress deferred full; event not enqueued (source cursor retained)")
         return false
       }
-      val next = if (queue.size > MAX_PENDING) queue + Pending(key, entry, now) else merge(queue, entry, key, now)
       // Only ordinary entries that were actually removed by the report policy can be settled here.
       val removed = queue.filterNot { next.contains(it) }
         .filter { !interactive(it.entry) }

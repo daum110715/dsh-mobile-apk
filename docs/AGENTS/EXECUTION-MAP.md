@@ -2217,6 +2217,7 @@ app/src/main/java/com/dsharnessmobile/shell/VdisplayOps.kt
 app/src/main/java/com/dsharnessmobile/shell/VirtualDisplayProbe.kt
 app/src/androidTest/java/com/dsharnessmobile/shell/VdisplayProbeTest.kt
 app/src/androidTest/java/com/dsharnessmobile/shell/ShizukuReconnectTest.kt
+app/src/androidTest/java/com/dsharnessmobile/shell/NotifyDeferredRecoveryTest.kt
 app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt
 app/src/main/java/com/dsharnessmobile/shell/BrowserHostNavigationPolicy.kt
 app/src/main/java/com/dsharnessmobile/shell/BrowserOverlayPolicy.kt

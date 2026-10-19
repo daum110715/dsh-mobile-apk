@@ -178,8 +178,33 @@ class NotifySuppressQueueTest {
     val question = NotifyEntry(kind = "question", eventId = "critical", title = "answer me")
     q = NotifySuppressQueue.merge(q, question, "retry:critical", 2_000L)
     assertTrue("the question is retained", q.any { it.entry == question })
-    assertEquals("room is made by evicting a report, never the question", NotifySuppressQueue.MAX_PENDING, q.size)
-    assertFalse("the oldest report may be evicted", q.any { it.entry.eventId == "r0" })
+    assertEquals("report capacity is independent of waiting questions", NotifySuppressQueue.MAX_PENDING + 1, q.size)
+    assertTrue("adding a question does not consume report capacity", q.any { it.entry.eventId == "r0" })
+  }
+
+  @Test fun mixedQueueKeepsReportsBoundedAndMergedAcrossRestart() {
+    val questions = List(9) { i ->
+      NotifySuppressQueue.Pending("retry:q$i", NotifyEntry(kind = "question", eventId = "q$i"), 1L)
+    }
+    var q = questions
+    for (i in 0 until 20) {
+      q = requireNotNull(NotifySuppressQueue.admit(q, entry("r$i", "s$i"), "report:s$i", 100L + i))
+    }
+    q = requireNotNull(NotifySuppressQueue.admit(q, entry("updated", "s19"), "report:s19", 200L))
+    assertEquals(questions, q.filter { it.entry.kind == "question" })
+    assertEquals(8, q.count { it.entry.kind == "report" })
+    assertEquals(1, q.count { it.key == "report:s19" })
+    assertEquals("updated", q.last().entry.eventId)
+    assertEquals(q, NotifySuppressQueue.decodeJournal(NotifySuppressQueue.encodeJournal(q, emptyMap())).first)
+  }
+
+  @Test fun rescuedOversizeReportsAreNotEvictedByAdmission() {
+    val rescued = List(12) { i -> NotifySuppressQueue.Pending("report:s$i", entry("r$i", "s$i"), 1L) }
+    assertEquals(null, NotifySuppressQueue.admit(rescued, entry("new"), "report:new", 2L))
+    val question = NotifyEntry(kind = "question", eventId = "waiting")
+    val q = requireNotNull(NotifySuppressQueue.admit(rescued, question, "retry:waiting", 2L))
+    assertEquals(rescued, q.take(rescued.size))
+    assertEquals(question, q.last().entry)
   }
 
   @Test
