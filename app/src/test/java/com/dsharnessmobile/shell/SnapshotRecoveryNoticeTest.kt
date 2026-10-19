@@ -264,4 +264,31 @@ class SnapshotRecoveryNoticeTest {
     val end = text.indexOf("\n}", start)
     return if (end < 0) text.substring(start) else text.substring(start, end)
   }
+  @Test
+  fun asynchronousAcknowledgementMustPrecedeConsumptionAndRespectPageGeneration() {
+    var callback: ((Boolean) -> Unit)? = null
+    var consumed = 0
+    var current = true
+    SnapshotRecoveryNotice.forget()
+    SnapshotRecoveryNotice.deliverAsync("new notice", { _, done -> callback = done }, { current }) { consumed++ }
+    assertEquals(0, consumed)
+    current = false
+    callback!!(true)
+    assertEquals(0, consumed)
+    assertEquals(null, SnapshotRecoveryNotice.inProcessText)
+    current = true
+    SnapshotRecoveryNotice.deliverAsync("new notice", { _, done -> callback = done }, { current }) { consumed++ }
+    callback!!(true)
+    callback!!(true)
+    assertEquals(1, consumed)
+    assertEquals("new notice", SnapshotRecoveryNotice.inProcessText)
+  }
+
+  @Test
+  fun newerPendingNoticeWinsAndResolvedStateForgetsOldText() {
+    SnapshotRecoveryNotice.remember("old notice")
+    assertEquals("new notice", SnapshotRecoveryNotice.currentText("new notice", true, true))
+    assertEquals(null, SnapshotRecoveryNotice.currentText(null, false, false))
+    assertEquals(null, SnapshotRecoveryNotice.inProcessText)
+  }
 }

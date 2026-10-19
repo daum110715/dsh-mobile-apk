@@ -1503,30 +1503,36 @@ class MainActivity : ComponentActivity() {
    */
   private fun deliverRecoveryNotice() {
     if (!pageUiActive || !webViewReady) return
-    // 本轮已注入过：直接重注内存里的文案（页面重载场景），不再碰文件标记。
-    val remembered = SnapshotRecoveryNotice.inProcessText
-    if (remembered != null) {
-      injectRecoveryNotice(remembered)
+    val raw = SnapshotRecoveryNotice.pending(filesDir)
+    val text = SnapshotRecoveryNotice.currentText(raw,
+      java.io.File(filesDir, SnapshotTransaction.MARKER_NAME).exists(), !engineManager.pendingRecoveryFailure.isNullOrBlank())
+    if (text == null) {
+      webView.evaluateJavascript("document.getElementById(" + jsString(SnapshotRecoveryNotice.DOM_ID) + ")?.remove()", null)
       return
     }
-    val raw = SnapshotRecoveryNotice.pending(filesDir)
-    SnapshotRecoveryNotice.deliver(
+    if (raw.isNullOrBlank()) { injectRecoveryNotice(text); return }
+    val generation = pageRecovery.generation
+    SnapshotRecoveryNotice.deliverAsync(
       pending = raw,
-      inject = { text ->
-        val (title, body) = SnapshotRecoveryNotice.splitMarker(text)
-        injectRecoveryNoticeSync(title, body)
+      inject = { value, acknowledge ->
+        val (title, body) = SnapshotRecoveryNotice.splitMarker(value)
+        injectRecoveryNoticeConfirmed(title, body, acknowledge)
       },
+      canConsume = { pageRecovery.accepts(generation) && pageUiActive &&
+        SnapshotRecoveryNotice.pending(filesDir) == raw },
       consumeOnSuccess = { SnapshotRecoveryNotice.consume(filesDir) },
     )
   }
 
-  /** 同步注入（evaluateJavascript 本身是异步的；这里返回「已派发」，回调里补记 trace）。 */
-  private fun injectRecoveryNoticeSync(title: String, body: String): Boolean = try {
-    webView.evaluateJavascript(SnapshotRecoveryNotice.injectionScript(title, body), null)
-    true
-  } catch (t: Throwable) {
-    Log.w(TAG, "recovery notice injection failed: " + t.javaClass.simpleName)
-    false
+  private fun injectRecoveryNoticeConfirmed(title: String, body: String, acknowledge: (Boolean) -> Unit = {}) {
+    try {
+      webView.evaluateJavascript(SnapshotRecoveryNotice.injectionScript(title, body)) { raw ->
+        acknowledge(raw?.trim() == "true")
+      }
+    } catch (t: Throwable) {
+      Log.w(TAG, "recovery notice injection failed: " + t.javaClass.simpleName)
+      acknowledge(false)
+    }
   }
 
   /**
@@ -1537,7 +1543,7 @@ class MainActivity : ComponentActivity() {
    */
   private fun injectRecoveryNotice(text: String) {
     val (title, body) = SnapshotRecoveryNotice.splitMarker(text)
-    injectRecoveryNoticeSync(title, body)
+    injectRecoveryNoticeConfirmed(title, body)
   }
 
   /**

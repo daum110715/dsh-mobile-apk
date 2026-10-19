@@ -148,6 +148,32 @@ internal object SnapshotRecoveryNotice {
     inProcessText = null
   }
 
+  /** New pending text wins; resolved recovery must not resurrect stale in-process text. */
+  internal fun currentText(pending: String?, markerPresent: Boolean, recoveryFailed: Boolean): String? {
+    if (!pending.isNullOrBlank()) return pending
+    if (!markerPresent && !recoveryFailed) { forget(); return null }
+    return inProcessText
+  }
+
+  internal fun deliverAsync(
+    pending: String?,
+    inject: (String, (Boolean) -> Unit) -> Unit,
+    canConsume: () -> Boolean,
+    consumeOnSuccess: () -> Unit,
+  ): Boolean {
+    if (pending.isNullOrBlank()) return false
+    val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+    try {
+      inject(pending) { acknowledged ->
+        if (completed.compareAndSet(false, true) && acknowledged && canConsume()) {
+          remember(pending)
+          runCatching { consumeOnSuccess() }
+        }
+      }
+    } catch (_: Throwable) { completed.set(true) }
+    return true
+  }
+
   /** 注入到页面的容器 id（稳定，重注入时先移除旧的，避免叠字）。 */
   internal const val DOM_ID = "__dsh-recovery-notice"
 
