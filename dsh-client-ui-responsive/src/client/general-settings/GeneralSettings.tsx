@@ -152,14 +152,19 @@ export function GeneralSettings(_props: GeneralSettingsProps) {
     <div data-plugin="android-general">
       <label className="dsh-dev-row" data-dsh-ui-language="">
         <span>{tr('语言', 'Language')}</span>
-        <select
-          value={language}
-          onChange={(e) => chooseLanguage(e.target.value as UiLanguageMode)}
-        >
-          {UI_LANGUAGE_MODES.map(mode => (
-            <option key={mode} value={mode}>{languageLabel(mode)}</option>
-          ))}
-        </select>
+        {/* Segmented buttons instead of a select: the native dropdown cannot be
+            driven from the page (or from accessibility automation), and each mode
+            is a one-tap choice anyway. */}
+        <span className="dsh-dev-lang-choices" role="group" aria-label={tr('界面语言', 'Interface language')}>
+          {UI_LANGUAGE_MODES.map(mode => (<button
+            key={mode}
+            type="button"
+            className={language === mode ? 'dsh-dev-btn dsh-dev-btn-active' : 'dsh-dev-btn'}
+            data-ui-language-mode={mode}
+            aria-pressed={language === mode}
+            onClick={() => chooseLanguage(mode)}
+          >{languageLabel(mode)}</button>))}
+        </span>
       </label>
       <p className="dsh-dev-hint">
         {tr('界面文字会随选择切换；跟随系统时使用手机的语言设置。',
