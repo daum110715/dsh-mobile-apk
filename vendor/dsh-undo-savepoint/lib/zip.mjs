@@ -15,7 +15,7 @@
  */
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
+import { atomicWrite } from './atomic.mjs';
 
 // CRC32（ZIP 用 poly 0xEDB88320 的标准表）
 const CRC_TABLE = (() => {
@@ -45,7 +45,7 @@ function dosDateTime(d = new Date()) {
  * @param {string} zipPath 目标 .zip 路径
  * @param {Array<{name:string, data:Buffer}>} files 按序写入的文件
  */
-export async function writeZip(zipPath, files) {
+export function createZip(files) {
   const localChunks = [];
   const central = [];
   let offset = 0;
@@ -103,17 +103,12 @@ export async function writeZip(zipPath, files) {
   eocd.writeUInt32LE(offset, 16);           // cd offset
   eocd.writeUInt16LE(0, 20);                // comment len
 
-  await fs.mkdir(join(zipPath, '..'), { recursive: true });
-  const tmp = `${zipPath}.tmp`;
-  const fd = await fs.open(tmp, 'w');
-  try {
-    for (const c of localChunks) await fd.write(c);
-    for (const c of central) await fd.write(c);
-    await fd.write(eocd);
-  } finally {
-    await fd.close();
-  }
-  await fs.rename(tmp, zipPath).catch(() => { /* 并发写入已存在，忽略 */ });
+  return Buffer.concat([...localChunks, ...central, eocd]);
+}
+
+/** 保留路径 API；构造与加密都可在内存中完成，明文不必落盘。 */
+export async function writeZip(zipPath, files) {
+  await atomicWrite(zipPath, createZip(files));
 }
 
 /**
@@ -138,7 +133,11 @@ export const MAX_TOTAL_ENTRY_BYTES = 4 * 1024 * 1024 * 1024;
  * @param {string} zipPath 目标 .zip 路径
  */
 export async function readZip(zipPath) {
-  const buf = await fs.readFile(zipPath);
+  return readZipBuffer(await fs.readFile(zipPath));
+}
+
+/** 使用与路径 API 相同的大小限制读取内存 ZIP。 */
+export function readZipBuffer(buf) {
   // 定位 EOCD（从末尾找 0x06054b50）
   let eocd = -1;
   const min = Math.max(0, buf.length - 22 - 65535);

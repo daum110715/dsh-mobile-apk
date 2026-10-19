@@ -33,7 +33,8 @@ import { homedir } from 'node:os';
 // 多语言（V0.3.9 R7）：唯一词典源 lib/i18n/{zh,en}.json，经零依赖 t() 翻译。
 import { t } from './i18n.mjs';
 // 零依赖 ZIP（V0.4.0 M1）：导出/导入用纯 Node 实现，跨三平台、与 PowerShell 双向互通。
-import { writeZip, readZip } from './zip.mjs';
+import { createZip, readZipBuffer } from './zip.mjs';
+import { atomicWrite } from './atomic.mjs';
 
 /** 展开 DSH_HOME 的 ~ / ~/ / ~\ 前缀（与宿主 expandHomePath 同语义），其余原样返回。 */
 function expandHomePrefix(p) {
@@ -2826,7 +2827,7 @@ function isEncryptedExport(buf) {
 async function exportSnapshots(cfg, password) {
   await fs.mkdir(EXPORT_ROOT, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const zip = join(EXPORT_ROOT, `dsh-undo-export-${ts}.zip`);
+  const zip = join(EXPORT_ROOT, `dsh-undo-export-${ts}-${randomBytes(6).toString('hex')}.zip`);
   const files = [];
   let count = 0;
   let sensitiveWarning = false;
@@ -2862,13 +2863,9 @@ async function exportSnapshots(cfg, password) {
         if (entry.isFile()) files.push({ name: `blobs/${entry.name}`, data: await fs.readFile(join(blob, entry.name)) });
       }
     }
-    await writeZip(zip, files);
-    let encrypted = false;
-    if (password && String(password).length) {
-      const raw = await fs.readFile(zip);
-      await fs.writeFile(zip, encryptBuffer(raw, password));
-      encrypted = true;
-    }
+    const rawZip = createZip(files);
+    const encrypted = !!(password && String(password).length);
+    await atomicWrite(zip, encrypted ? encryptBuffer(rawZip, password) : rawZip);
     return { ok: true, path: zip, count, sensitiveWarning, encrypted };
   } catch (error) {
     return { ok: false, error: String(error?.message ?? error) };
@@ -2893,7 +2890,7 @@ async function importSnapshots(cfg, zipPath, password) {
   let skipped = 0;
   let rejected = 0;
   try {
-    // V0.4.0 P4：支持可选加密导出。检测到加密头时要求密码；解密到临时文件再解析。
+    // 支持既有加密格式；解密后直接读取内存，不留下明文临时文件。
     let entries;
     // H2 加固：整体体积上限（防 zip 炸弹把宿主进程内存打爆）。
     const MAX_ZIP_BYTES = 1024 * 1024 * 1024;
@@ -2910,11 +2907,9 @@ async function importSnapshots(cfg, zipPath, password) {
       let dec;
       try { dec = decryptBuffer(raw, password); }
       catch { return { ok: false, error: '解密失败（密码错误或文件损坏）。', code: 'bad-password' }; }
-      const tmp = `${zipPath}.dec.tmp`;
-      await fs.writeFile(tmp, dec);
-      try { entries = await readZip(tmp); } finally { await fs.rm(tmp, { force: true }).catch(() => { /* noop */ }); }
+      entries = readZipBuffer(dec);
     } else {
-      entries = await readZip(zipPath);
+      entries = readZipBuffer(raw);
     }
     // 先把 blobs/ 目录内容写入共享 blob 库，再处理每个快照目录
     const blobs = entries.filter((e) => e.name.startsWith('blobs/') && !e.name.endsWith('/'));
