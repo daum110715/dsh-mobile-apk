@@ -23,6 +23,7 @@
  */
 import { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { contentSwipe } from './scroll-direction.js'
 import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 import { join } from 'node:path'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
@@ -1879,18 +1880,7 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
         const n = hit.node
         area = { x1: n.cx - Math.floor(n.w / 2), y1: n.cy - Math.floor(n.h / 2), x2: n.cx + Math.floor(n.w / 2), y2: n.cy + Math.floor(n.h / 2) }
       }
-      const sx = area.x1 + Math.floor((area.x2 - area.x1) / 2)
-      const sy = area.y1 + Math.floor((area.y2 - area.y1) / 2)
-      let from: [number, number]; let to: [number, number]
-      if (dir === 'up' || dir === 'down') {
-        const dy = Math.floor((area.y2 - area.y1) * frac)
-        from = [sx, dir === 'up' ? area.y2 - Math.floor(dy / 2) : area.y1 + Math.floor(dy / 2)]
-        to = [sx, dir === 'up' ? from[1] - dy : from[1] + dy]
-      } else {
-        const dx = Math.floor((area.x2 - area.x1) * frac)
-        from = [dir === 'left' ? area.x2 - Math.floor(dx / 2) : area.x1 + Math.floor(dx / 2), sy]
-        to = [dir === 'left' ? from[0] - dx : from[0] + dx, sy]
-      }
+      const { from, to } = contentSwipe(dir, area, frac)
       const r = await priv.execAdbShell(`input swipe ${from[0]} ${from[1]} ${to[0]} ${to[1]} 300`)
       if (!r.ok) return { ok: false, denied: false, text: r.guidance ?? (r.stdout || '滑动执行失败') }
       const errMark = /error:|Error|Exception|unknown/.test(r.stdout)

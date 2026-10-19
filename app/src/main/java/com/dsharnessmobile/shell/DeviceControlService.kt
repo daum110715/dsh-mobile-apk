@@ -44,6 +44,37 @@ class DeviceControlService : AccessibilityService() {
     /** 0.13.5 W4：轮询心跳（epoch ms）——进程被 force-stop 时 onDestroy 不保证执行，
      *  prefs 里的 a11yEnabled 会变成「僵尸 true」；引擎侧只认新鲜心跳。 */
     const val KEY_HEARTBEAT = "controlHeartbeat"
+    /**
+     * 把公开的「内容滚动方向」映射为手势的「手指移动方向」。
+     *
+     * `android_ui_scroll` 的 direction 统一表示**用户想看到哪一侧的内容**：down = 看下方内容。
+     * 无障碍 ACTION_SCROLL_FORWARD 天然是这个语义；手势却按手指方向执行，因此两者相反。
+     * 横向也遵循同一条规则：right = 看右侧内容，手指须向左移动。
+     */
+    internal fun contentGesture(direction: String, w: Float, h: Float, fraction: Float): List<Float> {
+      return when (direction) {
+        "down" -> gesture(w, h, fingerTowardEnd = false, horizontal = false, fraction)
+        "up" -> gesture(w, h, fingerTowardEnd = true, horizontal = false, fraction)
+        "right" -> gesture(w, h, fingerTowardEnd = false, horizontal = true, fraction)
+        "left" -> gesture(w, h, fingerTowardEnd = true, horizontal = true, fraction)
+        else -> error("未知方向 $direction")
+      }
+    }
+
+    /** Centre gesture; [fingerTowardEnd] means increasing x/y, independent of content semantics. */
+    private fun gesture(w: Float, h: Float, fingerTowardEnd: Boolean, horizontal: Boolean, fraction: Float): List<Float> {
+      val dy = h * fraction
+      val dx = w * fraction
+      return if (horizontal) {
+        val half = dx / 2
+        if (fingerTowardEnd) listOf(w / 2 - half, h / 2, w / 2 + half, h / 2)
+        else listOf(w / 2 + half, h / 2, w / 2 - half, h / 2)
+      } else {
+        val half = dy / 2
+        if (fingerTowardEnd) listOf(w / 2, h / 2 - half, w / 2, h / 2 + half)
+        else listOf(w / 2, h / 2 + half, w / 2, h / 2 - half)
+      }
+    }
     private const val MAX_NODES = 4000
     /** 0.13.8 E2：建树时间预算（ms）——超过返回部分树 + truncated 标注。 */
     private const val TREE_BUDGET_MS = 3_000L
@@ -1300,12 +1331,7 @@ class DeviceControlService : AccessibilityService() {
     val metrics = screenSize()
     val w = metrics.first.toFloat()
     val h = metrics.second.toFloat()
-    val (x1, y1, x2, y2) = when (direction) {
-      "down" -> listOf(w / 2, h * (0.5f + fraction / 2), w / 2, h * (0.5f - fraction / 2))
-      "up" -> listOf(w / 2, h * (0.5f - fraction / 2), w / 2, h * (0.5f + fraction / 2))
-      "right" -> listOf(w * (0.5f - fraction / 2), h / 2, w * (0.5f + fraction / 2), h / 2)
-      else -> listOf(w * (0.5f + fraction / 2), h / 2, w * (0.5f - fraction / 2), h / 2)
-    }
+    val (x1, y1, x2, y2) = contentGesture(direction, w, h, fraction)
     val stroke = Path().apply { moveTo(x1, y1); lineTo(x2, y2) }
     val gesture = GestureDescription.Builder()
       .addStroke(GestureDescription.StrokeDescription(stroke, 0, 220))
