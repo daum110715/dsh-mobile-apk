@@ -1267,41 +1267,45 @@ class EngineManager(private val context: Context, private val pickToken: String?
    * (v0.12.4 rc8 removed the onImagePicked/llm-deepseek/textzoom patches — rc8's native image
    * request support and no-cache hardening supersede them.)
    */
-  private fun applyRuntimePatches() {
+  private fun applyRuntimePatches(): List<String> {
     val dshPkgs = File(usrDir, "lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai")
-    applyAssetPatch("patched/attachment-local-index.js",
-      File(dshPkgs, "dsh-attachment-local/lib/index.js"))
-    applyAssetPatch("patched/session-persistence-jsonl-index.js",
-      File(dshPkgs, "dsh-session-persistence-jsonl/lib/index.js"))
-    applyAssetPatch("patched/fs-local-index.js",
-      File(dshPkgs, "dsh-fs-local/lib/index.js"))
+    return listOf(
+      applyAssetPatch("patched/attachment-local-index.js",
+        File(dshPkgs, "dsh-attachment-local/lib/index.js")),
+      applyAssetPatch("patched/session-persistence-jsonl-index.js",
+        File(dshPkgs, "dsh-session-persistence-jsonl/lib/index.js")),
+      applyAssetPatch("patched/fs-local-index.js",
+        File(dshPkgs, "dsh-fs-local/lib/index.js")),
+    ).filterNotNull()
   }
 
   /** Overwrite-style patch: applies when the target differs from the bundled asset (content
    *  fingerprint), so an updated asset re-applies on upgrade instead of being skipped by a stale
    *  marker string (the v1→v2 asset-update failure).
    */
-  private fun applyAssetPatch(asset: String, target: File) {
+  private fun applyAssetPatch(asset: String, target: File): String? {
     // Patches track bundle layouts: when the runtime no longer ships the patched package
     // (e.g. dsh-client-ui-primitives dropped from the dependency graph in dsh 0.1.1-rc.1),
     // stop applying instead of littering a dead overlay into to the tree.
     if (!target.parentFile.exists()) {
       Log.i(TAG, "runtime patch skipped (target package absent): $asset")
-      return
+      return null
     }
     val assetBytes = try {
       context.assets.open(asset).use { it.readBytes() }
     } catch (e: Exception) {
-      Log.w(TAG, "runtime patch asset missing: $asset")
-      return
+      Log.e(TAG, "runtime patch asset missing: $asset", e)
+      return "$asset（内嵌资产缺失）"
     }
-    if (target.exists() && target.readBytes().contentEquals(assetBytes)) return
-    try {
+    if (target.exists() && target.readBytes().contentEquals(assetBytes)) return null
+    return try {
       target.parentFile?.mkdirs()
-      target.writeBytes(assetBytes)
+      replaceFileDurably(target, assetBytes)
       Log.i(TAG, "runtime patch applied/updated: $asset -> $target")
+      null
     } catch (e: Exception) {
       Log.e(TAG, "runtime patch failed: $asset", e)
+      "$asset（写入失败：" + e.javaClass.simpleName + "）"
     }
   }
 
@@ -1475,7 +1479,15 @@ class EngineManager(private val context: Context, private val pickToken: String?
       // （快照刷新中 / 引擎已在跑）。故 provisionPublicRepo 另由 MainActivity 的 onCreate/onResume
       // 触发，那里才是「授权之后能自愈」的入口（0.14.1 用户反馈）。
       provisionPublicRepo(PublicRepoProvision.TRIGGER_ENGINE_START)
-      applyRuntimePatches()
+      val runtimePatchFailures = applyRuntimePatches()
+      if (runtimePatchFailures.isNotEmpty()) {
+        lastStartRefusalCode = REFUSAL_RUNTIME_PATCH_INCOMPLETE
+        lastStartRefusal = "运行时补丁未完整应用；为避免插件带病启动，本次未拉起引擎：" +
+          runtimePatchFailures.joinToString(", ")
+        Log.e(TAG, "engine start refused: " + lastStartRefusal)
+        LogCollector.log(TAG, "engine start refused (runtime patch incomplete): " + runtimePatchFailures.joinToString(", "))
+        return false
+      }
       // --no-open: the engine must never try to open a desktop browser on Android
       // (the WebView IS the UI). Without it, rc.2's spawn xdg-open on a missing
       // binary stalls engine serve on some emulators (MuMu root observed);
@@ -2455,6 +2467,9 @@ description: 手机操控纪律：无障碍语义树优先、ref 语义点击/�
   const val REFUSAL_PRIVATE_STORAGE_DENIED = "private-storage-denied"
   const val REFUSAL_STORAGE_FULL = "storage-full"
   const val REFUSAL_RUNTIME_UNAVAILABLE = "runtime-unavailable"
+
+  /** Refusal code: a bundled runtime patch could not be proven complete before spawning. */
+  const val REFUSAL_RUNTIME_PATCH_INCOMPLETE = "runtime-patch-incomplete"
 
   /**
    * 拒绝启动原因码：live 运行时树残缺（issue #309）。

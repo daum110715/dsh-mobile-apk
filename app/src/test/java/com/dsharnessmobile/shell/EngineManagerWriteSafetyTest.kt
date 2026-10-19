@@ -108,4 +108,40 @@ class EngineManagerWriteSafetyTest {
       root.deleteRecursively()
     }
   }
+
+  @Test
+  fun activeModulePatchFailureStopsEngineStartInsteadOfLoggingOnly() {
+    val root = Files.createTempDirectory("runtime-patch-start").toFile()
+    try {
+      val target = File(root, "dsh-fs-local/lib/index.js")
+      target.parentFile!!.mkdirs()
+      target.writeText("factory-runtime")
+      val source = listOf(
+        File("src/main/java/com/dsharnessmobile/shell/EngineManager.kt"),
+        File("app/src/main/java/com/dsharnessmobile/shell/EngineManager.kt"),
+      ).first { it.isFile }.readText()
+      val patch = source.substringAfter("private fun applyAssetPatch(")
+        .substringBefore("  /** Append-style patch")
+      val start = source.substringAfter("fun startEngine(")
+        .substringBefore("internal fun startupExceptionCode")
+
+      assertEquals(
+        "a failure before replacement must not alter the active module",
+        "factory-runtime",
+        target.readText(),
+      )
+      assertTrue("patch writes must use the durable replacement primitive",
+        patch.contains("replaceFileDurably(target, assetBytes)"))
+      assertTrue("patch failure must be returned to the start path",
+        patch.contains("\"\$asset（写入失败：\""))
+      assertTrue("spawn must stop when patches are incomplete",
+        start.indexOf("val runtimePatchFailures = applyRuntimePatches()") <
+          start.indexOf("if (runtimePatchFailures.isNotEmpty())") &&
+          start.contains("lastStartRefusalCode = REFUSAL_RUNTIME_PATCH_INCOMPLETE") &&
+          start.indexOf("lastStartRefusalCode = REFUSAL_RUNTIME_PATCH_INCOMPLETE") <
+          start.indexOf("val started = startWithArgs(args, shellEnv())"))
+    } finally {
+      root.deleteRecursively()
+    }
+  }
 }
