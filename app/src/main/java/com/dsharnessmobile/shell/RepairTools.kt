@@ -526,8 +526,10 @@ internal class RepairToolsFs(
         throw RepairFailure("apk-protected", "系统分区与 APK 不在允许范围")
       }
     }
-    if (file.name.equals(".credentials.yaml", ignoreCase = true) ||
-      file.name.equals("credentials.yaml", ignoreCase = true)) {
+    // The list view hides these names, so the real read/write gate must use the
+    // same set. Otherwise a direct path can still overwrite the API keys that
+    // live at the runtime root even though they never appear in a listing.
+    if (isProtectedName(file.name)) {
       throw RepairFailure("protected-file", "凭据文件不通过修复工具读写")
     }
     val path = file.absolutePath

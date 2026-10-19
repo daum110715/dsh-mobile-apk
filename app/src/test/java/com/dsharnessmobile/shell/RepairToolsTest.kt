@@ -107,6 +107,15 @@ class RepairToolsTest {
     assertEquals("protected-file", failure { fs.read(credential.absolutePath, 0, 64) }.getString("error"))
     assertEquals("protected-file", failure { fs.write(credential.absolutePath, "x") }.getString("error"))
 
+    // API-key files live directly below filesDir. They are hidden from list()
+    // and must reach the same refusal for direct paths.
+    for (name in listOf("deepseek-key.txt", "dashscope-key.txt")) {
+      val key = File(runtime, name).apply { writeText("original-" + name + "\n") }
+      assertEquals("protected-file", failure { fs.read(key.absolutePath, 0, 64) }.getString("error"))
+      assertEquals("protected-file", failure { fs.write(key.absolutePath, "replacement\n") }.getString("error"))
+      assertEquals("original-" + name + "\n", key.readText())
+    }
+
     val disguised = failure { fs.write(File(runtime, "home/config.txt").absolutePath, "apiKey: sk-test-1234\n") }
     assertEquals("protected-file", disguised.getString("error"))
     assertFalse(File(runtime, "home/config.txt").exists())
