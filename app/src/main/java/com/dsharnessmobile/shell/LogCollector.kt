@@ -474,11 +474,7 @@ object LogCollector {
     pageSideRuntime: String = PAGE_RUNTIME_UNAVAILABLE,
   ) {
     val ctx = context.applicationContext
-    val runtime = pageSideRuntime.replace('\n', ' ').replace('\r', ' ')
-    val line = BOOT_DIAG_MARK + " source=" + source +
-      " " + bootSegmentsSnapshot() +
-      " pageSideRuntime=" + runtime +
-      " detail=" + detail.replace('\n', ' ').replace('\r', ' ')
+    val line = bootDiagnosticLine(source, bootSegmentsSnapshot(), pageSideRuntime, detail)
     try {
       val f = File(ctx.filesDir, BOOT_DIAG_FILE)
       if (f.length() > BOOT_DIAG_MAX_BYTES) {
@@ -491,6 +487,11 @@ object LogCollector {
       Log.w(TAG, "boot diag write failed: " + (t.message ?: t.javaClass.simpleName))
     }
   }
+
+  internal fun bootDiagnosticLine(source: String, segments: String, runtime: String, detail: String): String =
+    EngineAuth.redact(BOOT_DIAG_MARK + " source=" + source + " " + segments +
+      " pageSideRuntime=" + runtime.replace('\n', ' ').replace('\r', ' ') +
+      " detail=" + detail.replace('\n', ' ').replace('\r', ' '))
 
   /** 页面侧运行时装配状态**从壳侧不可得**时的显式标注（不得留空数组）。 */
   const val PAGE_RUNTIME_UNAVAILABLE = "unavailable"

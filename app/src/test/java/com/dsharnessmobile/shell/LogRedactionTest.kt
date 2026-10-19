@@ -69,4 +69,13 @@ class LogRedactionTest {
     assertFalse(EngineAuth.redact(weird).contains("A".repeat(50)))
     assertTrue(EngineAuth.redact(weird).contains("\u4e2d\u6587"))
   }
+  @Test
+  fun bootDiagnosticSinkRedactsSourceRuntimeAndDetailsBeforeWriting() {
+    val result = LogCollector.bootDiagnosticLine("http-error", "boot=fixture",
+      "ready token=runtime-secret", "url=http://127.0.0.1:3080/?token=fixture-secret\nstatus=401")
+    assertFalse(result.contains("fixture-secret"))
+    assertTrue(result.contains("status=401"))
+    assertTrue(result.contains("token=***"))
+    assertFalse(result.contains("\n"))
+  }
 }
