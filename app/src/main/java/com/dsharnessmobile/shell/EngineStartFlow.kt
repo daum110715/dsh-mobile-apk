@@ -172,7 +172,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     monitorGeneration++
     engineMonitorFailures = 0
     // Background time is not evidence of a frozen renderer or stalled foreground boot.
-    bootStallStartAt = System.currentTimeMillis()
+    bootStallStartAt = bootStallNow()
     engineMonitorHandler.removeCallbacks(engineMonitorRunnable)
     engineMonitorHandler.post(engineMonitorRunnable)
     startBootStallWatchdog()
@@ -197,7 +197,14 @@ internal class EngineStartFlow(private val activity: MainActivity) {
   // 真信号只能是**页面自己报的「已渲染」**：页面侧在结果性判据首次为真时打 `[dsh-boot-ready]`
   // （dsh-host-web-compat/lib/index.js 的 readyWatch），壳侧 onConsoleMessage 收到即置
   // [pageReadyReported] 并**永久停止**本 epoch 的 stall 计时。页面没报 ⇒ 才可能是真卡住。
-  private var bootStallStartAt = System.currentTimeMillis()
+  //
+  // **0.14.10 缺陷修复（审计 §6.7）：基准曾是墙上时钟，stalledMs 会被校时凭空放大。**
+  // 现场：新机首装首启 `shell-stall` 记 `stalledMs=352525`（352s），而同一轮页面在首个 HTTP
+  // 之后 148ms 就报了 `page-ready`——352 是 40s 窗口的 8.8 倍，单靠前后时序解释不了。
+  // 真因是基准值取 [System.currentTimeMillis]（墙上时钟）：新装机在首次联网前系统时间往往还没
+  // 校准，起点记下的是一份偏慢的时间；随后 NTP 校时把钟**向前拨**，下一拍做差就凭空多出几百秒。
+  // 故起点与做差统一走 [bootStallNow]（单调时钟），见该函数的选型注释。
+  private var bootStallStartAt = bootStallNow()
 
   /**
    * 本 epoch 页面是否已自报就绪（L-1 判据）。只由页面侧 `[dsh-boot-ready]` 置真——
@@ -213,7 +220,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
       if (!activity.pageUiActive || !canRunEngineWork()) return
       val generation = monitorGeneration
       try {
-        val stalledMs = System.currentTimeMillis() - bootStallStartAt
+        val stalledMs = bootStallElapsedMs(bootStallStartAt, bootStallNow())
         // 判据三合一：①页面**未**自报就绪（真信号）；②该 epoch 未报过；③页面可见、未被用户关闭、
         // 且不是「页面加载本身已失败」（后者有自己的恢复路径，不该再记成 stall）。
         // 引擎健康与否由后台探活复核（下方），避免「引擎没起来」被误记成「页面卡住」。
@@ -357,7 +364,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
 
   /** 页面就绪/失败时复位（重新计时 + 允许再次上报）。 */
   fun resetBootStall() {
-    bootStallStartAt = System.currentTimeMillis()
+    bootStallStartAt = bootStallNow()
     bootStallReported = false
     // 新 epoch：页面的就绪声明随之作废，必须由页面重新报（否则复位后永远不会报卡住 = 丧失去判别力）。
     pageReadyReported = false
@@ -1905,6 +1912,45 @@ internal fun snapshotTransactionWaitText(phase: String, accountedAgeMs: Long?, e
 /** 事务自述账龄（毫秒）；journal 没有可用起始时间时返回 0（**不猜**，也不写负值）。 */
 internal fun snapshotTransactionAccountedAgeMs(marker: SnapshotTransaction.Marker?, nowMs: Long): Long =
   marker?.startedAt?.takeIf { it > 0L }?.let { (nowMs - it).coerceAtLeast(0L) } ?: 0L
+
+// ── boot-stall 计时基准：**必须用单调时钟做差**（审计 §6.7）────────────────────────────
+//
+// 缺陷形态（0.14.9 审计 §6.7 与现场证据）：新机首装首启时 `boot-diag.log` 记
+// `source=shell-stall ... stalledMs=352525 ... pageReady=false`，而同一轮页面在首个 HTTP 之后
+// 148ms 就报了 `page-ready`。也就是壳侧把一个已经就绪的页面记成「卡了 352 秒」。
+//
+// 真因**不是起点取错**，而是**时钟基准选错**：起点与做差都用了 [System.currentTimeMillis]
+// （墙上时钟）。新装机在首次联网校准之前系统时间常常偏慢，起点因此记下一份**偏小**的读数；
+// 随后 NTP/用户校时把钟**向前拨**，下一次 tick 做差就凭空多出几百秒——352 秒这个量级、以及
+// 「只在首装首启出现」这一分布，都与该机制吻合（单靠 tick 前后时序解释不了 8.8 倍放大）。
+//
+// 选型（三选一，只有第一个是对的）：
+//  - [android.os.SystemClock.elapsedRealtime]：自开机起的毫秒数，**不受校时影响**，且设备休眠
+//    （深睡）期间**继续计数**。这里要比的正是「用户感知到的等待」——用户合上屏幕再回来，等待
+//    确实经过了，所以含深睡是对的。
+//  - [android.os.SystemClock.uptimeMillis]：**不含深睡**。用它会在「息屏放置一段时间后再回前台」
+//    的场景里系统性低报等待时长，正好漏掉本项目最需要抓的那类现场。
+//  - [System.currentTimeMillis]：**缺陷本体**，见上（会被向前/向后拨）。
+//
+// 与 snapshotTransactionAccountedAgeMs 的区别（**那一处刻意不动**）：事务账龄比的是 journal 里
+// 由**另一个进程**写下的 startedAt，属跨进程比较、只能走墙上时钟；本函数比的是**本进程内**两个
+// 时刻，所以能且应当用单调时钟。
+
+/** boot-stall 计时基准：单调时钟（毫秒），跨休眠继续计数、不受校时影响。 */
+internal fun bootStallNow(): Long = android.os.SystemClock.elapsedRealtime()
+
+/**
+ * 两个**单调**时刻之间经过的毫秒数。
+ *
+ * 为什么单独抽出来：这是「352 秒假 stall」的判据本体，抽成纯函数后 JVM 单测可以直接构造
+ * 「起点之后墙上时钟前跳 300 秒」的场景做反证（见 BootStallClockTest），不需要 sleep 真时间，
+ * 也不依赖设备时钟。
+ *
+ * 返回值恒非负：now 不晚于起点（同一毫秒、注入错误、基准被回退）一律返回 0——
+ * 负的「已经卡了 -300 秒」会在诊断里变成另一种假读数，不如如实表示「本拍没有经过时间」。
+ */
+internal fun bootStallElapsedMs(startedAt: Long, now: Long): Long =
+  if (now <= startedAt) 0L else now - startedAt
 
 // ── P1（0.14.8）：快照事务窗口内的**有界等待**（定位报告 §2.3/§7）────────────────────
 //
