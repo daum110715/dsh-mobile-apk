@@ -190,6 +190,11 @@ class EngineService : Service() {
    *
    * 首次观察（lastLiveFeedLength < 0）只建立基线不算活动：进程重启后历史文件里全是旧行，
    * 拿「文件非空」当活动会让租约无端新鲜 60 秒。
+   *
+   * 口径边界（如实记，不假装覆盖）：单次**长时间静默**的工具调用（例如一条跑满 3 分钟的
+   * bash，期间没有任何 live 事件）在 60 秒后会被判为空闲并放锁。这是「空闲 60 秒释放」这条
+   * 口径本身的一部分；下一条 live 事件（tool_result 等）到来时立刻重取。若日后要收紧这一档，
+   * 应加的是引擎侧「turn 正在跑」的显式信号，而不是在这里堆启发式（会把空闲释放悄悄废掉）。
    */
   private fun noteWakeActivityForTick(epoch: ServiceEpoch) {
     val liveLength = WatchdogV2.liveFeedLength(this)
