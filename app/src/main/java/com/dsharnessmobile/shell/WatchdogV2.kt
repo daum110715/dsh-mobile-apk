@@ -467,6 +467,43 @@ object WatchdogV2 {
   /** 单次读取上限（与 OverlayLiveFeed / NotifyStore 同口径：行边界在 CAP 内，溢出留到下一轮）。 */
   internal val markerReadCapBytes: Int = 256 * 1024
 
+  /** §6.4：标记消费的调试日志文件（受开发者日志开关门控；到上限滚一代）。 */
+  internal const val MARKER_DEBUG_FILE = "notify-debug.log"
+
+  /** §6.4：调试日志容量上限（512 KiB，滚一代 .1；总量因此被钉在 1 MiB 以内）。 */
+  internal const val MARKER_DEBUG_LIMIT_BYTES = 512L * 1024
+
+  /** §6.4：调试日志的一次写盘处置。 */
+  internal enum class MarkerDebugStep { APPEND, ROTATE, SKIP }
+
+  /**
+   * §6.4 纯函数（JVM 单测）：本次调试日志该写、该滚、还是该跳过。
+   *
+   * 两重收敛：① 开发者日志开关（默认关）关着就完全不写；② 开着也有容量上限，
+   * 到上限滚一代而不是无限追长——审计原文的「没有轮转上限，没有开关」两条都在这里堵住。
+   */
+  internal fun markerDebugStep(
+    enabled: Boolean,
+    currentBytes: Long,
+    limitBytes: Long = MARKER_DEBUG_LIMIT_BYTES,
+  ): MarkerDebugStep = when {
+    !enabled -> MarkerDebugStep.SKIP
+    currentBytes >= limitBytes -> MarkerDebugStep.ROTATE
+    else -> MarkerDebugStep.APPEND
+  }
+
+  /**
+   * §6.4：调试日志是否开启——复用仓里既有的开发者日志开关（MainActivity.DevLogPrefs，
+   * 默认 false，同一条偏好也门控 LogCollector 采集器），不另造一套开关。
+   *
+   * 读失败按关闭处理：诊断日志写不写都不该影响标记消费，失败静默降级为「不写」。
+   */
+  internal fun devLogEnabled(context: Context): Boolean = try {
+    MainActivity.DevLogPrefs.isEnabled(context)
+  } catch (_: Throwable) {
+    false
+  }
+
   /** 消费窗口的纯函数结果：[lines] 整行；[advance] 本次可推进的字节数（到最后一个换行符）。 */
   internal data class MarkerWindow(val lines: List<String>, val advance: Long)
 
@@ -517,8 +554,29 @@ object WatchdogV2 {
    * #210.4：由 [planTick] 的前置段调用——HEALTHY/DEGRADED_HTTP/DEGRADED_LOG/DEAD 四态都要消费。
    */
   internal fun consumeTaskDoneMarkers(context: Context) {
-    val debugLog = java.io.File(context.filesDir, "notify-debug.log")
-    fun dbg(msg: String) { try { debugLog.appendText(System.currentTimeMillis().toString() + " " + msg + "\n") } catch (_: Exception) {} }
+    // §6.4（0.14.10）：调试日志收进既有开发者日志开关（MainActivity.DevLogPrefs，默认关），
+    // 并给文件加了容量上限。此前是**无条件** appendText：每拍至少两行、有标记时每行再两条，
+    // 无轮转、无开关——审计点名它是纯噪音写入。
+    //
+    // 开关只影响这条日志，**消费逻辑一行都没动**（下面的解析、去重、通知投递、偏移推进全在）。
+    val debugLogOn = devLogEnabled(context)
+    fun dbg(msg: String) {
+      try {
+        val file = java.io.File(context.filesDir, MARKER_DEBUG_FILE)
+        when (markerDebugStep(debugLogOn, if (file.exists()) file.length() else 0L)) {
+          MarkerDebugStep.ROTATE -> {
+            // 有界：到上限就滚一代（旧 .1 先删，不累积历史）。
+            val rotated = java.io.File(context.filesDir, MARKER_DEBUG_FILE + ".1")
+            try { if (rotated.exists()) rotated.delete() } catch (_: Exception) {}
+            try { file.renameTo(rotated) } catch (_: Exception) {}
+          }
+          MarkerDebugStep.APPEND -> Unit
+          MarkerDebugStep.SKIP -> return
+        }
+        file.appendText(System.currentTimeMillis().toString() + " " + msg + "\n")
+      } catch (_: Exception) {
+      }
+    }
     try {
       val f = taskMarkerFile(context)
       if (!f.exists()) return
