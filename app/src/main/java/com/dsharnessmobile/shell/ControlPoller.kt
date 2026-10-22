@@ -133,7 +133,14 @@ class ControlPoller(
     }
     val op = request.optString("op", "")
     val args = request.optJSONObject("args") ?: JSONObject()
-    var outcome = runOp(op, args)
+    // §6.2：控制请求在途 = 唤醒锁活动租约的三类事件之一。写在执行前后各一次，
+    // 让整个执行窗（可能跨数十秒的建树/截屏）都算活动，而不是只有开始那一刻。
+    noteWakeActivity()
+    var outcome = try {
+      runOp(op, args)
+    } finally {
+      noteWakeActivity()
+    }
     var envelope = envelope(token, reqId, outcome)
     var posted = post("/api/android/ui/result", envelope)
     // L1 降级阶梯（§S1.4）：回填超限先收窄口径重跑一次——snapshot 才有 view 可选，
@@ -221,6 +228,21 @@ class ControlPoller(
       }
     } finally {
       connection.disconnect()
+    }
+  }
+
+  /**
+   * §6.2：控制请求在途时刷新唤醒锁活动租约。
+   *
+   * 为什么由本类刷新而不是等看门狗下一拍：看门狗一拍最长 20 秒（健康态降频后），
+   * 若一条 op 正好跨越租约到期点，唤醒锁会在一段真在干活的时间里被放掉。这里直接
+   * 记租约；引擎服务若在跑，同一入口会顺手把锁重取回来（有事件立即重取）。
+   */
+  private fun noteWakeActivity() {
+    try {
+      WatchdogV2.WakeActivityLease.note()
+      EngineService.instance?.noteWakeActivity()
+    } catch (_: Throwable) {
     }
   }
 

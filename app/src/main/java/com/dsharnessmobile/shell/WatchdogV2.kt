@@ -17,7 +17,8 @@ import java.io.File
  * - 熔断与指数退避：连续失败 → 指数退避（5s→10s→20s→40s→80s 封顶），超过熔断阈值（12 次连续失败）
  *   暂停看门狗并记录（界面提示由 GuideChrome 状态区显示），用户交互或探活成功自动复位。
  * - 开机自启：BOOT_COMPLETED 接收器恢复用户上次同意的运行状态（EngineService.userShutdown 持久化）。
- * - 前台唤醒锁：引擎前台运行期间持有（PARTIAL_WAKE_LOCK，标准档位；获取失败降级尽力模式并记录）。
+ * - 唤醒锁：**按活动持有**（0.14.10 §6.2，PARTIAL_WAKE_LOCK，标准档位；获取失败降级尽力模式并记录）。
+ *   活动 = turn 在跑 / 控制请求在途 / 启动或重启窗口；空闲 60 秒主动放锁，有事件立刻重取。
  * - 授权状态探活：ADB 配对断线时记录（F2.9，桥引导重新配对由桥层返回）。
  */
 object WatchdogV2 {
@@ -533,6 +534,74 @@ object WatchdogV2 {
     }
   }
 
+  /**
+   * 活动租约（0.14.10 §6.2）：唤醒锁按「有没有事在做」持有，而不是按「引擎进程还活着」持有。
+   *
+   * 缺陷形态（审计 §6.2，功耗最大单项）：旧实现服务启动即 acquireWakeLock，此后每拍
+   * refreshWake 无条件续持（refreshWakeLock 就是 acquireWakeLock 的别名），于是即使没有任何
+   * turn 在跑，CPU 也不允许深睡——审计实测连续持锁 7 分钟以上，「放着不动也发热」。
+   *
+   * 口径（用户拍板）：**活动 turn / 控制请求在途 / 启动或重启窗口**三类事件刷新本租约；
+   * 距最近一次活动 [IDLE_RELEASE_MS] 内续持，超时主动释放；有事件立刻重取。
+   * 释放期间进程优先级仍由前台服务维持——本租约只管「CPU 是否被强制唤醒」，不动保活语义。
+   *
+   * 时钟基准是 SystemClock.elapsedRealtime()：单调、不受墙钟调整影响，且跨休眠不回绕。
+   */
+  internal object WakeActivityLease {
+    /** 空闲多久后允许放掉唤醒锁（用户口径：60 秒）。 */
+    const val IDLE_RELEASE_MS = 60_000L
+
+    /** 从未有过活动。elapsedRealtime 恒 >= 0，故负值即哨兵，也不必担心减法溢出。 */
+    private const val NEVER = Long.MIN_VALUE
+
+    private val lastActivityAt = java.util.concurrent.atomic.AtomicLong(NEVER)
+
+    /** 记一次活动（turn 事件 / 控制请求在途 / 启动或重启窗口）。 */
+    fun note(now: Long = android.os.SystemClock.elapsedRealtime()) {
+      lastActivityAt.set(now)
+    }
+
+    /** 最近一次活动的时刻；负值 = 本进程尚未有过活动（冷启动即此态）。 */
+    fun lastActivityAt(): Long = lastActivityAt.get()
+
+    /**
+     * 租约是否新鲜（= 此刻应当持锁）。
+     *
+     * 从未活动必须判「不新鲜」：不能因为哨兵比 now 小就当成「刚活动过」。
+     * 反向也要判：last > now（时钟域混用/测试注入）按不新鲜处理，宁可放掉也不锁死。
+     */
+    fun holdable(now: Long): Boolean {
+      val last = lastActivityAt.get()
+      if (last < 0L || last > now) return false
+      return now - last < IDLE_RELEASE_MS
+    }
+
+    /** 重置（JVM 单测用；生产不调——租约跨用例残留会互相污染）。 */
+    fun reset() {
+      lastActivityAt.set(NEVER)
+    }
+  }
+
+  /** 一拍唤醒锁的处置（纯枚举，便于单测直接断言「该持 / 该放」）。 */
+  internal enum class WakeTick { HOLD, RELEASE }
+
+  /** 纯函数：按活动租约决定本拍唤醒锁的处置（0.14.10 §6.2）。 */
+  internal fun wakeTickDecision(now: Long): WakeTick =
+    if (WakeActivityLease.holdable(now)) WakeTick.HOLD else WakeTick.RELEASE
+
+  /**
+   * 桥的 live 事件流长度（§6.2「turn 在跑」的廉价观测：只做一次 length()，不读内容）。
+   *
+   * 为什么可以拿它当活动信号：dsh-android-bridge 每产生一条 live 事件（tool_call /
+   * tool_result / text / turn_end）就 append 一行，turn 在跑期间文件必长；turn 结束后停止增长，
+   * 于是租约在 60 秒后自然过期——正是用户口径要的「空闲释放」。文件不存在时按 0 处理。
+   */
+  internal fun liveFeedLength(context: Context): Long = try {
+    java.io.File(java.io.File(context.filesDir, "home/.dsh"), ".live.ndjson").length()
+  } catch (_: Throwable) {
+    0L
+  }
+
   /** A terminal owner belongs to one Service epoch; no process-global wake handle exists. */
   internal data class WakeAcquisition(val lock: PowerManager.WakeLock, val renewAt: Long)
   internal class WakeLockOwner {
@@ -563,9 +632,46 @@ object WatchdogV2 {
     }
   }
 
-  /** Renew with a new acquisition; a released handle is never re-acquired by a stale tick. */
-  internal fun refreshWakeLock(context: Context, owner: WakeLockOwner) = acquireWakeLock(context, owner)
+  /**
+   * 续期（0.14.10 §6.2）：**按活动租约**决定续持还是放掉，而不是无条件 acquire。
+   *
+   * 旧实现是 acquireWakeLock 的别名 ⇒ 每拍无条件续持，唤醒锁等于「引擎进程活多久就持多久」
+   * （审计 §6.2 的缺陷本体）。现在：
+   *  - 租约新鲜（60 秒内有 turn / 控制请求 / 启动窗口事件）⇒ 照旧 acquire（keepExisting 仍按
+   *    25 分钟 renewAt 判，30 分钟 acquire 上限那档继续由 renew 覆盖）；
+   *  - 租约过期 ⇒ 走 [releaseWakeLockIdle] 主动放掉，下一次有事件时 [acquireWakeLock] 立刻重取。
+   *
+   * 无论哪一支，唤醒锁句柄始终由调用方那个 epoch 的 [WakeLockOwner] 持有——本函数不引入
+   * 进程级句柄，[releaseWakeLock] 的终态释放路径（onDestroy/retireEpoch）不受影响。
+   */
+  internal fun refreshWakeLock(
+    context: Context,
+    owner: WakeLockOwner,
+    now: Long = android.os.SystemClock.elapsedRealtime(),
+  ) {
+    when (wakeTickDecision(now)) {
+      WakeTick.HOLD -> acquireWakeLock(context, owner)
+      // 空闲放锁不是终态：只摘掉当前句柄，owner 仍可再次 install（见 EpochResourceOwner.drop）。
+      WakeTick.RELEASE -> releaseWakeLockIdle(owner)
+    }
+  }
 
+  /**
+   * 空闲放锁（0.14.10 §6.2）：释放当前句柄但**保持 owner 可用**。
+   *
+   * 不能直接 owner.acquisition.close()：close 是终态（closed=true 后 install 一律拒绝），
+   * 用它做「空闲释放」会让此后所有重取静默失败，唤醒锁永久失效。故走 drop()——它保留
+   * epoch 语义（释放仍由同一个 owner 执行、仍只释放自己那一个句柄），只是不动终态位。
+   */
+  internal fun releaseWakeLockIdle(owner: WakeLockOwner) {
+    try {
+      owner.acquisition.drop()
+    } catch (t: Throwable) {
+      Log.e(TAG, "wake lock idle release failed", t)
+    }
+  }
+
+  /** 终态释放（onDestroy / retireEpoch）：关闭 owner，此后一律拒绝重新 install。 */
   internal fun releaseWakeLock(owner: WakeLockOwner) { owner.acquisition.close() }
 }
 
@@ -586,6 +692,27 @@ internal class EpochResourceOwner<T : Any>(private val release: (T) -> Unit) {
     }
     before.resource?.let(release)
     return true
+  }
+
+  /**
+   * 释放当前资源但**保留 owner 可用**（0.14.10 §6.2 空闲放锁用；[close] 是终态，不可替代）。
+   *
+   * 语义与 [close] 的唯一差别是 closed 位：这里置回 false，于是下一次 [install] 能重新发布
+   * 新资源。并发安全：release 只对「自己 CAS 掉的那个句柄」执行一次，绝不动别人刚装进去的
+   * 句柄（与 [install] 的 obsolete-candidate 清理同纪律）。
+   *
+   * @return 被释放的资源；无资源可释放或 owner 已关闭时返回 null。
+   */
+  fun drop(): T? {
+    while (true) {
+      val before = state.get()
+      if (before.closed) return null
+      val held = before.resource ?: return null
+      if (state.compareAndSet(before, State(closed = false, resource = null))) {
+        release(held)
+        return held
+      }
+    }
   }
 
   fun close() {

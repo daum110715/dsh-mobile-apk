@@ -32,6 +32,8 @@ class EngineService : Service() {
     val ownershipRetry = StartupOwnershipRetryBudget()
     var nextRestartAllowedAt = 0L
     var lastDeathMirrorAt = 0L
+    /** 上一拍读到的 live 流长度（§6.2「turn 在跑」的活动信号；增长即视为有活动）。 */
+    var lastLiveFeedLength = -1L
   }
   private val serviceEpoch = java.util.concurrent.atomic.AtomicReference<ServiceEpoch?>(null)
   private val startupExecutor = Executors.newSingleThreadScheduledExecutor()
@@ -159,6 +161,48 @@ class EngineService : Service() {
     }
   }
 
+  /**
+   * §6.2：记一次唤醒锁活动租约（三类事件共用同一入口）。
+   *
+   * 为什么必须集中在一处：租约是「此刻有没有事在做」的唯一判据，散落多处写时间戳会让
+   * 判据变成不可核对的隐式约定。刷新点只有三个来源——turn 在跑（[noteWakeActivityForTick]
+   * 观察 live 流）、控制请求在途（ControlPoller 调本入口）、启动或重启窗口（ensureEngine
+   * 与 RESTART 分支）。
+   */
+  internal fun noteWakeActivity() {
+    WatchdogV2.WakeActivityLease.note()
+    // 「有事件立即重取」：不等到下一拍。owner 已关闭（服务换代/停机）时 install 会自动拒绝，
+    // 不需要在这里判 epoch。
+    val owner = serviceEpoch.get()?.wakeOwner ?: return
+    if (serviceDestroyed || userShutdown) return
+    WatchdogV2.refreshWakeLock(this, owner)
+  }
+
+  /**
+   * §6.2 每拍刷新活动信号：turn 在跑 / 重启后的启动窗口。
+   *
+   * ① live 流变长 = 引擎正在产事件（bridge 每条 turn 事件 append 一行）⇒ 有活动。
+   *   用长度比较而不是解析内容：一拍一次 length()，比原来「每 5 秒一次 HTTP 探活 +
+   *   4KB 日志读」便宜两个数量级，且不会误判「空转的引擎」为活动（文件不增长）。
+   * ② 托管子进程仍在启动冷却窗内 = 启动或重启窗口 ⇒ 有活动（冷启动期 CPU 不能被放掉）。
+   *
+   * 首次观察（lastLiveFeedLength < 0）只建立基线不算活动：进程重启后历史文件里全是旧行，
+   * 拿「文件非空」当活动会让租约无端新鲜 60 秒。
+   */
+  private fun noteWakeActivityForTick(epoch: ServiceEpoch) {
+    val liveLength = WatchdogV2.liveFeedLength(this)
+    val previous = epoch.lastLiveFeedLength
+    epoch.lastLiveFeedLength = liveLength
+    if (previous >= 0L && liveLength > previous) {
+      noteWakeActivity()
+    }
+    val nowMs = System.currentTimeMillis()
+    val bootAgeMs = nowMs - EngineManager.lastStartAttemptAt
+    if (engineManager.engineProcessAlive() && bootAgeMs in 0 until EngineManager.START_COOLDOWN_MS) {
+      noteWakeActivity()
+    }
+  }
+
   private fun retireEpoch(epoch: ServiceEpoch) {
     serviceEpoch.compareAndSet(epoch, null)
     epoch.stopped.set(true)
@@ -197,6 +241,9 @@ class EngineService : Service() {
       epoch.startupQueued.set(false)
       return
     }
+    // §6.2：启动窗口本身算活动（口径三类之一）——先记租约再取锁，否则租约空时取到的锁
+    // 下一拍就会被放掉，等于没取。
+    noteWakeActivity()
     WatchdogV2.acquireWakeLock(this, epoch.wakeOwner)
     if (!isEpochCurrent(epoch)) { WatchdogV2.releaseWakeLock(epoch.wakeOwner); return }
     val exec = Executors.newSingleThreadScheduledExecutor()
@@ -212,6 +259,7 @@ class EngineService : Service() {
             if (RepairState.required(this) || RepairState.active || RepairState.retryPending) {
               NotifyStore.drainTick(this)
               if (!isEpochCurrent(epoch)) return@scheduleWithFixedDelay
+              noteWakeActivityForTick(epoch)
               WatchdogV2.refreshWakeLock(this, epoch.wakeOwner)
               return@scheduleWithFixedDelay
             }
@@ -220,6 +268,10 @@ class EngineService : Service() {
             // 更是唯一活着的消费者（真机停摆现场：`.notify.ndjson` 一直在长，而事件驱动的消费一条也没
             // 投出去，只有这条 5 s 心跳的日志还在更新）。幂等 + 一次 stat，不改本拍语义，失败也不冒泡。
             NotifyStore.drainTick(this)
+            if (!isEpochCurrent(epoch)) return@scheduleWithFixedDelay
+            // §6.2：本拍开始前先刷新活动信号（turn 在跑 / 启动或重启窗口）。它必须在
+            // planTick 之前——refreshWake 是 planTick 的前置副作用，读到的是本拍的租约状态。
+            noteWakeActivityForTick(epoch)
             if (!isEpochCurrent(epoch)) return@scheduleWithFixedDelay
             val state = WatchdogV2.assessProbe(this) { isEpochCurrent(epoch) }
             if (!isEpochCurrent(epoch)) return@scheduleWithFixedDelay
@@ -283,6 +335,9 @@ class EngineService : Service() {
                   LogCollector.log("dsh-watchdog", "engine death diagnostics: " + (dir?.absolutePath ?: "unavailable"))
                 }
                 if (!isEpochCurrent(epoch)) return@scheduleWithFixedDelay
+                // §6.2：重启窗口算活动——noteWakeActivity 内部即按新租约重取唤醒锁
+                // （有事件立即重取，不等下一拍），冷启动期间的 CPU 不会被放掉。
+                noteWakeActivity()
                 val requested = engineManager.startEngine(force = plan.force)
                 if (!isEpochCurrent(epoch)) return@scheduleWithFixedDelay
                 val delayMs = WatchdogV2.nextDelayMs()
