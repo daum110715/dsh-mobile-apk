@@ -1469,19 +1469,34 @@ class EngineManager(private val context: Context, private val pickToken: String?
         LogCollector.log(TAG, "engine start refused: listener remained after owned-child cleanup")
         return false
       }
+      // ── 审计 §6.1 同批：spawn 前串行前置的**分段耗时探针** ────────────────────────────
+      // 审计原文（§6.1 落地批次第 8 项）要求「先把各步耗时打出来，再决定是否并行化」。
+      // 因此这里**只加探针、不改顺序**：这五步的先后是有语义约束的（坏键迁移必须先于引擎读
+      // settings；README 刷新与补丁应用都在准备运行时树），并行化会改变顺序语义——没有实测
+      // 收益之前不动。每步的耗时进 engine.log 与 logcat（[EngineStartPreludeProbe]），
+      // 汇总一行 prelude-total，供设备侧 `grep prelude` 直接读出瓶颈。
+      //
+      // 口径：用 SystemClock.elapsedRealtime（单调时钟）——与审计 §6.7 的教训一致，
+      // 墙钟会被校时拨动，拿来量毫秒级耗时是错的。
+      val preludeProbe = EngineStartPreludeProbe()
       // 0.13.1 W5：坏键迁移必须在引擎读 settings 前完成。
-      repairSettingsSeed()
-      SnapshotUserData.retireReseededFactorySettings(File(homeDir, ".dsh"))?.let { backup ->
-        LogCollector.log(TAG, "resurrected blank factory settings quarantined before profile import: " + backup.name)
+      preludeProbe.step("repair-settings-seed") { repairSettingsSeed() }
+      preludeProbe.step("retire-reseeded-factory-settings") {
+        SnapshotUserData.retireReseededFactorySettings(File(homeDir, ".dsh"))?.let { backup ->
+          LogCollector.log(TAG, "resurrected blank factory settings quarantined before profile import: " + backup.name)
+        }
       }
       // 0.14.0 #214：退役行 disabled 残留自愈（前置于引擎读 profile；幂等一次性，见函数注释）。
-      repairProfilePatch()
+      preludeProbe.step("repair-profile-patch") { repairProfilePatch() }
       // 0.13.1 W3/W4：共享目录 README 每次启动刷新（此前只在迁移路径调用，正常启动不落盘）。
       // 注意：本行**只覆盖「引擎真的启动」这一条路径**——startEngine 有两个早退会整段跳过它
       // （快照刷新中 / 引擎已在跑）。故 provisionPublicRepo 另由 MainActivity 的 onCreate/onResume
       // 触发，那里才是「授权之后能自愈」的入口（0.14.1 用户反馈）。
-      provisionPublicRepo(PublicRepoProvision.TRIGGER_ENGINE_START)
-      applyRuntimePatches()
+      preludeProbe.step("provision-public-repo") {
+        provisionPublicRepo(PublicRepoProvision.TRIGGER_ENGINE_START)
+      }
+      preludeProbe.step("apply-runtime-patches") { applyRuntimePatches() }
+      preludeProbe.report(TAG)
       // --no-open: the engine must never try to open a desktop browser on Android
       // (the WebView IS the UI). Without it, rc.2's spawn xdg-open on a missing
       // binary stalls engine serve on some emulators (MuMu root observed);
@@ -2619,6 +2634,69 @@ internal fun engineHeapMb(totalRamMb: Int): Int {
 
 /** 补丁记录目录（应用私有，随 App 卸载清除；**不**放进运行时树，避免被快照整体换掉）。 */
 internal const val ASSET_PATCH_RECORD_DIR = "asset-patch-records"
+
+// ── 审计 §6.1 同批：spawn 前串行前置的**分段耗时探针** ────────────────────────────
+//
+// 为什么先只打探针、不并行化：这五步的先后是有语义约束的——
+//   ① repairSettingsSeed：坏键迁移**必须**先于引擎读 settings；
+//   ② retireReseededFactorySettings：隔离「复活的空白工厂设置」，也要先于 profile 导入；
+//   ③ repairProfilePatch：退役行 disabled 残留自愈，前置于引擎读 profile；
+//   ④ provisionPublicRepo：共享目录 README，写的是用户可见面；
+//   ⑤ applyRuntimePatches：把三份补丁资产写进运行时树。
+// 并行化会改变「谁先看到什么」的顺序语义，而审计原文的要求是「收益待测，先打耗时再决定」。
+// 所以本类只做一件事：**如实测量**每一步，汇总一行 prelude-total 落 engine.log。
+//
+// 时钟用 SystemClock.elapsedRealtime（单调）：与审计 §6.7 的教训同源——墙上时钟会被校时
+// 拨动，拿来量毫秒级耗时是错的。
+
+/** 一步探针读数（毫秒）。 */
+internal data class EngineStartPreludeStep(val name: String, val durMs: Long)
+
+/**
+ * spawn 前串行前置的分段计时器（纯逻辑，JVM 可断言）。
+ *
+ * 用法：`probe.step("名字") { 真正的动作 }`，最后 `probe.report(TAG)` 汇总一行。
+ * 探针**不得**成为故障源：动作抛异常时仍要记下这一段耗时，然后把异常原样抛出去
+ * （吞掉异常会改变既有失败语义）。
+ *
+ * @param clock 单调时钟读数（单测注入，生产传 elapsedRealtime）
+ */
+internal class EngineStartPreludeProbe(
+  private val clock: () -> Long = { android.os.SystemClock.elapsedRealtime() },
+) {
+  private val steps = mutableListOf<EngineStartPreludeStep>()
+
+  /** 已记录的分段（只读快照）。 */
+  val recorded: List<EngineStartPreludeStep> get() = steps.toList()
+
+  /** 跑一步并记下它的耗时（异常照原样抛出，但耗时仍然落账）。 */
+  fun <T> step(name: String, action: () -> T): T {
+    val startedAt = clock()
+    try {
+      return action()
+    } finally {
+      steps += EngineStartPreludeStep(name, elapsedSince(startedAt))
+    }
+  }
+
+  private fun elapsedSince(startedAt: Long): Long {
+    val now = clock()
+    return if (now <= startedAt) 0L else now - startedAt
+  }
+
+  /** 汇总行（唯一落盘形态）：`perf prelude step=a durMs=1 ... prelude-total-durMs=9`。 */
+  fun reportLine(): String {
+    val parts = steps.map { "step=" + it.name + " durMs=" + it.durMs }
+    val total = steps.sumOf { it.durMs }
+    return (listOf("perf prelude") + parts + listOf("prelude-total-durMs=" + total)).joinToString(" ")
+  }
+
+  /** 落一行到 engine.log（LogCollector.log，与既有 boot 分段同通道）。 */
+  fun report(tag: String) {
+    if (steps.isEmpty()) return
+    LogCollector.log(tag, reportLine())
+  }
+}
 
 /** 记录里的内容摘要形态（64 位小写十六进制；与 sha256Hex 同口径）。 */
 private val SHA256_HEX = Regex("[0-9a-f]{64}")
