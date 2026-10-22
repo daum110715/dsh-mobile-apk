@@ -1294,8 +1294,16 @@ class EngineManager(private val context: Context, private val pickToken: String?
         Log.i(TAG, "runtime patch already in place (" + outcome.name + "): $asset")
     }
     // 审计 §6.1 同批：这一段的耗时进 perf 探针（快路径命中时应显著低于内容比对路径）。
-    LogCollector.log(TAG, "perf asset-patch " + asset + " outcome=" + outcome.name
-      + " durMs=" + (System.nanoTime() - startedAtNs) / 1_000_000)
+    // 与 [EngineStartPreludeProbe.report] 同口径：默认安装上开发者日志通道是关的，
+    // 故无条件写 boot-diag.log（否则设备侧取不到这行——0.14.10 实测缺口）。
+    val perfLine = "perf asset-patch " + asset + " outcome=" + outcome.name +
+      " durMs=" + (System.nanoTime() - startedAtNs) / 1_000_000
+    try {
+      LogCollector.writeBootDiag(context, "perf-asset-patch", perfLine)
+    } catch (_: Throwable) {
+      // 诊断落盘失败不得影响补丁应用本身（下面那行开发者日志仍会尝试）。
+    }
+    LogCollector.log(TAG, perfLine)
   }
 
   /** 补丁应用记录的落点：放在应用私有目录，**不进**运行时树（那棵树会被快照整体换掉）。 */
@@ -1496,7 +1504,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
         provisionPublicRepo(PublicRepoProvision.TRIGGER_ENGINE_START)
       }
       preludeProbe.step("apply-runtime-patches") { applyRuntimePatches() }
-      preludeProbe.report(TAG)
+      preludeProbe.report(TAG, context)
       // --no-open: the engine must never try to open a desktop browser on Android
       // (the WebView IS the UI). Without it, rc.2's spawn xdg-open on a missing
       // binary stalls engine serve on some emulators (MuMu root observed);
@@ -2691,10 +2699,27 @@ internal class EngineStartPreludeProbe(
     return (listOf("perf prelude") + parts + listOf("prelude-total-durMs=" + total)).joinToString(" ")
   }
 
-  /** 落一行到 engine.log（LogCollector.log，与既有 boot 分段同通道）。 */
-  fun report(tag: String) {
+  /**
+   * 落一行：**无条件通道** + 开发者日志通道。
+   *
+   * 为什么必须走 [LogCollector.writeBootDiag]：审计 §3.1 要让设备侧能直接读出「各步耗时」，
+   * 而 `LogCollector.log` 有两个门——[LogCollector.appContext] 未初始化时直接 return，
+   * 且 `start()` 本身受开发者日志开关（`DevLogPrefs`，默认关）门住。默认安装上
+   * `files/log/` 目录根本不存在，探针写出去等于没写（0.14.10 实测缺口）。
+   * boot-diag.log 是同一轮启动里必然存在的诊断面（`shell-stall` 等已在用），故以它为准。
+   * 两路都写：诊断面可无条件取，开发者日志通道保留给开了开关的场景。
+   */
+  fun report(tag: String, context: Context? = null) {
     if (steps.isEmpty()) return
-    LogCollector.log(tag, reportLine())
+    val line = reportLine()
+    if (context !== null) {
+      try {
+        LogCollector.writeBootDiag(context, "perf-prelude", line)
+      } catch (_: Throwable) {
+        // 诊断落盘失败不得影响启动：走下面的开发者日志通道即可。
+      }
+    }
+    LogCollector.log(tag, line)
   }
 }
 

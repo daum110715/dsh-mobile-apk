@@ -125,12 +125,45 @@ class EngineStartPreludeProbeTest {
       val bodyAt = prelude.indexOf(call, stepAt)
       assertTrue("step() 里必须调用真正的动作：" + stepName, bodyAt > stepAt)
     }
-    assertTrue("必须落一行汇总", prelude.contains("preludeProbe.report(TAG)"))
+    assertTrue("必须落一行汇总", prelude.contains("preludeProbe.report(TAG, context)"))
     assertFalse("探针不得吞掉动作（不得出现 try/catch 包住 step 的形态）", prelude.contains("catch (_: Throwable) { }"))
     // 反证「只是加了函数但没接上」：五步之外不得还有裸调用。
     for ((_, call) in expected) {
       assertEquals("动作只能在 step() 里出现一次：" + call, 1, Regex(Regex.escape(call)).findAll(prelude).count())
     }
+  }
+
+  /**
+   * 探针必须走**无条件可读**的落盘通道（0.14.10 设备实测缺口）。
+   *
+   * 缺陷形态：探针原本只走 `LogCollector.log`，而那条通道有两道门——`appContext` 未初始化
+   * 时直接 return，且 `start()` 受开发者日志开关（`DevLogPrefs`，默认关）门住。默认安装上
+   * `files/log/` 目录不存在，探针写出去等于没写，设备侧取不到「各步耗时」，审计 §6.1 第 8 项
+   * 的「先打出来再决定」就落不了地。
+   *
+   * 反证形态：把 report() 里的 writeBootDiag 那行删掉（退回只写开发者日志），本用例即红。
+   */
+  @Test
+  fun theProbeReportsThroughAnUnconditionalChannel() {
+    val code = source("EngineManager.kt")
+    val report = code.substringAfter("fun report(tag: String, context: Context? = null)")
+      .substringBefore("LogCollector.log(tag, line)")
+    assertTrue(
+      "汇总必须无条件写 boot-diag（默认安装上开发者日志通道是关的）",
+      report.contains("LogCollector.writeBootDiag("),
+    )
+    assertTrue("写 boot-diag 必须带来源标识，便于设备侧 grep", report.contains("\"perf-prelude\""))
+    assertTrue("开发者日志通道仍要保留（开了开关的场景）", code.contains("LogCollector.log(tag, line)"))
+    // 接线侧：调用点必须把 context 传进来，否则上面那条等于没生效。
+    assertTrue(
+      "调用点必须传 context，否则无条件通道根本走不到",
+      code.contains("preludeProbe.report(TAG, context)"),
+    )
+    // asset-patch 探针同口径（同一缺口的两处）。
+    assertTrue(
+      "asset-patch 探针也必须走无条件通道",
+      code.contains("LogCollector.writeBootDiag(context, \"perf-asset-patch\", perfLine)"),
+    )
   }
 
   /** 探针必须用单调时钟（墙上时钟量毫秒级耗时会受校时影响，见审计 §6.7）。 */
