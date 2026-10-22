@@ -179,7 +179,10 @@ class WakeActivityLeaseTest {
     // 启动/重启窗口
     val ensure = service.substringAfter("private fun ensureEngine(epoch: ServiceEpoch)")
     assertTrue("启动窗口必须记活动，且先于取锁", ensure.indexOf("noteWakeActivity()") in 0 until ensure.indexOf("WatchdogV2.acquireWakeLock"))
-    assertTrue("重启分支必须记活动", service.contains("noteWakeActivity()\n                val requested = engineManager.startEngine"))
+    // 重启窗口：noteWakeActivity 必须紧接在 startEngine 之前（判定用的是 codeOnly，
+    // 注释行已被剔除，故这里按「同一段内先后的相对位置」断言）。
+    val restartBranch = service.substringAfter("WatchdogV2.TickAction.RESTART -> {")
+    assertTrue("重启窗口必须先记活动再拉起引擎", restartBranch.indexOf("noteWakeActivity()") in 0 until restartBranch.indexOf("startEngine(force = plan.force)"))
     // turn 在跑（live 流变长）
     assertTrue("每拍必须观测 live 流活动", service.contains("noteWakeActivityForTick(epoch)"))
     assertTrue("live 流观测只做一次 length", watchdog.contains("internal fun liveFeedLength(context: Context)"))

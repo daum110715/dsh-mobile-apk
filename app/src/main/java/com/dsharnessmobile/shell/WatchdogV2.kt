@@ -37,17 +37,72 @@ object WatchdogV2 {
    */
   enum class ProbeState { HEALTHY, DEGRADED_HTTP, DEGRADED_LOG, DEAD }
 
-  /** DEGRADED_HTTP 阶梯阈值：6 拍 × 5s = 30s（与 restartDeadConfirmations 同量级，远小于 90s 冷启动上限）。 */
+  /**
+   * 标准拍长（0.14.10 §6.3）：所有阶梯阈值的时间单位。
+   *
+   * 为什么要有这个概念：审计点名「DEGRADED_SLOW_GRACE_TICKS 与阶梯拍数是按 5 秒拍标定的，
+   * 降频时必须同步换算」，否则健康态退到 20 秒后，30 秒的阶梯会变成 120 秒。现在拍数常量
+   * 一律按**标准拍（5 秒）**计，每拍按「实际经过的毫秒」折算成标准拍数记账（[tickUnits]），
+   * 于是无论调度拍长是 5 秒还是 20 秒，恢复与熔断都落在同一个时间点。
+   */
+  const val STANDARD_TICK_MS = 5_000L
+
+  /** 健康态探活间隔（0.14.10 §6.3）：审计要求 15–30 秒，取 20 秒。 */
+  const val HEALTHY_TICK_MS = 20_000L
+
+  /** 非健康态（DEGRADED_* / DEAD / 冷启动窗口）探活间隔：立刻回到原节奏。 */
+  const val ACTIVE_TICK_MS = 5_000L
+
+  /** DEGRADED_HTTP 阶梯阈值：6 个标准拍 = 30 秒（时间语义，见 [STANDARD_TICK_MS]）。 */
   const val DEGRADED_RESTART_CONFIRMATIONS = 6
+
+  /** 阶梯到点的时间口径（毫秒）：30 秒。降频不得改变它。 */
+  const val DEGRADED_RESTART_AFTER_MS = DEGRADED_RESTART_CONFIRMATIONS.toLong() * STANDARD_TICK_MS
 
   /**
    * 「慢」的宽限拍数（issue #274 ①）：slowProbe 否决破坏性动作的**上界**。
    *
    * 为什么需要上界而不是无条件否决：真机上半死引擎的探活形态也是超时，与长 turn 的单次观测
    * 无法区分；无条件否决会让真卡死的引擎永远救不回来（破坏 0.14.1 锁存盲区回归）。
-   * 3 倍阶梯 = 18 拍 ≈ 90s，与 START_COOLDOWN_MS 的冷启动预算同量级。
+   * 3 倍阶梯 = 18 个标准拍 = 90 秒，与 START_COOLDOWN_MS 的冷启动预算同量级。
    */
   const val DEGRADED_SLOW_GRACE_TICKS = DEGRADED_RESTART_CONFIRMATIONS * 3
+
+  /** 慢宽限的时间口径（毫秒）：90 秒。降频不得改变它。 */
+  const val DEGRADED_SLOW_GRACE_AFTER_MS = DEGRADED_SLOW_GRACE_TICKS.toLong() * STANDARD_TICK_MS
+
+  /** 熔断阈值的时间口径（毫秒）：12 个标准拍 = 60 秒。降频不得改变它。 */
+  const val CIRCUIT_OPEN_AFTER_MS = MAX_CONSEC_FAILURES.toLong() * STANDARD_TICK_MS
+
+  /**
+   * 单拍最多折算多少个标准拍（= 阶梯阈值 6）。
+   *
+   * 为什么要封顶：设备深睡/Doze 之后一拍可能隔了几分钟，若按真实间隔折算，单次观测就能
+   * 直接顶满熔断（12 拍）——熔断守的是「**反复**失败」，一次观测不该有那个权限。封到阶梯
+   * 阈值处，则最多「一拍走完阶梯」，恢复仍会立即发生，只是不跳步打开熔断。
+   */
+  const val MAX_TICK_UNITS = DEGRADED_RESTART_CONFIRMATIONS
+
+  /**
+   * 纯函数（0.14.10 §6.3）：本拍实际经过的毫秒 → 折算成多少个标准拍（5 秒）。
+   *
+   * 四舍五入而不是向下取整：20 秒拍折 4 个标准拍，12.5 秒折 3 个，5 秒拍恒为 1（不因调度
+   * 抖动掉成 0，否则阶梯永远凑不满）。0 或负值（首拍/时钟回退）按 1 拍处理。
+   */
+  fun tickUnits(elapsedMs: Long): Int {
+    if (elapsedMs <= 0L) return 1
+    val rounded = (elapsedMs + STANDARD_TICK_MS / 2) / STANDARD_TICK_MS
+    return rounded.coerceIn(1L, MAX_TICK_UNITS.toLong()).toInt()
+  }
+
+  /**
+   * 纯函数（0.14.10 §6.3）：下一拍该隔多久。
+   *
+   * 只有「引擎健康且不在冷启动窗口」才用 [HEALTHY_TICK_MS]；一旦 DEGRADED_* / DEAD / 冷启动，
+   * 立刻回到 [ACTIVE_TICK_MS]——恢复动作必须以 5 秒拍去跟，否则 30 秒的阶梯会被拖成长尾。
+   */
+  fun nextTickDelayMs(state: ProbeState, booting: Boolean = false): Long =
+    if (state == ProbeState.HEALTHY && !booting) HEALTHY_TICK_MS else ACTIVE_TICK_MS
 
   /** 引擎日志尾部签名：插件树装配失败（`plugin tree failed to load`）。 */
   const val SIGNATURE_PLUGIN_TREE = "plugin-tree"
@@ -92,20 +147,26 @@ object WatchdogV2 {
   /** Exponential delay for destructive recovery attempts (death or half-dead ladder). */
   fun nextDelayMs(): Long = delayForFailureCount(effectiveFailureCount())
 
-  /** Only a confirmed dead process contributes to the restart/undo circuit breaker. */
-  fun recordProbe(state: ProbeState, signature: String? = lastLogSignature) {
-    consecutiveFailures = if (state == ProbeState.DEAD) consecutiveFailures + 1 else 0
-    consecutiveDegradedHttp = nextDegradedCount(state, consecutiveDegradedHttp)
-    consecutivePluginTreeFailures = nextPluginTreeCount(state, signature, consecutivePluginTreeFailures)
+  /**
+   * 记一拍探活结果（0.14.10 §6.3：计数单位是**标准拍**，不是「调度拍」）。
+   *
+   * [units] = [tickUnits] 折算出来的标准拍数：健康态 20 秒一拍折 4 个，进 DEGRADED 后 5 秒
+   * 一拍折 1 个。于是「6 个标准拍 = 30 秒」这条阶梯语义与调度频率完全解耦。
+   */
+  fun recordProbe(state: ProbeState, signature: String? = lastLogSignature, units: Int = 1) {
+    val u = units.coerceAtLeast(1)
+    consecutiveFailures = if (state == ProbeState.DEAD) consecutiveFailures + u else 0
+    consecutiveDegradedHttp = nextDegradedCount(state, consecutiveDegradedHttp, u)
+    consecutivePluginTreeFailures = nextPluginTreeCount(state, signature, consecutivePluginTreeFailures, u)
   }
 
-  /** 纯函数（JVM 单测）：DEGRADED_HTTP 自增，其余状态清零。 */
-  fun nextDegradedCount(state: ProbeState, count: Int): Int =
-    if (state == ProbeState.DEGRADED_HTTP) count + 1 else 0
+  /** 纯函数（JVM 单测）：DEGRADED_HTTP 按标准拍自增，其余状态清零。 */
+  fun nextDegradedCount(state: ProbeState, count: Int, units: Int = 1): Int =
+    if (state == ProbeState.DEGRADED_HTTP) count + units.coerceAtLeast(1) else 0
 
   /** 纯函数（JVM 单测）：**只认**插件树签名（不跟 DEGRADED_LOG 整类计数，见字段注释）。 */
-  fun nextPluginTreeCount(state: ProbeState, signature: String?, count: Int): Int =
-    if (pluginTreeHung(state, signature)) count + 1 else 0
+  fun nextPluginTreeCount(state: ProbeState, signature: String?, count: Int, units: Int = 1): Int =
+    if (pluginTreeHung(state, signature)) count + units.coerceAtLeast(1) else 0
 
   /** 纯函数：是否「插件树挂死」（HTTP 活着但 loader entry 导入失败）。 */
   fun pluginTreeHung(state: ProbeState, signature: String?): Boolean =
@@ -244,12 +305,17 @@ object WatchdogV2 {
     refreshWake: () -> Unit,
     undoReady: () -> Boolean,
     callerCurrent: () -> Boolean = { true },
+    /**
+     * 本拍折算成多少个标准拍（0.14.10 §6.3）。生产面传 [tickUnits] 的换算结果；JVM 测试
+     * 不传即 1（= 经典 5 秒拍），既有用例语义不变。
+     */
+    units: Int = 1,
   ): TickPlan {
     if (!callerCurrent()) return TickPlan(TickAction.HOLD)
     // ── 前置副作用（#210.3/#210.4）：与状态分类无关，先于一切早退 ──
     feedProbe(state == ProbeState.HEALTHY)
     if (!callerCurrent()) return TickPlan(TickAction.HOLD)
-    recordProbe(state, logSignature)
+    recordProbe(state, logSignature, units)
     consumeMarkers()
     if (!callerCurrent()) return TickPlan(TickAction.HOLD)
     refreshWake()
@@ -259,7 +325,9 @@ object WatchdogV2 {
     val degradedLadderTripped = state == ProbeState.DEGRADED_HTTP && degradedHttpTripped()
     val alive = state != ProbeState.DEAD
     if (degradedLadderTripped) {
-      logs += "DEGRADED_HTTP 连续 " + consecutiveDegradedHttp + " 拍（端口可连但 HTTP 持续失败）→ 升级为受控重启"
+      // 计数单位是标准拍（5 秒），故这里同时给出秒数——降频后「拍」的字面量会误导排障。
+      logs += "DEGRADED_HTTP 连续 " + consecutiveDegradedHttp + " 个标准拍（约 " +
+        (consecutiveDegradedHttp.toLong() * STANDARD_TICK_MS / 1000L) + "s；端口可连但 HTTP 持续失败）→ 升级为受控重启"
     }
     // 【issue #274 ①】破坏性动作的证据门。**本条只作用于「强杀一个还活着的进程」这一件事**
     // （下面的 RESTART 分支），不拦 undo、也不拦「重启一个已经死掉的进程」。
