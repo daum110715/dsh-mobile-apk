@@ -91,9 +91,45 @@ class AppLanguageTest {
   fun bootstrapScriptMirrorsUserLanguageChanges() {
     val script = AppLanguage.bootstrapScript("system", listOf("zh-CN"))
     assertTrue("设置页切换语言必须回到壳侧", script.contains("setUiLanguage"))
-    // dsh 在页面加载时先用解析结果调一次 onChange；那是自动选择，不是用户选择，
+    // dsh 在页面加载与配置推送时都会回调 onChange；那些不是用户选择，
     // 写回壳偏好会把「跟随系统」钉成某个固定语言。
-    assertTrue("第一次自动发布必须忽略", script.contains("if(first){first=false;return}"))
+    assertTrue("自动发布不得回写", script.contains("if(!armed)return"))
+    assertTrue("只认页内真实交互", script.contains("addEventListener('click',arm,true)"))
+  }
+
+  /**
+   * 回归（issue #487）：切到 English 后点「跟随系统」，重载期的第二次自动发布
+   * 曾被当成用户选择写回 en，页面回不到中文。判据从「忽略第一次」改为「必须
+   * 有真实交互」，因此脚本里不得再出现按次数放行的判据。
+   */
+  @Test
+  fun bootstrapScriptDoesNotTrustAnInvocationCount() {
+    val script = AppLanguage.bootstrapScript("system", listOf("zh-CN"))
+    assertTrue("按次数放行会漏掉重载期的第二次发布", !script.contains("first=true"))
+    assertTrue("按次数放行会漏掉重载期的第二次发布", !script.contains("first=false"))
+  }
+
+  @Test
+  fun expectedLocaleFollowsTheDeviceWhenFollowingTheSystem() {
+    assertEquals("zh", AppLanguage.expectedLocale("system", listOf("zh-CN", "en-US")))
+    assertEquals("en", AppLanguage.expectedLocale("system", listOf("en-US", "zh-CN")))
+    assertEquals("zh", AppLanguage.expectedLocale("system", listOf("zh-Hans-CN")))
+    assertEquals("en", AppLanguage.expectedLocale("system", listOf("ja-JP")))
+    assertEquals("en", AppLanguage.expectedLocale("system", emptyList()))
+  }
+
+  @Test
+  fun expectedLocaleIsTheForcedLanguage() {
+    assertEquals("zh", AppLanguage.expectedLocale("zh", listOf("en-US")))
+    assertEquals("en", AppLanguage.expectedLocale("en", listOf("zh-CN")))
+  }
+
+  @Test
+  fun bootstrapScriptCarriesTheLocaleItsModeAlreadyShows() {
+    val followingSystem = AppLanguage.bootstrapScript("system", listOf("zh-CN", "en-US"))
+    assertTrue("跟随系统在中文机上的预期语言是 zh", followingSystem.contains("var expected=\"zh\""))
+    val forcedEnglish = AppLanguage.bootstrapScript("en", listOf("zh-CN"))
+    assertTrue("固定英文的预期语言是 en", forcedEnglish.contains("var expected=\"en\""))
   }
 
 }

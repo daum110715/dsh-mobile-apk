@@ -213,6 +213,33 @@ internal object AppLanguage {
     line.startsWith("- id: locale") && line.substring("- id: locale".length).trim().isEmpty()
 
   /**
+   * Locale that the current mode already displays.
+   *
+   * The bootstrap mirrors user choices back into the shell preference, so a
+   * write first has to know whether the current mode would show that language
+   * anyway. A locale the mode already produces (the forced language, or the
+   * device language when following the system) is not a new preference; storing
+   * it would pin "follow system" to one language.
+   *
+   * The system branch resolves the way dsh resolves its own bootstrap: the first
+   * device tag naming a shipped locale id wins, exact before primary subtag, and
+   * the shipped fallback locale answers when nothing matches.
+   * @param mode - stored preference (`system`, `zh`, `en`).
+   * @param languages - device language tags in preference order.
+   * @returns `zh` or `en`.
+   */
+  internal fun expectedLocale(mode: String, languages: List<String>): String {
+    if (mode == MODE_ZH || mode == MODE_EN) return mode
+    for (tag in languages.filter { it.isNotBlank() }.distinct()) {
+      val requested = tag.lowercase(Locale.ROOT)
+      if (requested == MODE_ZH || requested == MODE_EN) return requested
+      val primary = requested.substringBefore('-')
+      if (primary == MODE_ZH || primary == MODE_EN) return primary
+    }
+    return MODE_EN
+  }
+
+  /**
    * Document-start script that gives dsh its native locale bootstrap.
    *
    * dsh only reads a language preference through `__DSH_LOCALE__` inside the
@@ -220,6 +247,16 @@ internal object AppLanguage {
    * settings page would show a language that the shell never applies. The
    * bridge reads the shell preference on every page load, so a reload after a
    * switch is enough to converge.
+   *
+   * `onChange` is the only engine-to-shell channel, and dsh publishes on it for
+   * its own reasons while a page loads: once with the locale it activated with,
+   * and again whenever the durable settings scope pushes a value into the
+   * running runtime — which a reload does while racing the shell's own profile
+   * rewrite. Those automatic publishes carry no user intent, and ignoring only
+   * the first one leaves the rest to be written back; that is what pinned
+   * "follow system" to a fixed language (issue #487). The write therefore also
+   * requires a real interaction in the page, and is dropped when the current
+   * mode already displays the chosen locale.
    * @param mode - stored preference (`system`, `zh`, `en`).
    * @param languages - device language tags in preference order.
    * @returns a classic script safe to run before the engine bundle.
@@ -228,13 +265,16 @@ internal object AppLanguage {
     val preference = if (mode == MODE_SYSTEM) "null" else jsQuote(mode)
     val ordered = languages.filter { it.isNotBlank() }.distinct()
     val tags = (ordered.ifEmpty { listOf(MODE_ZH) }).joinToString(",") { jsQuote(it) }
-    // onChange 的第一次调用是 dsh 发布「它自己解析出的当前语言」，不是用户选择：
-    // 把它写回壳偏好会把「跟随系统」变成固定语言。之后的选择才是用户在设置页
-    // 显式切换，交回壳侧存 ui_language 并同步 profile（壳侧据偏好重建原生界面）。
+    val expected = jsQuote(expectedLocale(mode, languages))
     return "(function(){try{" +
-      "var tags=[$tags];var first=true;" +
+      "var tags=[$tags];var expected=$expected;var armed=false;" +
+      "function arm(){armed=true;setTimeout(function(){armed=false},0)}" +
+      "try{document.addEventListener('click',arm,true);" +
+      "document.addEventListener('keydown',arm,true);" +
+      "document.addEventListener('touchend',arm,true)}catch(e){}" +
       "globalThis.__DSH_LOCALE__={read:function(){return Promise.resolve({languages:tags,preference:$preference})}," +
-      "onChange:function(locale){if(first){first=false;return}" +
+      "onChange:function(locale){if(!armed)return;armed=false;" +
+      "if(String(locale)===expected)return;" +
       "try{var b=window.androidBridge;" +
       "if(b&&typeof b.setUiLanguage==='function')b.setUiLanguage(String(locale))" +
       "}catch(e){}}};" +
