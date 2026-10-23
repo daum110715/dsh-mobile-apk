@@ -124,12 +124,33 @@ class AppLanguageTest {
     assertEquals("en", AppLanguage.expectedLocale("en", listOf("zh-CN")))
   }
 
+  /**
+   * 回归（评审发现）：比较基准若是 Activity 创建期的常量，同一次 Activity 内的
+   * 第二次切换会拿旧值比新值——用户在引擎原生语言行里从 English 选回中文，
+   * 因「zh 等于创建期的 zh」被判成噪声而丢写，壳原生界面停在英文。
+   * 基准必须在 onChange 时从桥现读。
+   */
   @Test
-  fun bootstrapScriptCarriesTheLocaleItsModeAlreadyShows() {
+  fun bootstrapScriptReadsTheDisplayedLocaleAtCallTime() {
+    val script = AppLanguage.bootstrapScript("system", listOf("zh-CN", "en-US"))
+    assertTrue("运行时必须向桥要当前档位", script.contains("getUiLanguage"))
+    assertTrue("不能只靠烘入值", !script.contains("if(next===baked)return"))
+    assertTrue("烘入值只作读不到桥时的回退", script.contains("return baked"))
+  }
+
+  @Test
+  fun bootstrapScriptFallbackCarriesTheLocaleItsModeAlreadyShows() {
     val followingSystem = AppLanguage.bootstrapScript("system", listOf("zh-CN", "en-US"))
-    assertTrue("跟随系统在中文机上的预期语言是 zh", followingSystem.contains("var expected=\"zh\""))
+    assertTrue("跟随系统在中文机上的回退是 zh", followingSystem.contains("var baked=\"zh\""))
     val forcedEnglish = AppLanguage.bootstrapScript("en", listOf("zh-CN"))
-    assertTrue("固定英文的预期语言是 en", forcedEnglish.contains("var expected=\"en\""))
+    assertTrue("固定英文的回退是 en", forcedEnglish.contains("var baked=\"en\""))
+  }
+
+  /** 桥只认 system/zh/en 三档；语言包 id 不得被静默归一成「跟随系统」。 */
+  @Test
+  fun bootstrapScriptDropsLocalesTheBridgeCannotStore() {
+    val script = AppLanguage.bootstrapScript("system", listOf("zh-CN"))
+    assertTrue("非三档值必须丢弃", script.contains("if(next!=='zh'&&next!=='en')return"))
   }
 
 }

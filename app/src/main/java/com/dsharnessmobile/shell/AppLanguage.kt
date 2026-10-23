@@ -254,10 +254,15 @@ internal object AppLanguage {
    * running runtime — which a reload does while racing the shell's own profile
    * rewrite. Those automatic publishes carry no user intent, and ignoring only
    * the first one leaves the rest to be written back; that is what pinned
-   * "follow system" to a fixed language (issue #487). The write therefore also
-   * requires a real interaction in the page, and is dropped when the current
-   * mode already displays the chosen locale.
-   * @param mode - stored preference (`system`, `zh`, `en`).
+   * "follow system" to a fixed language (issue #487).
+   *
+   * A write therefore needs a real interaction in the page, and it must change
+   * the language the shell currently displays. The displayed language is read
+   * from the bridge at call time rather than baked in here: this script is
+   * installed once per activity, while the mode changes underneath it on every
+   * switch, so a captured value would judge the second switch against the first.
+   * @param mode - stored preference (`system`, `zh`, `en`); the fallback answer
+   *   when the bridge cannot be read.
    * @param languages - device language tags in preference order.
    * @returns a classic script safe to run before the engine bundle.
    */
@@ -265,18 +270,32 @@ internal object AppLanguage {
     val preference = if (mode == MODE_SYSTEM) "null" else jsQuote(mode)
     val ordered = languages.filter { it.isNotBlank() }.distinct()
     val tags = (ordered.ifEmpty { listOf(MODE_ZH) }).joinToString(",") { jsQuote(it) }
-    val expected = jsQuote(expectedLocale(mode, languages))
+    val baked = jsQuote(expectedLocale(mode, languages))
     return "(function(){try{" +
-      "var tags=[$tags];var expected=$expected;var armed=false;" +
+      "var tags=[$tags];var baked=$baked;var armed=false;" +
       "function arm(){armed=true;setTimeout(function(){armed=false},0)}" +
+      "function shown(){" +
+      "var mode=null;" +
+      "try{var b=window.androidBridge;" +
+      "if(b&&typeof b.getUiLanguage==='function')mode=String(b.getUiLanguage())}catch(e){}" +
+      "if(mode==='zh'||mode==='en')return mode;" +
+      "if(mode==='system'){for(var i=0;i<tags.length;i++){" +
+      "var t=String(tags[i]).toLowerCase();" +
+      "if(t==='zh'||t==='en')return t;" +
+      "var p=t.split('-')[0];if(p==='zh'||p==='en')return p}" +
+      "return 'en'}" +
+      "return baked}" +
       "try{document.addEventListener('click',arm,true);" +
       "document.addEventListener('keydown',arm,true);" +
       "document.addEventListener('touchend',arm,true)}catch(e){}" +
       "globalThis.__DSH_LOCALE__={read:function(){return Promise.resolve({languages:tags,preference:$preference})}," +
       "onChange:function(locale){if(!armed)return;armed=false;" +
-      "if(String(locale)===expected)return;" +
+      "var next=String(locale);" +
+      // 桥只认三档；语言包 id 不在这里静默降级成「跟随系统」。
+      "if(next!=='zh'&&next!=='en')return;" +
+      "if(next===shown())return;" +
       "try{var b=window.androidBridge;" +
-      "if(b&&typeof b.setUiLanguage==='function')b.setUiLanguage(String(locale))" +
+      "if(b&&typeof b.setUiLanguage==='function')b.setUiLanguage(next)" +
       "}catch(e){}}};" +
       "}catch(e){}})();"
   }
