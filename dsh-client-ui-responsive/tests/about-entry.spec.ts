@@ -148,6 +148,21 @@ describe('关于入口（独立页面）', () => {
     await act(async () => { root?.unmount() })
   })
 
+  it('React 把导航行的 display 写回后，观察器也要重新收起它（否则页面上有两个「关于」）', async () => {
+    const host = seed('<div id="v">当前版本：0.2.1-rc.2</div><nav><button id="nav-about">关于</button></nav>')
+    cleanup = installAboutEntry()
+    await tick()
+    const navRow = host.querySelector<HTMLElement>('#nav-about')!
+    expect(navRow.style.display, '首次应收起导航行').toBe('none')
+    // 与版本行同形：React 重渲染把 inline style 写回空，标记（dataset）却还在。
+    // 早退的实现只认 dataset，于是这条行「复活」，屏幕上同时出现导航行与入口两个「关于」。
+    navRow.style.display = ''
+    host.appendChild(document.createElement('div'))
+    await tick()
+    expect(navRow.style.display, '导航行必须被重新收起').toBe('none')
+    expect(host.querySelectorAll('[data-dsh-about-entry]').length, '不得因此多插入入口').toBe(1)
+  })
+
   it('重复渲染不会插入第二个入口', async () => {
     const host = seed('<div id="v">当前版本：0.2.1-rc.2</div>')
     cleanup = installAboutEntry()
