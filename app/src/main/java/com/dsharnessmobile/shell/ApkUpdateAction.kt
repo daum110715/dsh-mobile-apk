@@ -101,11 +101,15 @@ internal class ApkUpdateState {
 
   /**
    * 是否处于「不能并发再发起」的相位（check 与 start 共用这一判据）。
-   * 含 [STATE_INSTALLING]：系统安装器已拉起时也不再受理新动作——那期间换状态会让用户
-   * 看到的状态与真实安装流程脱节。
+   *
+   * #12（2026-10-25 审计）：**不再含 [STATE_INSTALLING]**。INSTALLING 是「控制权已交给系统安装器」
+   * 的相位：用户在系统侧**取消安装器**后没有任一路径能把状态推走，而旧 busy 含它 ⇒
+   * `beginCheck` 永久拒绝——引导页却在 INSTALLING 态把检查按钮渲染为**可点**（渲染层注释
+   * 「恢复可检查」），按钮点了恒无响应，更新面死锁到杀应用。取消安装器的事实出路就是再查一轮：
+   * 安装器已拿到 APK，重新 check 不丢任何载荷。与 [inFlight] 的分工见该函数注释。
    */
   fun busy(): Boolean = synchronized(lock) {
-    state == STATE_CHECKING || state == STATE_DOWNLOADING || state == STATE_INSTALLING
+    state == STATE_CHECKING || state == STATE_DOWNLOADING
   }
 
   /**
@@ -294,6 +298,21 @@ internal class ApkUpdateController(private val activity: Activity) {
   private val watchdog = Runnable { onTimeout() }
 
   /**
+   * 会话代次（#9，2026-10-25 审计）：每次**受理**新动作 +1；超时/释放等非属主终态也 +1。
+   * 后台线程（check / download）带着发起时的代次回写，代次不符即整条作废——否则超时把状态
+   * 判成 FAILED 之后，迟到的网络结果还会把 FAILED 覆盖成 AVAILABLE/INSTALLING；最坏形态是
+   * 旧下载线程未被取消、用户重试后两个线程并发写同一个目标文件。
+   */
+  private val epoch = java.util.concurrent.atomic.AtomicInteger(0)
+
+  private fun isCurrentEpoch(e: Int): Boolean = epoch.get() == e
+
+  /** 作废一切在途回写（超时、界面销毁等非属主终态调用）。 */
+  private fun invalidateInFlight() {
+    epoch.incrementAndGet()
+  }
+
+  /**
    * 状态与私有载荷的一致性不变量（纯读，供测试逐相位钉住）。
    *
    * 存在理由：两个字段表示同一件事（「有没有一个可下载的新版」）是 0.14.6 那个死循环的温床。
@@ -413,6 +432,7 @@ internal class ApkUpdateController(private val activity: Activity) {
   fun release() {
     disarmWatchdog()
     observers.clear()
+    invalidateInFlight() // #9：销毁后仍在跑的网络线程不得再回写状态。
     if (!state.busy()) return
     // 载荷与相位成对作废（同 fail()）：不变量在任何退出路径上都成立。
     currentResult = null
@@ -442,13 +462,14 @@ internal class ApkUpdateController(private val activity: Activity) {
    */
   fun check(): String {
     if (!state.beginCheck()) {
-      // beginCheck 只在真有在途动作（checking/downloading/installing）时拒绝 => busy 是**事实**，不是兜底话术。
+      // beginCheck 只在真有在途动作（checking/downloading）时拒绝 => busy 是**事实**，不是兜底话术。
       return reject("busy", "上一次更新动作仍在进行中，请稍候")
     }
+    val e = epoch.incrementAndGet()
     currentResult = null // 进入 checking：旧载荷（若有）立即作废，避免与新一轮检查的结果混用
     armWatchdog(CHECK_TIMEOUT_MS)
     notifyChanged()
-    Thread({ runCheck() }, "dsh-apk-update-check").start()
+    Thread({ runCheck(e) }, "dsh-apk-update-check").start()
     return snapshotObject().put("code", "accepted").toString()
   }
 
@@ -472,8 +493,9 @@ internal class ApkUpdateController(private val activity: Activity) {
       else reject("not-available", "当前状态（" + state.stateName() + "）不能开始下载，请先点「检查更新」")
     }
     armWatchdog(downloadTimeoutMs(pending.sizeBytes))
+    val e = epoch.incrementAndGet()
     settle() // 页面立刻看到 downloading（两段式：受理 + 轮询读状态面）
-    Thread({ downloadAndInstall(pending) }, "dsh-apk-update-download").start()
+    Thread({ downloadAndInstall(pending, e) }, "dsh-apk-update-download").start()
     return snapshotObject().put("code", "accepted").toString()
   }
 
@@ -525,20 +547,22 @@ internal class ApkUpdateController(private val activity: Activity) {
 
   // ── 内部推进 ────────────────────────────────────────────────────────────────
 
-  private fun runCheck() {
+  private fun runCheck(e: Int) {
     val r = try {
       UpdateChecker.checkLatest()
     } catch (t: Throwable) {
       android.util.Log.w(TAG, "check threw: " + (t.message ?: t.javaClass.simpleName))
       UpdateChecker.CheckResult.Failed("检查更新未完成（详细原因已写入日志）——可重试，或复制日志反馈")
     }
+    // #9：超时/新一轮受理已作废本次会话 ⇒ 迟到结果整条丢弃（覆盖 FAILED 会复活死会话）。
+    if (!isCurrentEpoch(e)) return
     if (r is UpdateChecker.CheckResult.Available) currentResult = r else currentResult = null
     state.onCheckResult(r, UpdateChecker.currentVersion())
     settle()
   }
 
   /** 下载 → 校验 → 安装（复用既有下载链与 [verifyApkArtifact]，判定强度与旧引导页路径完全一致）。 */
-  private fun downloadAndInstall(r: UpdateChecker.CheckResult.Available) {
+  private fun downloadAndInstall(r: UpdateChecker.CheckResult.Available, e: Int) {
     val dest = File(UpdateChecker.updatesDir(activity), r.name)
     var reused = false
     try {
@@ -556,29 +580,31 @@ internal class ApkUpdateController(private val activity: Activity) {
         reused = true // 上次下完但没装成（授权中断/安装取消）→ 复用已验证的包，不重复拉 169MB
       } else {
         // #513：元数据缺 sha256 时第三方镜像产物无摘要可校验——只允许官方直连（fail-closed）。
-        val used = UpdateChecker.download(r.apkUrl, dest, { pct -> onDownloadProgress(pct) }, allowMirrors = expectedSha != null)
+        val used = UpdateChecker.download(r.apkUrl, dest, { pct -> if (isCurrentEpoch(e)) onDownloadProgress(pct) }, allowMirrors = expectedSha != null)
         if (used == null) {
-          failDownload("下载失败：镜像链全部不可用（直连与加速镜像均失败）——请稍后重试", ApkUpdateState.KIND_DOWNLOAD_FAILED)
+          failDownload("下载失败：镜像链全部不可用（直连与加速镜像均失败）——请稍后重试", ApkUpdateState.KIND_DOWNLOAD_FAILED, e)
           return
         }
+        // #9：下载期间若已换代（超时/重试），不再碰状态与 dest——新的会话自己会重下/校验。
+        if (!isCurrentEpoch(e)) return
         when (val verdict = artifactVerdict()) {
           is ApkArtifactVerdict.Accept -> Unit
           is ApkArtifactVerdict.Reject -> {
             dest.delete()
-            failDownload("下载失败：" + verdict.reason + "（文件已删除，请重试）", ApkUpdateState.KIND_ARTIFACT_REJECTED)
+            failDownload("下载失败：" + verdict.reason + "（文件已删除，请重试）", ApkUpdateState.KIND_ARTIFACT_REJECTED, e)
             return
           }
         }
       }
     } catch (t: Throwable) {
       android.util.Log.w(TAG, "apk download threw: " + (t.message ?: t.javaClass.simpleName))
-      failDownload("下载失败：" + (t.message ?: "未知原因") + "——请稍后重试", ApkUpdateState.KIND_DOWNLOAD_FAILED)
+      failDownload("下载失败：" + (t.message ?: "未知原因") + "——请稍后重试", ApkUpdateState.KIND_DOWNLOAD_FAILED, e)
       return
     }
     val reusedFlag = reused
     // 注意：此处**不**清载荷——install() 在 UI 线程跑且可能落到「需授权」相位，而那一刻才离开
     // downloading。载荷的清零与相位切换成对发生（见 install/failDownload），不变量因此始终成立。
-    activity.runOnUiThread { install(dest, reusedFlag) }
+    activity.runOnUiThread { if (isCurrentEpoch(e)) install(dest, reusedFlag) }
   }
 
   private fun onDownloadProgress(pct: Int) {
@@ -586,7 +612,9 @@ internal class ApkUpdateController(private val activity: Activity) {
     notifyChanged()
   }
 
-  private fun failDownload(text: String, kind: String) {
+  private fun failDownload(text: String, kind: String, e: Int) {
+    // #9：作废会话的失败不落盘（它的超时文案已由 watchdog 写过；再写会把新一轮的状态盖掉）。
+    if (!isCurrentEpoch(e)) return
     // 载荷随相位一起作废：失败后的重试路径是 check（重新取元数据），不再复用它。
     currentResult = null
     state.onDownloadFailed(text, kind)
@@ -631,6 +659,8 @@ internal class ApkUpdateController(private val activity: Activity) {
   }
 
   private fun fail(text: String, kind: String) {
+    // #9：非属主终态（超时/安装失败/界面关闭）一律作废在途回写，防迟到线程复活本会话。
+    invalidateInFlight()
     // 载荷与相位成对：进入 FAILED 即作废（重试路径是 check / readyToInstall 续继，都不用它）。
     currentResult = null
     state.onFailed(text, kind)

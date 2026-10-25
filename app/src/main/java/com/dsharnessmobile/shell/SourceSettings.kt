@@ -76,6 +76,14 @@ internal object SourceSettings {
    * @return 结果；失败时若已回滚，old 源原样保留。
    */
   fun switchTo(context: Context, mirror: SourceMirror.Mirror): Result {
+    // #11（2026-10-25 审计）：换源是对 usr/etc 的双写（sources.list + chosen_mirrors），与快照刷新
+    // 的整树 swap 并发时，两次写会横跨 swap 边界（一次落旧树、一次落新树）或被换树直接吞掉。
+    // 三个真源判据全查：进程级刷新 CAS / 在线更新 CAS / 跨进程事务 journal。在场即拒绝，不动任何文件。
+    if (EngineManager.snapshotRefreshing.get() || EngineManager.onlineUpdateActive.get() ||
+      SnapshotTransaction.readMarker(context.filesDir) != null
+    ) {
+      return Result(false, "运行时正在更新（快照刷新中），请等它完成后再切换软件源")
+    }
     val engine = EngineManager(context, EngineManager.ensurePickToken())
     val prefix = engine.usrDir
     val fragment = SourceMirror.fragmentFile(prefix, mirror)
@@ -86,8 +94,11 @@ internal object SourceSettings {
     val target = sourcesListFile(prefix)
     val backup = backupFile(prefix)
     // 备份必须在任何写入之前完成：崩溃窗口内用户至少还有旧源可还原。
+    // #8（2026-10-25 审计）：备份必须**每次切换前刷新到当前源**。旧实现只在备份缺席时写
+    // 备份——第二次及以后的切换沿用第一次的备份，失败回滚会把用户从 A 源回到出厂源（而非 A），
+    // 且与 chosen_mirrors（按本次切换前的真实值回滚）不配对。备份的语义是「本次切换前的状态」。
     val hadPrevious = target.isFile
-    if (hadPrevious && !backup.isFile) {
+    if (hadPrevious) {
       runCatching { backup.writeText(target.readText()) }
         .onFailure { return Result(false, "无法备份当前软件源，已中止（未做任何修改）") }
     }

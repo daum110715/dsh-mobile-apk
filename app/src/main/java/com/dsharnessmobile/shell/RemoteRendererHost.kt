@@ -83,6 +83,9 @@ internal class RemoteRendererHost(
   @Synchronized fun connect(onBound: () -> Unit = {}) {
     if (renderer != null || binding) return
     binding = true
+    // #13（2026-10-25 审计）：若上一条 ServiceConnection 仍在（重连/竞态路径），先解绑再建新
+    // 连接——否则每次重连泄漏一条旧绑定，且服务重启时旧回调会再次投递。
+    connection?.let { stale -> runCatching { appContext.unbindService(stale) } }
     val conn = object : ServiceConnection {
       override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
         renderer = IBrowserRenderer.Stub.asInterface(service)
@@ -91,6 +94,10 @@ internal class RemoteRendererHost(
         runCatching {
           renderer?.start(this@RemoteRendererHost, startConfig())
         }
+        // #13：BIND_AUTO_CREATE 下渲染进程死亡后系统会重启服务并**重新投递本回调**——
+        // 把「回来了」的事实播报给宿主，让它清掉断线时烙下的降级标记；没有这一条，
+        // 自动恢复的绑定也救不回已降级的面板（直到重启应用）。
+        listener.onRendererEvent("", JSONObject().put("type", "rendererConnected"))
         onBound()
       }
 
