@@ -85,10 +85,14 @@ class ConsoleSession(private val context: Context) {
   /** 把中继脚本解包到私有目录（二进制安全，一次性）。 */
   private fun relayScript(): File? {
     val target = File(context.filesDir, ConsolePty.RELAY_ASSET)
+    // M-c4（2026-10-25 审计）：解包按进程只做一次——旧实现每次 start 都「读资产 → 全量复制 →
+    // 覆盖同名文件」，重连/重开一次就重打一遍文件 IO（且发生在调用线程上）。
+    if (relayUnpacked && target.isFile) return target
     return runCatching {
       context.assets.open(ConsolePty.RELAY_ASSET).use { input ->
         target.outputStream().use { out -> input.copyTo(out) }
       }
+      relayUnpacked = true
       target
     }.onFailure { Log.w(TAG, "console relay unpack failed: " + (it.message ?: it.javaClass.simpleName)) }
       .getOrNull()
@@ -148,6 +152,13 @@ class ConsoleSession(private val context: Context) {
       } catch (e: java.io.IOException) {
         Log.w(TAG, "console: direct exec denied, falling back to linker64: " + e.message)
         build(listOf("/system/bin/linker64") + argv).start()
+      }
+      // M-c4：start 由后台线程执行，onDestroy 可能与 spawn 竞速——closed 已置位时当场回收，
+      // 不留孤儿（destroy 会递增 generation，此后所有回调自然作废）。
+      if (closed) {
+        runCatching { proc.destroyForcibly() }
+        listener.onStatus(State.FAILED, "控制台已随界面关闭")
+        return false
       }
       process = proc
       ptyReady = false
@@ -378,6 +389,8 @@ class ConsoleSession(private val context: Context) {
    */
   fun destroy() {
     closed = true
+    // M-c4：与后台 start 竞速时作废在途会话的回调（读线程的 generation 判据随之失效）。
+    generation += 1
     val proc = process
     process = null
     if (proc != null) {
@@ -407,5 +420,8 @@ class ConsoleSession(private val context: Context) {
     /** 输出聚合阈值（I7）：16KB 或 50ms 先到者触发一次回调。 */
     internal const val OUTPUT_FLUSH_BYTES = 16 * 1024
     internal const val OUTPUT_FLUSH_NS = 50_000_000L
+
+    /** 中继脚本解包完成标记（M-c4：进程级一次，重连/重开不再重打资产 IO）。 */
+    @Volatile private var relayUnpacked = false
   }
 }

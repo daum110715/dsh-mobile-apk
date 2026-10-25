@@ -26,6 +26,9 @@ class ConsoleActivity : ComponentActivity() {
   private val session = ConsoleSession(this)
   private val handler = android.os.Handler(android.os.Looper.getMainLooper())
   private var sessionStarted = false
+
+  /** M-c4（2026-10-25 审计）：start/restart 已挪后台线程——此标记防 onStart 与桥 restart 重入双启。 */
+  @Volatile private var sessionStarting = false
   private var pageReady = false
   private var pendingTopInset = 0f
   private var pendingBottomInset = 0f
@@ -37,11 +40,19 @@ class ConsoleActivity : ComponentActivity() {
   /** S1-18：与 lastStatus 配对的状态，页面重放时同样按状态判就绪。 */
   private var lastState: ConsoleSession.State = ConsoleSession.State.STARTING
 
+  /**
+   * 页面脚本派发（M-c2，2026-10-25 审计）：onDestroy 后 WebView 已销毁，迟到的输出/状态推送
+   * 再调 evaluateJavascript 会在部分内核上抛 IllegalStateException——这里统一守卫，
+   * 排队中的投递也由 onDestroy 的 removeCallbacksAndMessages 兜底清空。
+   */
+  private fun evalPage(script: String) {
+    if (isFinishing || isDestroyed) return
+    webView.evaluateJavascript(script, null)
+  }
+
   private val sessionListener = object : ConsoleSession.Listener {
     override fun onOutput(text: String) {
-      handler.post {
-        webView.evaluateJavascript("window.__consoleAppend(" + jsString(text) + ")", null)
-      }
+      handler.post { evalPage("window.__consoleAppend(" + jsString(text) + ")") }
     }
 
     override fun onStatus(state: ConsoleSession.State, text: String) {
@@ -64,18 +75,12 @@ class ConsoleActivity : ComponentActivity() {
    * 做子串正则（措辞一变就静默错判）。
    */
   private fun pushStatus(state: ConsoleSession.State, text: String) {
-    webView.evaluateJavascript(
-      "window.__consoleState && window.__consoleState(" + jsString(state.wire) + "," + jsString(text) + ")",
-      null,
-    )
+    evalPage("window.__consoleState && window.__consoleState(" + jsString(state.wire) + "," + jsString(text) + ")")
   }
 
   private fun pushInsets() {
     if (!pageReady || !::webView.isInitialized) return
-    webView.evaluateJavascript(
-      "window.__consoleInsets && window.__consoleInsets($pendingTopInset,$pendingBottomInset,$pendingImeInset)",
-      null,
-    )
+    evalPage("window.__consoleInsets && window.__consoleInsets($pendingTopInset,$pendingBottomInset,$pendingImeInset)")
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -126,11 +131,22 @@ class ConsoleActivity : ComponentActivity() {
 
   override fun onStart() {
     super.onStart()
-    if (sessionStarted) return
-    sessionStarted = session.start(sessionListener)
+    if (sessionStarted || sessionStarting) return
+    // M-c4（2026-10-25 审计）：start 全程是文件 IO（bash 存在性、relay 解包、spawn）——旧实现
+    // 在主线程跑，慢盘上 onStart 直接卡帧。挪后台线程；状态经 handler 回主线程照常上屏。
+    sessionStarting = true
+    Thread {
+      val ok = session.start(sessionListener)
+      handler.post {
+        sessionStarted = ok
+        sessionStarting = false
+      }
+    }.apply { isDaemon = true; name = "dsh-console-start" }.start()
   }
 
   override fun onDestroy() {
+    // M-c2：先清排队中的输出/状态投递，再拆会话——迟到的 evaluateJavascript 不再打到已销毁的 WebView。
+    handler.removeCallbacksAndMessages(null)
     session.destroy()
     webView.destroy()
     super.onDestroy()
@@ -187,7 +203,16 @@ class ConsoleActivity : ComponentActivity() {
     @JavascriptInterface
     fun restart() {
       handler.post {
-        sessionStarted = session.restart(sessionListener)
+        if (sessionStarting) return@post
+        sessionStarting = true
+        // M-c4：restart 内含 destroy+start（整段文件 IO），同样离主线程。
+        Thread {
+          val ok = session.restart(sessionListener)
+          handler.post {
+            sessionStarted = ok
+            sessionStarting = false
+          }
+        }.apply { isDaemon = true; name = "dsh-console-restart" }.start()
       }
     }
 

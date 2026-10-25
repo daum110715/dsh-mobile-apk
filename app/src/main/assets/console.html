@@ -362,13 +362,27 @@
     return hasPty;
   }
   // 就绪之后再问一次：会话是异步拉起的，页面脚本比 session.start() 早执行。
-  var ptyPoll = setInterval(function () {
-    if (syncCtlAvailability()) clearInterval(ptyPoll);
-  }, 500);
+  // M-c5（2026-10-25 审计）：轮询有上限（无 PTY 的降级会话下，500ms×∞ 的桥轮询会陪跑整个
+  // Activity 生命周期）；到顶即收手，重连时由 restart 按钮重新挂一轮。
+  var ptyPoll = null;
+  var ptyPollAttempts = 0;
+  function armPtyPoll() {
+    if (ptyPoll) clearInterval(ptyPoll);
+    ptyPollAttempts = 0;
+    ptyPoll = setInterval(function () {
+      if (syncCtlAvailability() || ++ptyPollAttempts >= 120) clearInterval(ptyPoll);
+    }, 500);
+  }
+  armPtyPoll();
   setTimeout(function () { if (!syncCtlAvailability()) setTimeout(syncCtlAvailability, 2000); }, 0);
 
   window.addEventListener('resize', pushSize);
   window.addEventListener('orientationchange', function () { setTimeout(pushSize, 120); });
+  // M-c5：edge-to-edge 下软键盘弹出**不触发 window resize**（布局视口不动，动的只有
+  // visualViewport）——键盘开着时行数不重测，vim/top 按旧高度排版即花屏。补听视觉视口。
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', function () { setTimeout(pushSize, 60); });
+  }
   setTimeout(pushSize, 0);
 
   // 按键条：直接把控制字符写进 PTY（不经 submit，不追加换行）。
@@ -432,6 +446,7 @@
       return;
     }
     setReady(false, '正在重连…');
+    armPtyPoll();
     try { window.consoleBridge.restart(); } catch (e) {}
   });
   // S1-17：引擎栏可点 = 立即重试探活（离线时不再只是「报个状态」，而是给一个动作）。
