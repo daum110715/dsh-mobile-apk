@@ -145,9 +145,11 @@ class ConsoleActivity : ComponentActivity() {
       // 且引擎已死时控制台仍可用，正是这条口令存在的理由。
       val action = parseSafeCommand(command)
       if (action == null) {
-        // 同样不能带裸换行过桥（见 [writeKeys]）：命令本身来自输入框，可能含换行，
-        // 直接拼 "\n" 会让整次调用静默消失，于是提交命令失效。
-        session.writeRaw(ConsoleKeyCodec.decode(command) + "\n")
+        // I1（2026-10-25 审计）：输入框是 <input type="text">，不可能含换行——旧注释的前提
+        // 不成立；而对原文跑 decode 会二次转义：含反斜杠的命令被改写甚至拆分执行
+        // （echo 'C:\new' 拆成两条命令、grep '\d\+' 变 'd+'）。submit 直传原文，
+        // decode 只服务 writeKeys 的 data-send 编码键序列。
+        session.writeCommand(command)
         return
       }
       val engine = EngineManager(this@ConsoleActivity)

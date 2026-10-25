@@ -3,6 +3,7 @@ package com.dsharnessmobile.shell
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * Console session: runs a real pty-hosted bash and streams its output to the UI.
@@ -58,12 +59,24 @@ class ConsoleSession(private val context: Context) {
   }
 
   private var process: Process? = null
-  private var closed = false
-  private var generation = 0
+  // 2026-10-25 审计 M1：closed/generation 由 UI 线程写、读线程与 restart 读——补 @Volatile。
+  @Volatile private var closed = false
+  @Volatile private var generation = 0
   private val stripper = ConsoleAnsiStripper()
+
+  /** 本会话是否按 PTY 协议跑（spawn 期决定；与 [ptyReady]「握手完成」是两件事）。 */
+  @Volatile private var usingPty = false
 
   /** 是否真的建立了 PTY（中继回报 ready 之后为 true）。 */
   @Volatile private var ptyReady = false
+
+  /**
+   * PTY 握手窗口内缓冲的用户输入（2026-10-25 审计 I3）：中继在 ready 帧之前把 stdin 的
+   * 每一行都按 JSON 解析，解析失败直接丢弃——裸写进去的首条命令会无声消失。ready 帧到达时
+   * 统一重放。写者=UI 桥线程、读者=读线程，用 [inputLock] 串行化。
+   */
+  private val pendingInput = StringBuilder()
+  private val inputLock = Any()
 
   /** 当前窗口尺寸。页面首帧常常测出 0，故初值取标准 80x24。 */
   @Volatile private var cols = ConsolePty.DEFAULT_COLS
@@ -121,7 +134,10 @@ class ConsoleSession(private val context: Context) {
           p.environment()["DSH_CONSOLE_NODE_PTY"] = ptyModule.absolutePath
           p.environment()["DSH_CONSOLE_COLS"] = ConsolePty.normalizeSize(cols, rows).first.toString()
           p.environment()["DSH_CONSOLE_ROWS"] = ConsolePty.normalizeSize(cols, rows).second.toString()
-          // 输出里混着 JSON 帧：stderr 不能并进来，否则一行日志就把 JSON 流截断了。
+          // PTY 模式：输出是 JSON 帧流，stderr 不能并进来（一行日志就截断协议）；中继自身的
+          // stderr 由专职 drain 线程消费（I6——无人读的管道写满 64KB 后写端永久阻塞）。
+          // 非 PTY 降级：bash 的 stderr 合并进主输出（终端本来就是混流面，I6 的冻结形态）。
+          if (!canUsePty) p.redirectErrorStream(true)
         }
       val argv = if (canUsePty) ConsolePty.argv(node, relay!!) else listOf(bash.absolutePath, "-i")
       // Same fallback as the engine: Android 15/16 and some OEM systems (Honor/Huawei, measured)
@@ -135,36 +151,97 @@ class ConsoleSession(private val context: Context) {
       }
       process = proc
       ptyReady = false
+      usingPty = canUsePty
       stripper.reset()
+      if (canUsePty) {
+        // 中继 stderr 的专职 drain（I6）：首块进日志（native/linker 报错可诊断），其余丢弃防刷屏。
+        Thread({
+          try {
+            proc.errorStream.bufferedReader(Charsets.UTF_8).use { r ->
+              val buf = CharArray(2048)
+              var logged = false
+              while (true) {
+                val n = r.read(buf)
+                if (n < 0) break
+                if (!logged && n > 0) {
+                  logged = true
+                  Log.i(TAG, "console relay stderr: " + String(buf, 0, n).take(400).replace(Char(10), ' '))
+                }
+              }
+            }
+          } catch (_: Throwable) {
+          }
+        }, "dsh-console-relay-err").apply { isDaemon = true }.start()
+      }
       val reader = Thread {
+        var exitSeenByReader = false
         try {
           if (canUsePty) {
             // 中继协议：一行一个 JSON。按行读而不是按字节流读，是因为帧边界就是换行。
+            // 输出聚合（I7）：node-pty 的 onData 按小片段回调，每帧一次跨进程 JS 求值会把
+            // 主线程打满（cat 大文件即 ANR）——按「16KB 或 50ms」聚合成块再回调。
+            val outBuf = StringBuilder()
+            var lastFlushNs = System.nanoTime()
+            fun flushOutput(force: Boolean) {
+              if (outBuf.isEmpty()) return
+              val now = System.nanoTime()
+              if (!force && outBuf.length < OUTPUT_FLUSH_BYTES && now - lastFlushNs < OUTPUT_FLUSH_NS) return
+              val chunk = outBuf.toString()
+              outBuf.setLength(0)
+              lastFlushNs = now
+              if (generation == gen) listener.onOutput(chunk)
+            }
             proc.inputStream.bufferedReader(Charsets.UTF_8).use { r ->
               while (true) {
                 val line = r.readLine() ?: break
                 val data = ConsolePty.dataOf(line)
                 if (data != null) {
                   val chunk = stripper.feed(data)
-                  if (chunk.isNotEmpty() && generation == gen) listener.onOutput(chunk)
+                  if (chunk.isNotEmpty()) {
+                    outBuf.append(chunk)
+                    flushOutput(false)
+                  }
                   continue
                 }
                 val op = ConsolePty.fieldOf(line, "op")
                 if (op == "ready") {
+                  flushOutput(true)
                   ptyReady = true
+                  // I3：握手窗口内缓冲的输入在此重放（中继从此刻起才把 stdin 当协议解析）。
+                  val replay = synchronized(inputLock) {
+                    val pending = pendingInput.toString()
+                    pendingInput.setLength(0)
+                    pending
+                  }
+                  if (replay.isNotEmpty() && generation == gen) {
+                    try {
+                      proc.outputStream.write(ConsolePty.writeMessage(replay).toByteArray(Charsets.UTF_8))
+                      proc.outputStream.flush()
+                    } catch (t: Throwable) {
+                      Log.w(TAG, "console pending replay failed: " + (t.message ?: t.javaClass.simpleName))
+                    }
+                  }
                   if (generation == gen) {
                     listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境，真 PTY）")
                   }
                 } else if (op == "error") {
+                  // I4：中继启动期 error 后会立即 process.exit——它不会再服务任何输入，
+                  // 旧实现仍报 READY 是把死会话说成可用。如实报 FAILED（重连有意义），
+                  // 进程退出由下方 EOF 兜底（exit 帧不会再来）。
                   val msg = ConsolePty.fieldOf(line, "message") ?: "未知错误"
                   Log.w(TAG, "console relay error: " + msg)
-                  if (generation == gen) listener.onStatus(State.READY, "控制台可用，但 PTY 建立失败：" + msg)
+                  flushOutput(true)
+                  if (generation == gen) listener.onStatus(State.FAILED, "PTY 建立失败：" + msg + "——可点重连重试")
                 } else if (op == "exit") {
                   val code = ConsolePty.numberFieldOf(line, "code") ?: -1
+                  exitSeenByReader = true
+                  flushOutput(true)
                   if (generation == gen) listener.onExit(code)
                 }
               }
             }
+            flushOutput(true)
+            exitSeenByReader = true
           } else {
             // 非 PTY 降级路径：与旧实现一致，按块读并剥离控制序列。
             proc.inputStream.reader(Charsets.UTF_8).use { r ->
@@ -191,7 +268,9 @@ class ConsoleSession(private val context: Context) {
         } catch (_: IllegalThreadStateException) {
           -1
         }
-        if (generation == gen && !canUsePty) listener.onExit(code)
+        // EOF 兜底（I4 同族）：PTY 模式下 exit 帧已报过就不再重复；error 后中继自退没有
+        // exit 帧，EOF 是唯一退出信号——旧实现只给非 PTY 路径报 onExit，死会话永远「就绪」。
+        if (generation == gen && (!canUsePty || !exitSeenByReader)) listener.onExit(code)
       }
       reader.isDaemon = true
       reader.start()
@@ -220,7 +299,10 @@ class ConsoleSession(private val context: Context) {
     if (c == this.cols && r == this.rows) return
     this.cols = c
     this.rows = r
-    send(ConsolePty.resizeMessage(c, r))
+    // I2：resize 帧只对 PTY 中继有意义；非 PTY 降级下 process 就是 bash 本身，
+    // 往它 stdin 写 JSON 帧等于注入一条命令（页面加载即触发一次）。降级的初始
+    // 尺寸已由 DSH_CONSOLE_COLS/ROWS 环境变量交付。
+    if (usingPty) send(ConsolePty.resizeMessage(c, r))
   }
 
   /** Write one command (appends \n). */
@@ -238,6 +320,11 @@ class ConsoleSession(private val context: Context) {
    */
   fun writeRaw(text: String) {
     val proc = process ?: return
+    if (usingPty && !ptyReady) {
+      // I3：握手窗口先缓冲（见 pendingInput 注释），ready 帧统一重放。
+      synchronized(inputLock) { pendingInput.append(text) }
+      return
+    }
     if (ptyReady) {
       send(ConsolePty.writeMessage(text))
       return
@@ -279,6 +366,7 @@ class ConsoleSession(private val context: Context) {
     destroy()
     closed = false
     stripper.reset()
+    synchronized(inputLock) { pendingInput.setLength(0) }
     return start(listener)
   }
 
@@ -293,7 +381,21 @@ class ConsoleSession(private val context: Context) {
     val proc = process
     process = null
     if (proc != null) {
-      if (ptyReady) send(ConsolePty.KILL_MESSAGE)
+      if (ptyReady) {
+        // C1：kill 帧必须直写局部 proc——旧实现此刻已把字段置 null，而 send 读的是字段，
+        // kill 协议沦为死代码：实际回收只剩 SIGKILL 中继，vim/top 的 PTY 子进程全部残留。
+        try {
+          proc.outputStream.write(ConsolePty.KILL_MESSAGE.toByteArray(Charsets.UTF_8))
+          proc.outputStream.flush()
+        } catch (_: Throwable) {
+        }
+        // 给中继短窗按协议回收 PTY 子进程；不给窗的话紧随的 destroy 会与 kill 帧竞争。
+        try {
+          proc.waitFor(500, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+          Thread.currentThread().interrupt()
+        }
+      }
       ptyReady = false
       proc.destroy()
     }
@@ -301,5 +403,9 @@ class ConsoleSession(private val context: Context) {
 
   companion object {
     private const val TAG = "dsh-console"
+
+    /** 输出聚合阈值（I7）：16KB 或 50ms 先到者触发一次回调。 */
+    internal const val OUTPUT_FLUSH_BYTES = 16 * 1024
+    internal const val OUTPUT_FLUSH_NS = 50_000_000L
   }
 }
