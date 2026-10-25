@@ -739,8 +739,12 @@ internal class ApkUpdateController(private val activity: Activity) {
       else -> null
     }
 
-    /** 元数据检查上限：API 连接 10s + 读取 15s，另有排队与重试余量。 */
-    const val CHECK_TIMEOUT_MS = 30_000L
+    /**
+     * 元数据检查上限。M-s1（2026-10-25 审计）：必须**覆盖确认链的最坏耗时**——六档串行、
+     * 每档连接+读取双超时（8+15+15+8+30+15 秒档位），加上排队与重试余量约 2 分钟；旧值 30s
+     * 会在链路还在正常推进时就把检查判成超时失败（慢网下必然误杀）。
+     */
+    const val CHECK_TIMEOUT_MS = 120_000L
     /** 下载上限下限（小包也不会秒判超时）。 */
     const val DOWNLOAD_TIMEOUT_MIN_MS = 3 * 60_000L
     /** 下载上限上限（169MB 在慢网上也不至于被误判）。 */

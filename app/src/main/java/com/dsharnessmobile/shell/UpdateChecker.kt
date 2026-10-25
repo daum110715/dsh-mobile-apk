@@ -812,8 +812,22 @@ object UpdateChecker {
             }
           }
         }
-        if (dest.exists()) dest.delete()
-        if (!tmp.renameTo(dest)) { tmp.copyTo(dest, overwrite = true); tmp.delete() }
+        // M-s6（2026-10-25 审计）：**不再先删 dest 再 rename**——旧顺序在「删旧包成功、
+        // rename/拷贝失败」（磁盘满/IO 错）的窗口里把上一份**已验证可用**的包也毁掉。
+        // REPLACE_EXISTING 的原子替换没有这个窗口；不支持原子的文件系统退回拷贝路径。
+        try {
+          java.nio.file.Files.move(
+            tmp.toPath(), dest.toPath(),
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+          )
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+          if (dest.exists()) dest.delete()
+          if (!tmp.renameTo(dest)) { tmp.copyTo(dest, overwrite = true); tmp.delete() }
+        } catch (e: Exception) {
+          android.util.Log.w(TAG, "download finalize failed: " + (e.message ?: e.javaClass.simpleName))
+          tmp.delete()
+          throw e
+        }
         conn.disconnect()
         return candidate
       } catch (e: Exception) {
