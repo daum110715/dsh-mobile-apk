@@ -791,4 +791,70 @@ class SafeModeTest {
       assertTrue("禁用位必须保留：- id: " + id + " disabled: true", after.contains("- id: " + id + "\n  disabled: true"))
     }
   }
+
+  /**
+   * M-7A（2026-10-25 审计）：insert 组的终止边界是**任何列 0 非空行**（含注释）。
+   * 旧判据只认顶层列表项，insert 组后跟随的列 0 注释被吞进组体、随第三方条目过滤被静默
+   * 丢弃——与 filterThirdPartyInserts 文档「其余内容逐字保留」矛盾。共享 fixture 里没有
+   * 列 0 注释（正是该缺陷存活到第七轮的原因），本用例自带内联文本补上这条判据。
+   */
+  @Test
+  fun `M-7A 列0注释不被insert组吞掉`() {
+    val patch = listOf(
+      "# 顶部说明",
+      "- insert:",
+      "    - id: prod-one",
+      "      name: prod-one-pkg",
+      "# 组间注释（列 0）——不得随第三方条目过滤被吞",
+      "",
+      "- insert:",
+      "    - id: third-party",
+      "      name: evil-pkg",
+      "      config:",
+      "        x: 1",
+      "# 尾注释",
+    ).joinToString("\n") + "\n"
+    val entries = setOf(PluginMounts.HardEntry("prod-one", "prod-one-pkg"))
+    val filtered = SafeMode.filterThirdPartyInserts(patch, entries)
+    assertFalse("第三方条目必须被摘除", filtered.contains("evil-pkg"))
+    assertTrue("产品条目必须保留", filtered.contains("prod-one-pkg"))
+    assertTrue("列 0 注释必须逐字保留（M-7A）", filtered.contains("# 顶部说明"))
+    assertTrue("组间注释必须保留", filtered.contains("# 组间注释（列 0）"))
+    assertTrue("尾注释必须保留", filtered.contains("# 尾注释"))
+  }
+
+  /**
+   * M-7B（2026-10-25 审计）：legacy 状态迁移的写序是「原子写 current → 删 legacy」，
+   * 两步之间被打断会留下**逐字节相同**的两份状态文件。旧实现一律拒绝（「拒绝猜测恢复
+   * 来源」）且不给出路 ⇒ 用户被永久锁死。内容一致必须收敛为删旧继续。
+   */
+  @Test
+  fun `M-7B 迁移中断的双状态文件逐字节相同即收敛`() {
+    val (_, _, autoDir) = fixture()
+    autoDir.mkdirs()
+    val body = org.json.JSONObject().put("active", false).put("snapshotId", "st-interrupted").toString()
+    File(autoDir, SafeMode.STATE_FILE).writeText(body)
+    val legacy = File(autoDir, "safe-mode-state.json")
+    legacy.writeText(body) // 崩溃窗口现场：current 已写、legacy 未删
+    val status = SafeMode.status(autoDir)
+    assertTrue("内容相同必须自动收敛而不是拒绝（M-7B）", status.ok)
+    assertFalse("收敛后旧状态文件必须被清理", legacy.exists())
+    assertTrue(File(autoDir, SafeMode.STATE_FILE).isFile)
+  }
+
+  /** M-7B 的反面：两份状态文件**内容不一致**时仍拒绝（那是真正的歧义，不给猜测），且两份都不动。 */
+  @Test
+  fun `M-7B 双状态文件内容不一致仍拒绝且两份都保留`() {
+    val (_, _, autoDir) = fixture()
+    autoDir.mkdirs()
+    File(autoDir, SafeMode.STATE_FILE).writeText(
+      org.json.JSONObject().put("active", false).put("snapshotId", "cur").toString(),
+    )
+    val legacy = File(autoDir, "safe-mode-state.json")
+    legacy.writeText(org.json.JSONObject().put("active", false).put("snapshotId", "other").toString())
+    val status = SafeMode.status(autoDir)
+    assertFalse("内容不一致必须仍拒绝", status.ok)
+    assertTrue("旧状态文件必须保留（不给猜测）", legacy.isFile)
+    assertTrue("新状态文件必须保留", File(autoDir, SafeMode.STATE_FILE).isFile)
+  }
 }

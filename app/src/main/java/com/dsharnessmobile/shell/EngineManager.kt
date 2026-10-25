@@ -2003,7 +2003,16 @@ class EngineManager(private val context: Context, private val pickToken: String?
         }
         val backup = File(target.parentFile, target.name + ".pre-" + BuildConfig.VERSION_NAME + ".bak")
         if (!backup.exists()) {
-          try { backup.writeText(live) } catch (_: Throwable) {}
+          // M-8A：备份写失败必须**不动 live**（与 repairProfilePatch 的「A failed backup or
+          // publication must leave the live profile untouched」同纪律）。旧实现空 catch 吞掉后
+          // 照改 live ⇒ 归一虽经 verifyNormalization 校验，但从此没有回滚来源。
+          try {
+            backup.writeText(live)
+          } catch (t: Throwable) {
+            failed = true
+            Log.w(TAG, "profile patch normalize backup failed (live untouched; retried next boot): " + target.absolutePath, t)
+            continue
+          }
         }
         val tmp = File(target.parentFile, target.name + ".normalize.tmp")
         try {

@@ -252,16 +252,45 @@ internal class RemoteRendererHost(
   fun dispatchKey(tabId: String, keyCode: Int): Boolean =
     runCatching { renderer?.dispatchKey(tabId, keyCode) == true }.getOrDefault(false)
 
-  /** 截图 → 字节（自建管道、读远端 PNG；失败回 null）。 */
+  /** 截图读端的收尾上限：capture 正常在毫秒级；超它说明远端仍在磨，拒收半张 PNG。 */
+  private val captureJoinTimeoutMs = 15_000L
+
+  /**
+   * 截图 → 字节（自建管道、读远端 PNG；失败回 null）。
+   *
+   * 读端必须与 `capture` 的 binder 调用**并发**跑：远端在调用内同步 `bitmap.compress` 写管道
+   * （BrowserProcessService.RemoteTab.capture），而 Linux 管道缓冲只有 64KiB——PNG 超过它时，
+   * 「先等 capture 返回、再开始读」的写法会让远端写阻塞在半途、宿主等 binder 返回永远不读，
+   * 双端互等（远端主线程被 onMain 超时放弃后仍挂在 write 上，直到宿主 GC 关掉读端才解卡）。
+   * 并发排空后远端写再大也不阻塞；capture 被远端超时放弃时，排空同样能把它的 write 放行到 EOF。
+   */
   fun capturePng(tabId: String, maxWidth: Int, maxHeight: Int): ByteArray? = runCatching {
     val api = renderer ?: return@runCatching null
     val pipe = android.os.ParcelFileDescriptor.createPipe()
+    val drained = java.io.ByteArrayOutputStream()
+    val reader = Thread {
+      try {
+        java.io.FileInputStream(pipe[0].fileDescriptor).use { input ->
+          val buf = ByteArray(64 * 1024)
+          while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            drained.write(buf, 0, n)
+          }
+        }
+      } catch (_: Throwable) {
+        // 远端提前关写端 / 管道断裂：保留已排空的部分，由调用方按 capture 回执结算。
+      }
+    }.apply { isDaemon = true; name = "dsh-shot-pipe-reader" }
+    reader.start()
     try {
       if (!api.capture(tabId, pipe[1], maxWidth, maxHeight)) return@runCatching null
     } finally {
       pipe[1].close()
     }
-    java.io.FileInputStream(pipe[0].fileDescriptor).use { it.readBytes() }
+    reader.join(captureJoinTimeoutMs)
+    if (reader.isAlive) return@runCatching null
+    drained.toByteArray()
   }.getOrNull()
 
   /** tab 状态快照（JSON；远端不可达回 null）。 */
