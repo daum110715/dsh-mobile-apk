@@ -68,7 +68,8 @@ class ConsoleSessionAuditTest {
   @Test
   fun `I7 输出按 16KB 或 50ms 聚合`() {
     val s = source("ConsoleSession.kt")
-    assertTrue("读线程必须有输出聚合 flush", s.contains("fun flushOutput(force: Boolean)"))
+    assertTrue("读线程必须有带独立期限的输出聚合", s.contains("ConsoleOutputBatcher(OUTPUT_FLUSH_BYTES, TimeUnit.NANOSECONDS.toMillis(OUTPUT_FLUSH_NS))"))
+    assertTrue("退出和异常路径必须排空并释放聚合器", s.contains("output.close()"))
     assertTrue("data 帧不得逐帧直发 listener.onOutput", !s.contains("if (chunk.isNotEmpty() && generation == gen) listener.onOutput(chunk)"))
   }
 

@@ -191,67 +191,61 @@ class ConsoleSession(private val context: Context) {
             // 中继协议：一行一个 JSON。按行读而不是按字节流读，是因为帧边界就是换行。
             // 输出聚合（I7）：node-pty 的 onData 按小片段回调，每帧一次跨进程 JS 求值会把
             // 主线程打满（cat 大文件即 ANR）——按「16KB 或 50ms」聚合成块再回调。
-            val outBuf = StringBuilder()
-            var lastFlushNs = System.nanoTime()
-            fun flushOutput(force: Boolean) {
-              if (outBuf.isEmpty()) return
-              val now = System.nanoTime()
-              if (!force && outBuf.length < OUTPUT_FLUSH_BYTES && now - lastFlushNs < OUTPUT_FLUSH_NS) return
-              val chunk = outBuf.toString()
-              outBuf.setLength(0)
-              lastFlushNs = now
+            val output = ConsoleOutputBatcher(OUTPUT_FLUSH_BYTES, TimeUnit.NANOSECONDS.toMillis(OUTPUT_FLUSH_NS)) { chunk ->
               if (generation == gen) listener.onOutput(chunk)
             }
-            proc.inputStream.bufferedReader(Charsets.UTF_8).use { r ->
-              while (true) {
-                val line = r.readLine() ?: break
-                val data = ConsolePty.dataOf(line)
-                if (data != null) {
-                  val chunk = stripper.feed(data)
-                  if (chunk.isNotEmpty()) {
-                    outBuf.append(chunk)
-                    flushOutput(false)
-                  }
-                  continue
-                }
-                val op = ConsolePty.fieldOf(line, "op")
-                if (op == "ready") {
-                  flushOutput(true)
-                  ptyReady = true
-                  // I3：握手窗口内缓冲的输入在此重放（中继从此刻起才把 stdin 当协议解析）。
-                  val replay = synchronized(inputLock) {
-                    val pending = pendingInput.toString()
-                    pendingInput.setLength(0)
-                    pending
-                  }
-                  if (replay.isNotEmpty() && generation == gen) {
-                    try {
-                      proc.outputStream.write(ConsolePty.writeMessage(replay).toByteArray(Charsets.UTF_8))
-                      proc.outputStream.flush()
-                    } catch (t: Throwable) {
-                      Log.w(TAG, "console pending replay failed: " + (t.message ?: t.javaClass.simpleName))
+            try {
+              proc.inputStream.bufferedReader(Charsets.UTF_8).use { r ->
+                while (true) {
+                  val line = r.readLine() ?: break
+                  val data = ConsolePty.dataOf(line)
+                  if (data != null) {
+                    val chunk = stripper.feed(data)
+                    if (chunk.isNotEmpty()) {
+                      output.append(chunk)
                     }
+                    continue
                   }
-                  if (generation == gen) {
-                    listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境，真 PTY）")
+                  val op = ConsolePty.fieldOf(line, "op")
+                  if (op == "ready") {
+                    output.flush()
+                    ptyReady = true
+                    // I3：握手窗口内缓冲的输入在此重放（中继从此刻起才把 stdin 当协议解析）。
+                    val replay = synchronized(inputLock) {
+                      val pending = pendingInput.toString()
+                      pendingInput.setLength(0)
+                      pending
+                    }
+                    if (replay.isNotEmpty() && generation == gen) {
+                      try {
+                        proc.outputStream.write(ConsolePty.writeMessage(replay).toByteArray(Charsets.UTF_8))
+                        proc.outputStream.flush()
+                      } catch (t: Throwable) {
+                        Log.w(TAG, "console pending replay failed: " + (t.message ?: t.javaClass.simpleName))
+                      }
+                    }
+                    if (generation == gen) {
+                      listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境，真 PTY）")
+                    }
+                  } else if (op == "error") {
+                    // I4：中继启动期 error 后会立即 process.exit——它不会再服务任何输入，
+                    // 旧实现仍报 READY 是把死会话说成可用。如实报 FAILED（重连有意义），
+                    // 进程退出由下方 EOF 兜底（exit 帧不会再来）。
+                    val msg = ConsolePty.fieldOf(line, "message") ?: "未知错误"
+                    Log.w(TAG, "console relay error: " + msg)
+                    output.flush()
+                    if (generation == gen) listener.onStatus(State.FAILED, "PTY 建立失败：" + msg + "——可点重连重试")
+                  } else if (op == "exit") {
+                    val code = ConsolePty.numberFieldOf(line, "code") ?: -1
+                    exitSeenByReader = true
+                    output.flush()
+                    if (generation == gen) listener.onExit(code)
                   }
-                } else if (op == "error") {
-                  // I4：中继启动期 error 后会立即 process.exit——它不会再服务任何输入，
-                  // 旧实现仍报 READY 是把死会话说成可用。如实报 FAILED（重连有意义），
-                  // 进程退出由下方 EOF 兜底（exit 帧不会再来）。
-                  val msg = ConsolePty.fieldOf(line, "message") ?: "未知错误"
-                  Log.w(TAG, "console relay error: " + msg)
-                  flushOutput(true)
-                  if (generation == gen) listener.onStatus(State.FAILED, "PTY 建立失败：" + msg + "——可点重连重试")
-                } else if (op == "exit") {
-                  val code = ConsolePty.numberFieldOf(line, "code") ?: -1
-                  exitSeenByReader = true
-                  flushOutput(true)
-                  if (generation == gen) listener.onExit(code)
                 }
               }
+              } finally {
+              output.close()
             }
-            flushOutput(true)
             exitSeenByReader = true
           } else {
             // 非 PTY 降级路径：与旧实现一致，按块读并剥离控制序列。
