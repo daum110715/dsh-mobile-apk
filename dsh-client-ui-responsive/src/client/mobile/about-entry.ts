@@ -94,6 +94,12 @@ export function installAboutEntry(): () => void {
       if (!node.hasAttribute(HANDLED)) continue
       if (node.style.display !== 'none') node.style.display = 'none'
     }
+    // 导航里那条同名行同样要每次复核 style，不能只认 dataset：
+    // React 重渲染把它写回可见后，如果这里早退，屏幕上就同时有导航行与入口两个「关于」。
+    for (const navRow of scope.querySelectorAll<HTMLElement>('nav button')) {
+      if (navRow.dataset.dshAboutNavHidden !== '1') continue
+      if (navRow.style.display !== 'none') navRow.style.display = 'none'
+    }
 
     // 第二步：挑未处理过的候选。优先「当前版本 / Current version」这条精确文案，
     // 找不到才退回「含版本 + x.y.z」的宽松匹配（改版/别的语言时仍能工作）。

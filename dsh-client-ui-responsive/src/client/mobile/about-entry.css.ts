@@ -55,11 +55,13 @@ html[data-dsh-mobile-form] .dsh-about-name {
   letter-spacing: 0.2px;
 }
 
-html[data-dsh-mobile-form] /* 关于页里不再出现任何「关于」字样：图标 + 名称已经承担标题。
+/* 关于页里不再出现任何「关于」字样：图标 + 名称已经承担标题。
    两处都收，因为哪一处是「第二个关于」取决于构建：
    ① 移动层自己加的标题条（data-dsh-settings-bar-title）；
    ② 上游内容列的表头行（可能自己也渲染分区名）。
-   标记挂在设置容器上，移动层重建标题条也不会失效。 */
+   标记挂在设置容器上，移动层重建标题条也不会失效。
+   注释必须整段落在规则之外：夹在两个复合选择器中间会拼成
+   「html[data-dsh-mobile-form] html[data-dsh-mobile-form] ...」的祖先链，永不匹配。 */
 html[data-dsh-mobile-form] [data-dsh-settings-dialog][data-dsh-about-active] [data-dsh-settings-bar-title] {
   display: none;
 }
