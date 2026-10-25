@@ -304,12 +304,15 @@ internal class ApkUpdateController(private val activity: Activity) {
    * 旧下载线程未被取消、用户重试后两个线程并发写同一个目标文件。
    */
   private val epoch = java.util.concurrent.atomic.AtomicInteger(0)
+  private val publicationLock = Any()
+
+  private fun advanceEpoch(): Int = synchronized(publicationLock) { epoch.incrementAndGet() }
 
   private fun isCurrentEpoch(e: Int): Boolean = epoch.get() == e
 
   /** 作废一切在途回写（超时、界面销毁等非属主终态调用）。 */
   private fun invalidateInFlight() {
-    epoch.incrementAndGet()
+    advanceEpoch()
   }
 
   /**
@@ -465,7 +468,7 @@ internal class ApkUpdateController(private val activity: Activity) {
       // beginCheck 只在真有在途动作（checking/downloading）时拒绝 => busy 是**事实**，不是兜底话术。
       return reject("busy", "上一次更新动作仍在进行中，请稍候")
     }
-    val e = epoch.incrementAndGet()
+    val e = advanceEpoch()
     currentResult = null // 进入 checking：旧载荷（若有）立即作废，避免与新一轮检查的结果混用
     armWatchdog(CHECK_TIMEOUT_MS)
     notifyChanged()
@@ -493,7 +496,7 @@ internal class ApkUpdateController(private val activity: Activity) {
       else reject("not-available", "当前状态（" + state.stateName() + "）不能开始下载，请先点「检查更新」")
     }
     armWatchdog(downloadTimeoutMs(pending.sizeBytes))
-    val e = epoch.incrementAndGet()
+    val e = advanceEpoch()
     settle() // 页面立刻看到 downloading（两段式：受理 + 轮询读状态面）
     Thread({ downloadAndInstall(pending, e) }, "dsh-apk-update-download").start()
     return snapshotObject().put("code", "accepted").toString()
@@ -580,7 +583,20 @@ internal class ApkUpdateController(private val activity: Activity) {
         reused = true // 上次下完但没装成（授权中断/安装取消）→ 复用已验证的包，不重复拉 169MB
       } else {
         // #513：元数据缺 sha256 时第三方镜像产物无摘要可校验——只允许官方直连（fail-closed）。
-        val used = UpdateChecker.download(r.apkUrl, dest, { pct -> if (isCurrentEpoch(e)) onDownloadProgress(pct) }, allowMirrors = expectedSha != null)
+        val used = UpdateChecker.download(
+          r.apkUrl, dest,
+          { pct -> if (isCurrentEpoch(e)) onDownloadProgress(pct) },
+          allowMirrors = expectedSha != null,
+          isActive = { isCurrentEpoch(e) },
+          publishIfActive = { publish ->
+            synchronized(publicationLock) {
+              if (!isCurrentEpoch(e)) false else {
+                publish()
+                true
+              }
+            }
+          },
+        )
         if (used == null) {
           failDownload("下载失败：镜像链全部不可用（直连与加速镜像均失败）——请稍后重试", ApkUpdateState.KIND_DOWNLOAD_FAILED, e)
           return

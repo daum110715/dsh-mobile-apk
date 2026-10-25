@@ -684,6 +684,8 @@ sequenceDiagram
 
 ### 壳侧（Kotlin，app/src/main/java/com/dsharnessmobile/shell/）
 
+APK download isolation (#592): each `UpdateChecker.download` attempt creates and cleans its own staging file. `ApkUpdateController` supplies an active-generation predicate and serializes final publication with epoch changes through `publicationLock`. Cancelled attempts cannot publish or delete a retry's staged bytes. `UpdateDownloadIsolationTest` exercises overlapping attempts, cancellation at publication, failed-read cleanup and complete successful delivery through controlled connections.
+
 #### K01 启动与引导面
 
 原生插件页先探测引擎：OFFLINE 正常引导 → 用户显式启动（复用主操作）→ STARTING 轮询 → ONLINE 读库存；FAILED 提示恢复，离页取消轮询。控制台仍由独立 ConsoleActivity 承载原 bash 会话。
