@@ -598,7 +598,13 @@ export class MobileSettingsNav {
     }
     const activeLabel = rowLabel(panel.querySelector(ACTIVE_ROW_SELECTOR) ?? panel.ownerDocument.createElement('span'))
     // 记录分区切换：详情页里从 A 换到 B 时把 A 记成「上一页」，返回键据此回到 A。
-    if (activeLabel !== '') {
+    //
+    // 过渡期不记账（真机 bug）：刚点进新分区时上游还没把 aria-current 挪过来，
+    // 这一瞬间 activeLabel 仍是上一个分区。把它当切换记下来，previousLabel 就被写成
+    // 刚进入的那个分区，返回键于是绕回用户没去过的页——表现是第二遍返回先弹上一层
+    // 打开过的二级页。进入/回退的调用方已经把 currentLabel 设成目标分区，等
+    // pendingTitle 撤下后自动对齐，不需要在这里补。
+    if (activeLabel !== '' && this.pendingTitle === null) {
       if (this.currentLabel !== null && activeLabel !== this.currentLabel) this.previousLabel = this.currentLabel
       this.currentLabel = activeLabel
     }

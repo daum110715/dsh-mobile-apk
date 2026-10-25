@@ -212,6 +212,37 @@ describe('二级页之间跳转与逐页返回', () => {
   })
 })
 
+describe('反复往返不得串历史（真机 bug）', () => {
+  it('进 A 返回首页，再进同一 A 后返回，必须直接回首页而不是绕回上一次的 A', () => {
+    const handle = buildPanel(['通用设置', '关于'], '通用设置')
+    nav = new MobileSettingsNav()
+    nav.attach()
+    // 第一遍：进 A 再返回，正常。
+    handle.rows.get('通用设置')!.click()
+    back(handle.panel).click()
+    expect(handle.panel.getAttribute('data-dsh-settings-level')).toBe('home')
+    // 第二遍：还是进 A。上游在过渡期里 aria-current 仍停在上一分区，
+    // 若把那段过渡当成「切换」，previousLabel 会被写成 A，返回就绕回 A。
+    handle.rows.get('通用设置')!.click()
+    back(handle.panel).click()
+    expect(handle.panel.getAttribute('data-dsh-settings-level'), '第二次返回也必须直接回首页').toBe('home')
+  })
+
+  it('进 A 返回、再进 B 返回，两次都直接回首页（不得跳回 A）', () => {
+    const handle = buildPanel(['通用设置', '关于'], '通用设置')
+    nav = new MobileSettingsNav()
+    nav.attach()
+    handle.rows.get('通用设置')!.click()
+    back(handle.panel).click()
+    expect(handle.panel.getAttribute('data-dsh-settings-level')).toBe('home')
+
+    handle.rows.get('关于')!.click()
+    back(handle.panel).click()
+    expect(handle.panel.getAttribute('data-dsh-settings-level'), '不得跳到上一次的「通用设置」').toBe('home')
+    expect(handle.panel.querySelector('[data-dsh-settings-bar-title]')!.textContent).toBe('设置')
+  })
+})
+
 describe('打开设置时不把默认选中画成高亮', () => {
   it('刚打开时面板带 fresh 标记，aria-current 原样保留', async () => {
     const handle = buildPanel(['通用设置', '开发者选项'], '通用设置')
