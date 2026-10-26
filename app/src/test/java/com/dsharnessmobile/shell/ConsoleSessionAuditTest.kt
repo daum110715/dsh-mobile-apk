@@ -38,7 +38,8 @@ class ConsoleSessionAuditTest {
     val write = s.substringAfter("fun writeRaw(text: String)").substringBefore("fun writeCommand")
     assertTrue("writeRaw 必须在 usingPty && !ptyReady 时缓冲而非裸写", write.contains("pendingInput.append(text)"))
     val reader = s.substringAfter("if (op == \"ready\")").substringBefore("} else if (op == \"error\")")
-    assertTrue("ready 帧必须重放缓冲输入（writeMessage 走协议）", reader.contains("writeMessage(replay)"))
+    assertTrue("ready must use the serialized handshake", reader.contains("completePtyHandshake(proc, gen)"))
+    assertTrue("queued input must use the relay protocol", s.contains("writeMessage(replay)"))
   }
 
   @Test
