@@ -184,100 +184,105 @@ class ConsoleSession(private val context: Context) {
           }
         }, "dsh-console-relay-err").apply { isDaemon = true }.start()
       }
-      val reader = Thread {
-        var exitSeenByReader = false
-        try {
-          if (canUsePty) {
-            // 中继协议：一行一个 JSON。按行读而不是按字节流读，是因为帧边界就是换行。
-            // 输出聚合（I7）：node-pty 的 onData 按小片段回调，每帧一次跨进程 JS 求值会把
-            // 主线程打满（cat 大文件即 ANR）——按「16KB 或 50ms」聚合成块再回调。
-            val output = ConsoleOutputBatcher(OUTPUT_FLUSH_BYTES, TimeUnit.NANOSECONDS.toMillis(OUTPUT_FLUSH_NS)) { chunk ->
-              if (generation == gen) listener.onOutput(chunk)
-            }
-            try {
-              proc.inputStream.bufferedReader(Charsets.UTF_8).use { r ->
-                while (true) {
-                  val line = r.readLine() ?: break
-                  val data = ConsolePty.dataOf(line)
-                  if (data != null) {
-                    val chunk = stripper.feed(data)
-                    if (chunk.isNotEmpty()) {
-                      output.append(chunk)
-                    }
-                    continue
-                  }
-                  val op = ConsolePty.fieldOf(line, "op")
-                  if (op == "ready") {
-                    output.flush()
-                    val ready = completePtyHandshake(proc, gen)
-                    if (generation == gen) {
-                      if (ready) listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境，真 PTY）")
-                      else listener.onStatus(State.FAILED, UiText.t(context,
-                        "PTY 输入重放失败——请重连后重试", "PTY input replay failed. Reconnect to retry."))
-                    }
-                  } else if (op == "error") {
-                    // I4：中继启动期 error 后会立即 process.exit——它不会再服务任何输入，
-                    // 旧实现仍报 READY 是把死会话说成可用。如实报 FAILED（重连有意义），
-                    // 进程退出由下方 EOF 兜底（exit 帧不会再来）。
-                    val msg = ConsolePty.fieldOf(line, "message") ?: "未知错误"
-                    Log.w(TAG, "console relay error: " + msg)
-                    output.flush()
-                    if (generation == gen) listener.onStatus(State.FAILED, "PTY 建立失败：" + msg + "——可点重连重试")
-                  } else if (op == "exit") {
-                    val code = ConsolePty.numberFieldOf(line, "code") ?: -1
-                    exitSeenByReader = true
-                    output.flush()
-                    if (generation == gen) listener.onExit(code)
-                  }
-                }
-              }
-              } finally {
-              output.close()
-            }
-            exitSeenByReader = true
-          } else {
-            // 非 PTY 降级路径：与旧实现一致，按块读并剥离控制序列。
-            proc.inputStream.reader(Charsets.UTF_8).use { r ->
-              val raw = CharArray(1024)
-              val sb = StringBuilder()
-              while (true) {
-                val n = r.read(raw)
-                if (n < 0) break
-                sb.append(stripper.feed(String(raw, 0, n)))
-                if (sb.length >= 4096 || sb.indexOf("\n") >= 0) {
-                  val chunk = sb.toString()
-                  sb.setLength(0)
-                  if (generation == gen) listener.onOutput(chunk)
-                }
-              }
-              if (sb.isNotEmpty() && generation == gen) listener.onOutput(sb.toString())
-            }
-          }
-        } catch (t: Throwable) {
-          if (!closed) Log.w(TAG, "console reader ended: " + (t.message ?: t.javaClass.simpleName))
-        }
-        val code = try {
-          proc.exitValue()
-        } catch (_: IllegalThreadStateException) {
-          -1
-        }
-        // EOF 兜底（I4 同族）：PTY 模式下 exit 帧已报过就不再重复；error 后中继自退没有
-        // exit 帧，EOF 是唯一退出信号——旧实现只给非 PTY 路径报 onExit，死会话永远「就绪」。
-        if (generation == gen && (!canUsePty || !exitSeenByReader)) listener.onExit(code)
-      }
+      val reader = Thread { readOutput(proc, gen, canUsePty, listener) }
       reader.isDaemon = true
-      reader.start()
       if (canUsePty) {
         listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境，正在建立 PTY）")
       } else {
         Log.w(TAG, "console: node/node-pty/relay missing, falling back to non-PTY bash -i")
         listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境，无 PTY）")
       }
+      reader.start()
       true
     } catch (t: Throwable) {
       LogCollector.log(TAG, "console start FAILED: " + (t.message ?: t.javaClass.simpleName))
       listener.onStatus(State.FAILED, "控制台启动失败：" + (t.message ?: t.javaClass.simpleName))
       false
+    }
+  }
+
+  /** Drain one relay and always settle unexpected EOF without duplicate exit events. */
+  internal fun readOutput(proc: Process, gen: Int, canUsePty: Boolean, listener: Listener) {
+    var exitSeenByReader = false
+    try {
+      if (canUsePty) {
+        // 中继协议：一行一个 JSON。按行读而不是按字节流读，是因为帧边界就是换行。
+        // 输出聚合（I7）：node-pty 的 onData 按小片段回调，每帧一次跨进程 JS 求值会把
+        // 主线程打满（cat 大文件即 ANR）——按「16KB 或 50ms」聚合成块再回调。
+        val output = ConsoleOutputBatcher(OUTPUT_FLUSH_BYTES, TimeUnit.NANOSECONDS.toMillis(OUTPUT_FLUSH_NS)) { chunk ->
+          if (generation == gen) listener.onOutput(chunk)
+        }
+        try {
+          proc.inputStream.bufferedReader(Charsets.UTF_8).use { r ->
+            while (true) {
+              val line = r.readLine() ?: break
+              val data = ConsolePty.dataOf(line)
+              if (data != null) {
+                val chunk = stripper.feed(data)
+                if (chunk.isNotEmpty()) {
+                  output.append(chunk)
+                }
+                continue
+              }
+              val op = ConsolePty.fieldOf(line, "op")
+              if (op == "ready") {
+                output.flush()
+                val ready = completePtyHandshake(proc, gen)
+                if (generation == gen) {
+                  if (ready) listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境，真 PTY）")
+                  else listener.onStatus(State.FAILED, UiText.t(context,
+                    "PTY 输入重放失败——请重连后重试", "PTY input replay failed. Reconnect to retry."))
+                }
+              } else if (op == "error") {
+                // I4：中继启动期 error 后会立即 process.exit——它不会再服务任何输入，
+                // 旧实现仍报 READY 是把死会话说成可用。如实报 FAILED（重连有意义），
+                // 进程退出由下方 EOF 兜底（exit 帧不会再来）。
+                val msg = ConsolePty.fieldOf(line, "message") ?: "未知错误"
+                Log.w(TAG, "console relay error: " + msg)
+                output.flush()
+                if (generation == gen) listener.onStatus(State.FAILED, "PTY 建立失败：" + msg + "——可点重连重试")
+              } else if (op == "exit") {
+                val code = ConsolePty.numberFieldOf(line, "code") ?: -1
+                exitSeenByReader = true
+                output.flush()
+                if (generation == gen) listener.onExit(code)
+              }
+            }
+          }
+        } finally {
+          output.close()
+        }
+      } else {
+        // 非 PTY 降级路径：与旧实现一致，按块读并剥离控制序列。
+        proc.inputStream.reader(Charsets.UTF_8).use { r ->
+          val raw = CharArray(1024)
+          val sb = StringBuilder()
+          while (true) {
+            val n = r.read(raw)
+            if (n < 0) break
+            sb.append(stripper.feed(String(raw, 0, n)))
+            if (sb.length >= 4096 || sb.indexOf("\n") >= 0) {
+              val chunk = sb.toString()
+              sb.setLength(0)
+              if (generation == gen) listener.onOutput(chunk)
+            }
+          }
+          if (sb.isNotEmpty() && generation == gen) listener.onOutput(sb.toString())
+        }
+      }
+    } catch (t: Throwable) {
+      if (!closed) Log.w(TAG, "console reader ended: " + (t.message ?: t.javaClass.simpleName))
+    }
+    val code = try {
+      proc.exitValue()
+    } catch (_: IllegalThreadStateException) {
+      -1
+    }
+    // EOF 兜底（I4 同族）：PTY 模式下 exit 帧已报过就不再重复；error 后中继自退没有
+    // exit 帧，EOF 是唯一退出信号——旧实现只给非 PTY 路径报 onExit，死会话永远「就绪」。
+    if (generation == gen) {
+      synchronized(inputLock) { if (generation == gen) ptyReady = false }
+      if (!canUsePty || !exitSeenByReader) listener.onExit(code)
     }
   }
 
