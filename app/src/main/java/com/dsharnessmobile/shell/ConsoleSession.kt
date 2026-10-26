@@ -209,23 +209,11 @@ class ConsoleSession(private val context: Context) {
                   val op = ConsolePty.fieldOf(line, "op")
                   if (op == "ready") {
                     output.flush()
-                    ptyReady = true
-                    // I3：握手窗口内缓冲的输入在此重放（中继从此刻起才把 stdin 当协议解析）。
-                    val replay = synchronized(inputLock) {
-                      val pending = pendingInput.toString()
-                      pendingInput.setLength(0)
-                      pending
-                    }
-                    if (replay.isNotEmpty() && generation == gen) {
-                      try {
-                        proc.outputStream.write(ConsolePty.writeMessage(replay).toByteArray(Charsets.UTF_8))
-                        proc.outputStream.flush()
-                      } catch (t: Throwable) {
-                        Log.w(TAG, "console pending replay failed: " + (t.message ?: t.javaClass.simpleName))
-                      }
-                    }
+                    val ready = completePtyHandshake(proc, gen)
                     if (generation == gen) {
-                      listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境，真 PTY）")
+                      if (ready) listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境，真 PTY）")
+                      else listener.onStatus(State.FAILED, UiText.t(context,
+                        "PTY 输入重放失败——请重连后重试", "PTY input replay failed. Reconnect to retry."))
                     }
                   } else if (op == "error") {
                     // I4：中继启动期 error 后会立即 process.exit——它不会再服务任何输入，
@@ -324,32 +312,54 @@ class ConsoleSession(private val context: Context) {
    * @param text 要写入的文本（可含控制字符）。
    */
   fun writeRaw(text: String) {
-    val proc = process ?: return
-    if (usingPty && !ptyReady) {
-      // I3：握手窗口先缓冲（见 pendingInput 注释），ready 帧统一重放。
-      synchronized(inputLock) { pendingInput.append(text) }
-      return
-    }
-    if (ptyReady) {
-      send(ConsolePty.writeMessage(text))
-      return
-    }
-    try {
-      proc.outputStream.write(text.toByteArray(Charsets.UTF_8))
-      proc.outputStream.flush()
-    } catch (t: Throwable) {
-      Log.w(TAG, "console write failed: " + (t.message ?: t.javaClass.simpleName))
+    synchronized(inputLock) {
+      val proc = process ?: return
+      if (usingPty && !ptyReady) {
+        // Readiness and queue insertion share the ready handler's critical section.
+        pendingInput.append(text)
+        return
+      }
+      if (ptyReady) {
+        send(ConsolePty.writeMessage(text))
+        return
+      }
+      try {
+        proc.outputStream.write(text.toByteArray(Charsets.UTF_8))
+        proc.outputStream.flush()
+      } catch (t: Throwable) {
+        Log.w(TAG, "console write failed: " + (t.message ?: t.javaClass.simpleName))
+      }
     }
   }
 
-  /** 向中继写一行协议消息。 */
+  /** Serializes readiness, queued replay and later input for the current relay. */
+  internal fun completePtyHandshake(proc: Process, gen: Int): Boolean = synchronized(inputLock) {
+    if (closed || generation != gen || process !== proc) return@synchronized false
+    val replay = pendingInput.toString()
+    pendingInput.setLength(0)
+    if (replay.isNotEmpty()) {
+      try {
+        proc.outputStream.write(ConsolePty.writeMessage(replay).toByteArray(Charsets.UTF_8))
+        proc.outputStream.flush()
+      } catch (t: Throwable) {
+        Log.w(TAG, "console pending replay failed: " + (t.message ?: t.javaClass.simpleName))
+        return@synchronized false
+      }
+    }
+    ptyReady = true
+    true
+  }
+
+  /** Serializes protocol frames with handshake replay and ordinary input. */
   private fun send(line: String) {
-    val proc = process ?: return
-    try {
-      proc.outputStream.write(line.toByteArray(Charsets.UTF_8))
-      proc.outputStream.flush()
-    } catch (t: Throwable) {
-      Log.w(TAG, "console relay write failed: " + (t.message ?: t.javaClass.simpleName))
+    synchronized(inputLock) {
+      val proc = process ?: return
+      try {
+        proc.outputStream.write(line.toByteArray(Charsets.UTF_8))
+        proc.outputStream.flush()
+      } catch (t: Throwable) {
+        Log.w(TAG, "console relay write failed: " + (t.message ?: t.javaClass.simpleName))
+      }
     }
   }
 
