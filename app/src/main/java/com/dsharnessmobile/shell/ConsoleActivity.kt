@@ -3,6 +3,7 @@ package com.dsharnessmobile.shell
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Rect
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -83,6 +84,23 @@ class ConsoleActivity : ComponentActivity() {
     evalPage("window.__consoleInsets && window.__consoleInsets($pendingTopInset,$pendingBottomInset,$pendingImeInset)")
   }
 
+  /** Forward only the IME overlap still inside the WebView after native resizing. */
+  private fun refreshInsets() {
+    if (!::webView.isInitialized || isDestroyed) return
+    val insets = ViewCompat.getRootWindowInsets(webView) ?: return
+    val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+    val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+    val density = resources.displayMetrics.density
+    val visible = Rect()
+    window.decorView.getWindowVisibleDisplayFrame(visible)
+    val location = IntArray(2)
+    webView.getLocationOnScreen(location)
+    pendingTopInset = bars.top / density
+    pendingBottomInset = bars.bottom / density
+    pendingImeInset = consoleImeOverlap(location[1] + webView.height, visible.bottom, ime.bottom) / density
+    pushInsets()
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -117,15 +135,11 @@ class ConsoleActivity : ComponentActivity() {
     webView.addJavascriptInterface(ConsoleBridge(), "consoleBridge")
     setContentView(webView)
     ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
-      val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-      val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-      val density = resources.displayMetrics.density
-      pendingTopInset = bars.top / density
-      pendingBottomInset = bars.bottom / density
-      pendingImeInset = ime.bottom / density
-      pushInsets()
+      // Visible frames and the WebView bounds settle after the inset dispatch.
+      webView.post { refreshInsets() }
       insets
     }
+    webView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> refreshInsets() }
     webView.loadUrl("file:///android_asset/console.html")
   }
 
@@ -275,4 +289,10 @@ class ConsoleActivity : ComponentActivity() {
     @JavascriptInterface
     fun hasPty(): Boolean = session.hasPty()
   }
+}
+
+/** All arguments are screen-relative physical pixels; missing frames are not occlusion. */
+internal fun consoleImeOverlap(viewBottom: Int, visibleBottom: Int, imeBottom: Int): Int {
+  if (viewBottom <= 0 || visibleBottom <= 0 || imeBottom <= 0) return 0
+  return minOf(imeBottom, (viewBottom - visibleBottom).coerceAtLeast(0))
 }
