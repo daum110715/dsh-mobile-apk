@@ -686,6 +686,8 @@ sequenceDiagram
 
 APK download isolation (#592): each `UpdateChecker.download` attempt creates and cleans its own staging file. `ApkUpdateController` supplies an active-generation predicate and serializes final publication with epoch changes through `publicationLock`. Cancelled attempts cannot publish or delete a retry's staged bytes. `UpdateDownloadIsolationTest` exercises overlapping attempts, cancellation at publication, failed-read cleanup and complete successful delivery through controlled connections.
 
+Terminal output delivery (#591): `ConsoleSession` sends stripped PTY text through `ConsoleOutputBatcher`, which emits at the size threshold or an independently scheduled deadline. Ready/error/exit frames force a flush, and the reader's `finally` closes the batcher so EOF and exceptions release its scheduler. `ConsoleOutputBatcherTest` covers idle prompts, ordering, deadline cancellation and final draining.
+
 #### K01 启动与引导面
 
 原生插件页先探测引擎：OFFLINE 正常引导 → 用户显式启动（复用主操作）→ STARTING 轮询 → ONLINE 读库存；FAILED 提示恢复，离页取消轮询。控制台仍由独立 ConsoleActivity 承载原 bash 会话。
@@ -2202,6 +2204,7 @@ app/src/main/java/com/dsharnessmobile/shell/WebUiChrome.kt
 app/src/main/java/com/dsharnessmobile/shell/WebViewShim.kt
 app/src/main/java/com/dsharnessmobile/shell/ConsoleActivity.kt
 app/src/main/java/com/dsharnessmobile/shell/ConsoleSession.kt
+app/src/main/java/com/dsharnessmobile/shell/ConsoleOutputBatcher.kt
 app/src/main/java/com/dsharnessmobile/shell/ConsolePty.kt
 app/src/main/java/com/dsharnessmobile/shell/ConsoleKeyCodec.kt
 app/src/main/java/com/dsharnessmobile/shell/ConsoleTerminalEnv.kt
@@ -2499,3 +2502,8 @@ app/src/main/java/com/dsharnessmobile/shell/ApkUpdateAction.kt
 - [B02] 漂移：`scripts/check-code-map.mjs` 只在 apk 仓存在（协调仓 `scripts/` 无此文件），且未被列进 `scripts/check-patch-mirror.mjs:160` 起的 `MIRROR_TOP` → 这条新门禁自身没有镜像守护。
 
 APK epoch publication (#605): ApkUpdateController.publishCheckResult, failDownload and onDownloadProgress validate ownership and mutate state under publicationLock. Admission, timeout/release invalidation and installer handoff use the same lock. Network operations and hashing remain outside the lock; rejected-artifact deletion checks ownership again before deletion. ApkUpdateEpochPublicationTest controls production state-lock interleavings for result, failure and progress.
+
+[B03] Console keyboard geometry (#602): ConsoleActivity.refreshInsets compares the screen-relative WebView bottom and visible window frame, then consoleImeOverlap removes already-resized space. app/src/main/assets/console.html separates navigation padding from IME occlusion and compacts controls for short usable viewports. ConsoleImeOverlapTest covers resized, unresized and positioned views; scripts/console-keyboard-layout.test.mjs covers page state, resize and keyboard restoration.
+Console input admission (#599): ConsoleSession.completePtyHandshake validates the relay generation and replays pending input under the same lock used by writeRaw and protocol-frame writes. Readiness is published after replay; failed replay stays unavailable. ConsoleInputHandshakeTest exercises ready/admission overlap, replay order, stale handshakes, literal fallback input and replay failure.
+
+Console reader settlement (#606): ConsoleSession.start sends initial status before starting its reader. ConsoleSession.readOutput drains and closes the output batcher, clears current PTY readiness and reports EOF unless an explicit exit frame already notified the listener. ConsoleReaderExitTest drives the production reader through controlled process streams and stale generations.
