@@ -782,27 +782,45 @@ object UpdateChecker {
    *
    * @param allowMirrors false = 只允许官方直连（#513：元数据缺 sha256 时，第三方镜像产物
    *   无摘要可校验、直通安装器——fail-closed，宁可下载失败也不裸奔）。
+   * @param isActive stops an invalidated attempt before further reads or publication.
+   * @param publishIfActive serializes the final move with the owner's generation change.
+   * @param connectionFactory transport test seam; production uses verified redirects.
    */
-  fun download(url: String, dest: File, onProgress: (percent: Int) -> Unit, allowMirrors: Boolean = true): String? {
+  fun download(
+    url: String,
+    dest: File,
+    onProgress: (percent: Int) -> Unit,
+    allowMirrors: Boolean = true,
+    isActive: () -> Boolean = { true },
+    publishIfActive: (() -> Unit) -> Boolean = { publish -> publish(); true },
+    connectionFactory: (String) -> HttpURLConnection? = ::openRedirectVerified,
+  ): String? {
     val path = url.removePrefix("https://github.com/")
     val prefixes = if (allowMirrors) MIRROR_PREFIXES else listOf(MIRROR_PREFIXES[0])
     for (mirror in prefixes) {
+      if (!isActive()) return null
       val candidate = if (mirror == MIRROR_PREFIXES[0]) url else mirror + path
+      var conn: HttpURLConnection? = null
+      var ownedTemporary: File? = null
       try {
-        val conn = openRedirectVerified(candidate)
-        if (conn == null) { continue }
-        if (conn.responseCode != 200) { conn.disconnect(); continue }
+        conn = connectionFactory(candidate) ?: continue
+        if (conn.responseCode != 200) continue
         val total = conn.contentLengthLong
-        dest.parentFile?.mkdirs()
-        val tmp = File(dest.parentFile, dest.name + ".tmp")
+        val parent = dest.absoluteFile.parentFile
+        parent.mkdirs()
+        // A failed or cancelled attempt owns only this unique staging file.
+        val tmp = File.createTempFile("dsh-apk-" + dest.name + ".", ".tmp", parent)
+        ownedTemporary = tmp
         tmp.outputStream().use { out ->
           conn.inputStream.use { input ->
             val buf = ByteArray(128 * 1024)
             var read = 0L
             var lastPct = -1
             while (true) {
+              if (!isActive()) return null
               val n = input.read(buf)
               if (n < 0) break
+              if (!isActive()) return null
               out.write(buf, 0, n)
               read += n
               if (total > 0) {
@@ -812,27 +830,17 @@ object UpdateChecker {
             }
           }
         }
-        // M-s6（2026-10-25 审计）：**不再先删 dest 再 rename**——旧顺序在「删旧包成功、
-        // rename/拷贝失败」（磁盘满/IO 错）的窗口里把上一份**已验证可用**的包也毁掉。
-        // REPLACE_EXISTING 的原子替换没有这个窗口；不支持原子的文件系统退回拷贝路径。
-        try {
-          java.nio.file.Files.move(
-            tmp.toPath(), dest.toPath(),
-            java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-          )
-        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-          if (dest.exists()) dest.delete()
-          if (!tmp.renameTo(dest)) { tmp.copyTo(dest, overwrite = true); tmp.delete() }
-        } catch (e: Exception) {
-          android.util.Log.w(TAG, "download finalize failed: " + (e.message ?: e.javaClass.simpleName))
-          tmp.delete()
-          throw e
-        }
-        conn.disconnect()
+        if (!isActive()) return null
+        // The owner serializes this publication with invalidation of its generation.
+        if (!publishIfActive {
+          if (!AtomicFileReplace.publish(tmp, dest)) throw java.io.IOException("APK publication failed")
+        }) return null
         return candidate
       } catch (e: Exception) {
         android.util.Log.w(TAG, "download via $mirror failed: " + (e.message ?: e.javaClass.simpleName))
-        File(dest.parentFile, dest.name + ".tmp").delete()
+      } finally {
+        runCatching { conn?.disconnect() }
+        ownedTemporary?.delete()
       }
     }
     return null
