@@ -53,7 +53,7 @@ class AuditLedgerSourceTest {
   fun `9-ApkUpdateAction 迟到回写按代次作废`() {
     val text = source("ApkUpdateAction.kt")
     assertTrue("runCheck 回写前必须判代次", text.contains("if (!isCurrentEpoch(e)) return"))
-    assertTrue("进度回调必须带代次守卫（不得喂新一轮的 percent）", text.contains("if (isCurrentEpoch(e)) onDownloadProgress(pct)"))
+    assertTrue("进度回调必须带代次守卫（不得喂新一轮的 percent）", text.contains("{ pct -> onDownloadProgress(pct, e) }"))
     val failAt = text.indexOf("private fun fail(")
     assertTrue("fail() 定义必须在场（锚点漂移需同步本测试）", failAt >= 0)
     assertTrue("非属主终态必须作废在途回写", text.indexOf("invalidateInFlight()", failAt) in failAt..(failAt + 400))
