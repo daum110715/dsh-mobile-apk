@@ -379,4 +379,19 @@ class BootFailLogTest {
     assertFalse("stack 里的 launch token 必须被脱敏", line.contains("SECRETTOKENVALUE1234567890"))
     assertTrue("stack 段必须仍在（脱敏不是丢弃）", line.contains("probe failed: http://127.0.0.1:3080/?token=***"))
   }
+
+  @Test
+  fun bootDiagDetailAndPageRuntimeAreRedacted() {
+    val line = LogCollector.bootDiagLine(
+      source = "page-console",
+      detail = "url=http://127.0.0.1:3080/?token=DETAILSECRET1234567890",
+      pageSideRuntime = "url=http://127.0.0.1:3080/?token=RUNTIMESECRET1234567890",
+      segments = "snapshot=ready",
+    )
+
+    assertFalse(line.contains("DETAILSECRET1234567890"))
+    assertFalse(line.contains("RUNTIMESECRET1234567890"))
+    assertTrue(line.contains("token=***"))
+    assertTrue(line.contains("snapshot=ready"))
+  }
 }
