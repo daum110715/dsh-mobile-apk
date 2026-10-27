@@ -419,12 +419,40 @@ class Issue309StartRecoveryTest {
   }
 
   @Test
-  fun `fingerprint publication failure never falls back to truncating write`() {
+  fun `fingerprint publication failure preserves the previous value`() {
+    val root = java.nio.file.Files.createTempDirectory("snapshot-fingerprint-publication").toFile()
+    try {
+      val target = File(root, ".snapshot-fingerprint")
+      val previous = "previous-fingerprint\n".toByteArray(Charsets.UTF_8)
+      target.writeBytes(previous)
+
+      val failure = runCatching {
+        SnapshotFingerprintPublication.write(target, "next-fingerprint", publish = { tmp, live ->
+          assertTrue(previous.contentEquals(live.readBytes()))
+          assertEquals("next-fingerprint", tmp.readText())
+          false
+        })
+      }.exceptionOrNull()
+
+      assertTrue("failed publication must abort", failure is java.io.IOException)
+      assertTrue("failed publication must preserve prior bytes", previous.contentEquals(target.readBytes()))
+      assertFalse("failed publication must remove its temporary file", File(root, ".snapshot-fingerprint.tmp").exists())
+
+      SnapshotFingerprintPublication.write(target, "next-fingerprint")
+      assertEquals("next-fingerprint", target.readText())
+      val writer = between(code("EngineManager.kt"), "private fun writeFingerprint(", "private fun writeOnlineSnapshotIdentity")
+      assertTrue("EngineManager must use the tested atomic publisher", writer.contains("SnapshotFingerprintPublication.write"))
+    } finally {
+      root.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `failed fingerprint publication does not use a direct target write`() {
     val manager = code("EngineManager.kt")
     val writer = between(manager, "private fun writeFingerprint(", "private fun writeOnlineSnapshotIdentity")
 
-    assertTrue("failed atomic publication must abort the transaction", writer.contains("throw java.io.IOException("))
-    assertFalse("failed publication must not truncate the prior fingerprint", writer.contains("target.writeText("))
+    assertFalse("fingerprint publication must not fall back to a direct target write", writer.contains("target.writeText("))
   }
 
   /** 诊断包必须带上拒启原因/确诊项/现场，否则用户取包时没有可归因的事实。 */

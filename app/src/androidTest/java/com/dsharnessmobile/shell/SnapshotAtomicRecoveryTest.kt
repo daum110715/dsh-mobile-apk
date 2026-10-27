@@ -4,11 +4,38 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** 使用可丢弃的缓存文件，验证 Android 上实际的发布路径。 */
 class SnapshotAtomicRecoveryTest {
+  @Test fun fingerprintPublicationFailurePreservesExistingValueOnDevice() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val root = Files.createTempDirectory(context.cacheDir.toPath(), "snapshot-fingerprint-").toFile()
+    try {
+      val target = File(root, ".snapshot-fingerprint")
+      val previous = "previous-fingerprint\n"
+      target.writeText(previous)
+      val failure = runCatching {
+        SnapshotFingerprintPublication.write(target, "next-fingerprint", publish = { tmp, live ->
+          assertEquals(previous, live.readText())
+          assertEquals("next-fingerprint", tmp.readText())
+          false
+        })
+      }.exceptionOrNull()
+
+      assertTrue("failed publication must abort", failure is java.io.IOException)
+      assertEquals("failed publication must preserve prior bytes", previous, target.readText())
+      assertFalse("failed publication must remove its temporary file", File(root, ".snapshot-fingerprint.tmp").exists())
+
+      SnapshotFingerprintPublication.write(target, "next-fingerprint")
+      assertEquals("next-fingerprint", target.readText())
+    } finally {
+      root.deleteRecursively()
+    }
+  }
+
   @Test fun failedPublicationKeepsExistingConfiguration() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     val root = Files.createTempDirectory(context.cacheDir.toPath(), "snapshot-publication-").toFile()

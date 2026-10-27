@@ -8,6 +8,22 @@ import android.util.Log
 import java.io.File
 import java.nio.file.Files
 
+/** Keeps the prior commit marker intact when atomic fingerprint publication fails. */
+internal object SnapshotFingerprintPublication {
+  fun write(
+    target: File,
+    fingerprint: String,
+    publish: (File, File) -> Boolean = AtomicFileReplace::publish,
+  ) {
+    val tmp = File(target.parentFile, target.name + ".tmp")
+    tmp.writeText(fingerprint)
+    if (!publish(tmp, target)) {
+      SnapshotFs.deletePath(tmp)
+      throw java.io.IOException("snapshot fingerprint publication failed")
+    }
+  }
+}
+
 /**
  * Owns the embedded Termux environment snapshot: first-launch extraction into
  * filesDir/usr and the dsh engine process lifecycle (PATH/LD_LIBRARY_PATH/HOME
@@ -709,16 +725,10 @@ class EngineManager(private val context: Context, private val pickToken: String?
 
   /** The fingerprint is the transaction commit point, so it is written atomically. */
   private fun writeFingerprint(fingerprint: String) {
-    val target = fingerprintFile()
-    val tmp = File(target.parentFile, target.name + ".tmp")
-    tmp.writeText(fingerprint)
     // #685：注释承诺 atomic，旧实现却「先删 target 再 rename」——删除与改名之间被杀，
     // 指纹文件消失，下次启动按指纹缺失走重装配。AtomicFileReplace 的替换期间目标路径
     // 始终存在（ATOMIC_MOVE，不支持时退单次 REPLACE_EXISTING move，同样不先删）。
-    if (!AtomicFileReplace.publish(tmp, target)) {
-      SnapshotFs.deletePath(tmp)
-      throw java.io.IOException("snapshot fingerprint publication failed")
-    }
+    SnapshotFingerprintPublication.write(fingerprintFile(), fingerprint)
   }
 
   private fun writeOnlineSnapshotIdentity(base: String, archive: String) {
