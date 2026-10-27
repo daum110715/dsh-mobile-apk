@@ -716,8 +716,8 @@ class EngineManager(private val context: Context, private val pickToken: String?
     // 指纹文件消失，下次启动按指纹缺失走重装配。AtomicFileReplace 的替换期间目标路径
     // 始终存在（ATOMIC_MOVE，不支持时退单次 REPLACE_EXISTING move，同样不先删）。
     if (!AtomicFileReplace.publish(tmp, target)) {
-      target.writeText(fingerprint)
       SnapshotFs.deletePath(tmp)
+      throw java.io.IOException("snapshot fingerprint publication failed")
     }
   }
 

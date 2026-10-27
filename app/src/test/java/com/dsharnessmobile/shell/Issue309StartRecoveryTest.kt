@@ -418,6 +418,15 @@ class Issue309StartRecoveryTest {
     assertTrue("刷新进行中必须返回假（让调用方走 blocked 文案并退回预算）", guardBlock.contains("return false"))
   }
 
+  @Test
+  fun `fingerprint publication failure never falls back to truncating write`() {
+    val manager = code("EngineManager.kt")
+    val writer = between(manager, "private fun writeFingerprint(", "private fun writeOnlineSnapshotIdentity")
+
+    assertTrue("failed atomic publication must abort the transaction", writer.contains("throw java.io.IOException("))
+    assertFalse("failed publication must not truncate the prior fingerprint", writer.contains("target.writeText("))
+  }
+
   /** 诊断包必须带上拒启原因/确诊项/现场，否则用户取包时没有可归因的事实。 */
   @Test
   fun `diagnostics package carries the refusal facts`() {
