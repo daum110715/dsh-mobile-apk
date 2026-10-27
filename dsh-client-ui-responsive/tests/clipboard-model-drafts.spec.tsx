@@ -42,10 +42,20 @@ async function setup(locale = 'en', onboarding = false) {
       <output>{JSON.stringify({ key, url, models })}</output>
     </div></section>
   }
+  let unmountEditor: (() => void) | undefined
+  function EditorRoot() {
+    const [mounted, setMounted] = useState(true)
+    unmountEditor = () => setMounted(false)
+    return mounted ? <Editor /> : null
+  }
   root = createRoot(host)
-  await act(async () => root!.render(<Editor />))
+  await act(async () => root!.render(<EditorRoot />))
   const request = vi.fn()
-  ;(window as unknown as { androidBridge: unknown }).androidBridge = { requestClipboardText: request }
+  const cancel = vi.fn()
+  ;(window as unknown as { androidBridge: unknown }).androidBridge = {
+    requestClipboardText: request,
+    cancelClipboardText: cancel,
+  }
   dispose = installClipboardModelDrafts()
   const click = async (label: string) => {
     const button = [...host.querySelectorAll('button')].find(b => b.textContent === label)
@@ -57,7 +67,8 @@ async function setup(locale = 'en', onboarding = false) {
       detail: { requestId, ok: text !== undefined, text },
     })))
   }
-  return { host, saves, request, click, deliver, state: () => JSON.parse(host.querySelector('output')!.textContent!) }
+  const removeEditor = async () => { await act(async () => unmountEditor?.()) }
+  return { host, saves, request, cancel, click, deliver, removeEditor, state: () => JSON.parse(host.querySelector('output')!.textContent!) }
 }
 
 describe('clipboard configuration into React drafts', () => {
@@ -176,6 +187,19 @@ describe('clipboard configuration into React drafts', () => {
     await act(async () => { owner.hidden = true })
     await flushObservers()
     expect(document.querySelector('[data-dsh-clipboard-draft]')).toBeNull()
+  })
+
+  it('disposes an editor and cancels its pending read when the last dialog unmounts', async () => {
+    const ui = await setup()
+    await ui.click('Fill from clipboard')
+    const dialog = ui.host.querySelector('[data-dsh-settings-dialog]')!
+    expect(dialog.querySelector('[data-dsh-clipboard-draft]')).not.toBeNull()
+
+    await ui.removeEditor()
+    await flushObservers()
+
+    expect(dialog.querySelector('[data-dsh-clipboard-draft]')).toBeNull()
+    expect(ui.cancel).toHaveBeenCalledWith(ui.request.mock.calls[0][0])
   })
 
   /** scope 外的变更不得再触发全文档重扫：聊天流每帧都在变，不能为它付 querySelectorAll 的钱。 */
