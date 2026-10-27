@@ -56,12 +56,30 @@ android {
       enableV2Signing = true
       enableV3Signing = true
     }
+    // #675：真发布密钥接缝——keystore 经 CI secret 注入环境变量，不再随公开仓分发。
+    // 本地/PR 构建没有这套环境变量时显式回落 repoDebug（见 buildTypes.release）；
+    // repoDebug 签的包装上官方签名设备时，会被应用内更新链的发布者连续性校验
+    // （UpdateChecker.signerContinuityHolds）拒装——本地构建只用于本地覆盖安装。
+    val ciKeystorePath = System.getenv("DSH_RELEASE_KEYSTORE")
+    if (ciKeystorePath != null) {
+      create("release") {
+        storeFile = File(ciKeystorePath)
+        storePassword = System.getenv("DSH_RELEASE_KEYSTORE_PASSWORD") ?: ""
+        keyAlias = System.getenv("DSH_RELEASE_KEY_ALIAS") ?: ""
+        keyPassword = System.getenv("DSH_RELEASE_KEY_PASSWORD") ?: ""
+        enableV1Signing = true
+        enableV2Signing = true
+        enableV3Signing = true
+      }
+    }
   }
 
   buildTypes {
     release {
       isMinifyEnabled = false
-      signingConfig = signingConfigs.getByName("repoDebug")
+      // #675：有 CI 注入的真发布密钥就用它；没有（本地/PR）显式回落 repoDebug，
+      // 不静默换签。签名缺失会在打包期报错，而不是把无签名的产物带出门禁。
+      signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("repoDebug")
     }
     debug {
       signingConfig = signingConfigs.getByName("repoDebug")

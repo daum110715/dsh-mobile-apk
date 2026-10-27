@@ -680,6 +680,21 @@ internal class ApkUpdateController(private val activity: Activity) {
         fail("安装包已不存在（可能被清理）——请重新检查更新", ApkUpdateState.KIND_ARTIFACT_REJECTED)
         return
       }
+      // #675：发布者连续性校验——「签名不匹配由系统安装器天然拒绝」的旧兜底不成立
+      // （发布私钥随公开仓分发，同私钥可签出同证书的包；摘要由投递方自带，挡不住同源替换）。
+      // 以设备上已安装的本应用证书为锚，不一致/读不出一律拒装；被拒产物即刻删除，
+      // 不再留在公共可写目录里充当「可重试载荷」。
+      if (!UpdateChecker.signerContinuityHolds(activity, dest)) {
+        LogCollector.log("dsh-update", "install rejected: signer continuity check failed (#675)")
+        dest.delete()
+        readyToInstall = null
+        currentResult = null
+        fail(
+          "更新包签名证书与本应用不一致，已拒绝安装（可能被篡改或来自非官方渠道）——请回到官方发布页重新获取",
+          ApkUpdateState.KIND_ARTIFACT_REJECTED,
+        )
+        return
+      }
       if (!UpdateChecker.canInstall(activity)) {
         // 续继链靠 readyToInstall（**不**靠 currentResult）：载荷已消费完，清掉以满足不变量。
         readyToInstall = dest
