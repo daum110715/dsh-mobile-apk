@@ -8,6 +8,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.json.JSONObject
 import java.io.File
+import java.security.KeyPairGenerator
+import java.security.Signature
+import java.util.Base64
 
 /**
  * 0.13.8 批 H 回归 + 0.14.6 功能 C：启动页 APK 自更新的契约——
@@ -100,6 +103,39 @@ class UpdateCheckerTest {
     // 老式纯 x86 设备（无翻译层）：退化为扫描，仍不误判为 arm64
     assertEquals("x86_64", UpdateChecker.abiFrom(listOf("x86", "x86_64")))
     assertEquals("arm64", UpdateChecker.abiFrom(emptyList()))
+  }
+
+  @Test
+  fun signedReleaseManifestMustVerifyBeforeItsPayloadIsParsed() {
+    val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+    val payload = "${"ab".repeat(32)}  apk/dsh-mobile-apk-v1.0-arm64.apk  123\n".toByteArray(Charsets.UTF_8)
+    val signer = Signature.getInstance("SHA256withRSA")
+    signer.initSign(keyPair.private)
+    signer.update(payload)
+    val envelope = JSONObject()
+      .put("format", "dsh-release-manifest-v1")
+      .put("algorithm", "RSA-SHA256")
+      .put("payload", Base64.getEncoder().encodeToString(payload))
+      .put("signature", Base64.getEncoder().encodeToString(signer.sign()))
+      .toString()
+
+    assertEquals(
+      String(payload, Charsets.UTF_8),
+      UpdateChecker.verifySignedManifestEnvelope(envelope, keyPair.public),
+    )
+
+    val changed = payload.copyOf().also { it[it.lastIndex - 1] = '4'.code.toByte() }
+    val tampered = JSONObject(envelope)
+      .put("payload", Base64.getEncoder().encodeToString(changed))
+      .toString()
+    assertThrows(IllegalArgumentException::class.java) {
+      UpdateChecker.verifySignedManifestEnvelope(tampered, keyPair.public)
+    }
+
+    val otherKey = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+    assertThrows(IllegalArgumentException::class.java) {
+      UpdateChecker.verifySignedManifestEnvelope(envelope, otherKey.public)
+    }
   }
 
   // ── 0.14.6 功能 C：接受集必须绑定**发布链实际产出名** ──────────────────────────────
@@ -604,31 +640,25 @@ class UpdateCheckerTest {
     assertEquals(15_000, UpdateChecker.timeoutFor("api"))
   }
 
-  /**
-   * 六档确认链的**接线顺序**（契约 A 节）：gh-proxy -> ghfast -> github -> pages -> ghproxy.net -> api。
-   *
-   * 为什么必须用源码结构断言钉住（而不是只测 runChain）：runChain 的用例证明的是"成功即停、
-   * 全挂不谎报"，它对**传进去的顺序**一无所知。把 pages 挪到第一位、或把 ghproxy.net 提前，
-   * 上面所有用例依旧全绿——而用户点一次检查就可能要干等半分钟（实测 ghproxy.net 25-34s）。
-   * 顺序即用户等待时间，属于行为，不是风格。
-   *
-   * 判据按**出现下标**而不是行号：区间调整、加注释、换行都不会误判；只有真的调换顺序才变红。
-   */
+  /** Signed release metadata may fall back between GitHub mirrors, never to unsigned metadata sources. */
   @Test
   fun confirmationChainWiringOrderIsPinned() {
     val src = repoSource("UpdateChecker.kt")
-    assertTrue(src.contains("private fun probeSources(deadline: UpdateCheckDeadline)"))
-    val body = src.substringAfter("private fun probeSources(deadline: UpdateCheckDeadline)").substringBefore("internal fun fetchText")
-    assertTrue("probeSources 必须存在（六档接线点）", body.isNotBlank())
+    assertTrue(src.contains("private fun probeSources(context: Context, deadline: UpdateCheckDeadline)"))
+    val body = src.substringAfter("private fun probeSources(context: Context, deadline: UpdateCheckDeadline)").substringBefore("internal fun fetchText")
+    assertTrue("probeSources 必须存在（签名清单接线点）", body.isNotBlank())
+    assertTrue("确认链必须取签名清单", body.contains("MANIFEST.signed.json"))
+    assertFalse("不得回退到未签名 Pages 元数据", body.contains("probePages("))
+    assertFalse("不得回退到未签名 GitHub API 元数据", body.contains("probeApi("))
 
-    val order = listOf("gh-proxy", "ghfast", "github", "pages", "ghproxy.net", "api")
+    val order = listOf("gh-proxy", "ghfast", "github", "ghproxy.net")
     val positions = order.map { name -> name to body.indexOf("\"" + name + "\" to {") }
     // 每一档都必须真的出现在接线表里（缺一档 = 该源根本没被尝试，用户少一条可用线路）。
     positions.forEach { (name, at) ->
       assertTrue("确认链里找不到源 " + name + " 的接线", at >= 0)
     }
     assertEquals(
-      "六档顺序必须与契约一致（顺序即回退优先级，也直接决定最坏等待时间）",
+      "镜像顺序必须与契约一致（顺序即回退优先级，也直接决定最坏等待时间）",
       positions.map { it.second }.sorted(),
       positions.map { it.second },
     )
@@ -639,9 +669,7 @@ class UpdateCheckerTest {
       "gh-proxy" to 8_000,
       "ghfast" to 15_000,
       "github" to 15_000,
-      "pages" to 8_000,
       "ghproxy.net" to 30_000,
-      "api" to 15_000,
     )
     for ((name, ms) in expected) {
       assertEquals(
@@ -651,23 +679,17 @@ class UpdateCheckerTest {
       )
     }
     // 接线表里每一行都必须显式带自己的名字去取超时（而不是共用一个常量），否则逐档独立超时会退化成全局一个值。
-    for (name in expected.keys - setOf("api")) {
+    for (name in expected.keys) {
       assertTrue(
         "档 " + name + " 必须用自己的名字取超时（timeoutFor(\"" + name + "\")）",
         body.contains("timeoutFor(\"" + name + "\")"),
       )
     }
-    // ghproxy.net 是末位的慢档：它在接线表里的位置必须晚于 pages 之外的其它所有档（用它自己的下标比）。
+    // ghproxy.net is the final slow mirror and must remain the last configured source.
     assertTrue(
       "ghproxy.net 只能末位兜底（实测 25-34s，作主源会把检查拖成半分钟）",
       body.indexOf("\"ghproxy.net\" to {") > body.indexOf("\"github\" to {") &&
-        body.indexOf("\"ghproxy.net\" to {") > body.indexOf("\"pages\" to {") &&
         body.indexOf("\"ghproxy.net\" to {") > body.indexOf("\"ghfast\" to {"),
-    )
-    // api.github.com 是最后兜底（未认证 60 次/小时/IP 且配额被共享），必须排在所有镜像档之后。
-    assertTrue(
-      "api 必须排在五档镜像/站点之后（额度稀缺，只能兜底）",
-      body.indexOf("\"api\" to {") > body.indexOf("\"ghproxy.net\" to {"),
     )
   }
 
@@ -977,7 +999,7 @@ class UpdateCheckerTest {
     assertTrue("且绝不在这里清掉它", !needPerm.contains("readyToInstall = null"))
     assertTrue("授权页拉起成功才进 need-permission 相位", needPerm.contains("state.onNeedPermission()"))
 
-    val installerOk = code.substringAfter("if (UpdateChecker.invokeInstaller(activity, dest))").substringBefore("} else {")
+    val installerOk = code.substringAfter("if (UpdateChecker.invokeInstaller(activity, dest, expectedSha256))").substringBefore("} else {")
     assertTrue("安装器**成功**拉起后才允许清掉待装包", installerOk.contains("readyToInstall = null"))
 
     // onResume 结算必须**只**在「等授权」相位续继（否则会误伤其它相位）。

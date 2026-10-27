@@ -268,6 +268,7 @@ internal class ApkUpdateController(private val activity: Activity) {
    * 判据是「**是否还有一条路会用到它**」，不是「状态是不是终态」——将来做统一清理必须按这条判据走。
    */
   @Volatile private var readyToInstall: File? = null
+  @Volatile private var readyToInstallSha256: String? = null
 
   /**
    * 已检查到的新版（下载入口的载荷）。
@@ -330,6 +331,9 @@ internal class ApkUpdateController(private val activity: Activity) {
     val payloadAllowed = s == ApkUpdateState.STATE_AVAILABLE || s == ApkUpdateState.STATE_DOWNLOADING
     if (hasPayload != payloadAllowed) {
       return "载荷/状态不同步：state=" + s + " 但 " + (if (hasPayload) "有" else "无") + "待下载载荷"
+    }
+    if ((readyToInstall == null) != (readyToInstallSha256 == null)) {
+      return "待安装文件与签名摘要不同步"
     }
     // canStart 必须与「真的能开始下载」一致 —— 页面正是按它决定发 install 还是 check。
     val canStart = JSONObject(state.snapshotJson()).optBoolean("canStart")
@@ -566,7 +570,7 @@ internal class ApkUpdateController(private val activity: Activity) {
 
   private fun runCheck(e: Int, deadline: UpdateCheckDeadline) {
     val r = try {
-      UpdateChecker.checkLatest(deadline)
+      UpdateChecker.checkLatest(activity, deadline)
     } catch (t: Throwable) {
       android.util.Log.w(TAG, "check threw: " + (t.message ?: t.javaClass.simpleName))
       UpdateChecker.CheckResult.Failed("检查更新未完成（详细原因已写入日志）——可重试，或复制日志反馈")
@@ -591,11 +595,13 @@ internal class ApkUpdateController(private val activity: Activity) {
   /** 下载 → 校验 → 安装（复用既有下载链与 [verifyApkArtifact]，判定强度与旧引导页路径完全一致）。 */
   private fun downloadAndInstall(r: UpdateChecker.CheckResult.Available, e: Int) {
     val dest = File(UpdateChecker.updatesDir(activity), r.name)
+    val expectedSha = r.sha256
+    if (expectedSha.isNullOrBlank()) {
+      failDownload("下载失败：签名发布清单缺少 APK 摘要（文件未安装）", ApkUpdateState.KIND_ARTIFACT_REJECTED, e)
+      return
+    }
     var reused = false
     try {
-      // 摘要随元数据一起来（MANIFEST / releases.json 已带 sha256 列）。旧实现把 sha256Url 当资产去下载，
-      // 而发布链从来没产出过 .sha256 附件——那一步恒定失败，校验链因此长期形同虚设。
-      val expectedSha = r.sha256
       fun artifactVerdict(): ApkArtifactVerdict = verifyApkArtifact(
         fileExists = dest.exists(),
         actualBytes = dest.length(),
@@ -606,11 +612,11 @@ internal class ApkUpdateController(private val activity: Activity) {
       if (artifactVerdict() is ApkArtifactVerdict.Accept) {
         reused = true // 上次下完但没装成（授权中断/安装取消）→ 复用已验证的包，不重复拉 169MB
       } else {
-        // #513：元数据缺 sha256 时第三方镜像产物无摘要可校验——只允许官方直连（fail-closed）。
+        // Mirrors are safe here because the signed manifest authenticates the expected APK digest.
         val used = UpdateChecker.download(
           r.apkUrl, dest,
           { pct -> onDownloadProgress(pct, e) },
-          allowMirrors = expectedSha != null,
+          allowMirrors = true,
           isActive = { isCurrentEpoch(e) },
           publishIfActive = { publish ->
             synchronized(publicationLock) {
@@ -646,7 +652,7 @@ internal class ApkUpdateController(private val activity: Activity) {
     // 注意：此处**不**清载荷——install() 在 UI 线程跑且可能落到「需授权」相位，而那一刻才离开
     // downloading。载荷的清零与相位切换成对发生（见 install/failDownload），不变量因此始终成立。
     activity.runOnUiThread {
-      synchronized(publicationLock) { if (isCurrentEpoch(e)) install(dest, reusedFlag) }
+      synchronized(publicationLock) { if (isCurrentEpoch(e)) install(dest, reusedFlag, expectedSha) }
     }
   }
 
@@ -670,7 +676,7 @@ internal class ApkUpdateController(private val activity: Activity) {
   }
 
   /** 安装步骤必须在 UI 线程（拉起授权页/安装器都是 Activity 动作）。 */
-  private fun install(dest: File, reused: Boolean) {
+  private fun install(dest: File, reused: Boolean, expectedSha256: String) {
     synchronized(publicationLock) {
       if (activity.isFinishing || activity.isDestroyed) {
         fail("应用界面已关闭，安装已取消——请重新检查更新", ApkUpdateState.KIND_INSTALLER_UNAVAILABLE)
@@ -680,17 +686,16 @@ internal class ApkUpdateController(private val activity: Activity) {
         fail("安装包已不存在（可能被清理）——请重新检查更新", ApkUpdateState.KIND_ARTIFACT_REJECTED)
         return
       }
-      // #675：发布者连续性校验——「签名不匹配由系统安装器天然拒绝」的旧兜底不成立
-      // （发布私钥随公开仓分发，同私钥可签出同证书的包；摘要由投递方自带，挡不住同源替换）。
-      // 以设备上已安装的本应用证书为锚，不一致/读不出一律拒装；被拒产物即刻删除，
-      // 不再留在公共可写目录里充当「可重试载荷」。
-      if (!UpdateChecker.signerContinuityHolds(activity, dest)) {
-        LogCollector.log("dsh-update", "install rejected: signer continuity check failed (#675)")
+      // The signed release manifest supplies the expected bytes, and the signer lineage must match
+      // the platform-specific release identity. Reject and remove any artifact that fails either check.
+      if (!UpdateChecker.signerContinuityHolds(activity, dest, expectedSha256)) {
+        LogCollector.log("dsh-update", "install rejected: signed artifact verification failed")
         dest.delete()
         readyToInstall = null
+        readyToInstallSha256 = null
         currentResult = null
         fail(
-          "更新包签名证书与本应用不一致，已拒绝安装（可能被篡改或来自非官方渠道）——请回到官方发布页重新获取",
+          "更新包摘要或签名谱系校验失败，已拒绝安装（可能被篡改或来自非官方渠道）——请回到官方发布页重新获取",
           ApkUpdateState.KIND_ARTIFACT_REJECTED,
         )
         return
@@ -698,6 +703,7 @@ internal class ApkUpdateController(private val activity: Activity) {
       if (!UpdateChecker.canInstall(activity)) {
         // 续继链靠 readyToInstall（**不**靠 currentResult）：载荷已消费完，清掉以满足不变量。
         readyToInstall = dest
+        readyToInstallSha256 = expectedSha256
         currentResult = null
         val opened = UpdateChecker.requestInstallPermission(activity)
         if (opened) {
@@ -711,13 +717,15 @@ internal class ApkUpdateController(private val activity: Activity) {
         }
         return
       }
-      if (UpdateChecker.invokeInstaller(activity, dest)) {
+      if (UpdateChecker.invokeInstaller(activity, dest, expectedSha256)) {
         readyToInstall = null
+        readyToInstallSha256 = null
         currentResult = null
         state.onInstalling(reused)
         settle()
       } else {
         readyToInstall = dest
+        readyToInstallSha256 = expectedSha256
         fail("安装器拉起失败，请再点「下载并安装」重试", ApkUpdateState.KIND_INSTALLER_UNAVAILABLE)
       }
     }
@@ -742,8 +750,9 @@ internal class ApkUpdateController(private val activity: Activity) {
     synchronized(publicationLock) {
       if (!state.awaitingPermission()) return
       val dest = readyToInstall ?: return
+      val expectedSha256 = readyArtifactDigest(dest) ?: return
       if (activity.isFinishing || activity.isDestroyed) return
-      if (UpdateChecker.canInstall(activity)) install(dest, false)
+      if (UpdateChecker.canInstall(activity)) install(dest, false, expectedSha256)
       else fail("尚未获得「安装未知应用」权限——请在系统设置里授权后再试", ApkUpdateState.KIND_INSTALLER_UNAVAILABLE)
     }
   }
@@ -752,8 +761,9 @@ internal class ApkUpdateController(private val activity: Activity) {
   private fun continueInstallIfPermitted() {
     synchronized(publicationLock) {
       val dest = readyToInstall ?: return
+      val expectedSha256 = readyArtifactDigest(dest) ?: return
       if (activity.isFinishing || activity.isDestroyed) return
-      if (UpdateChecker.canInstall(activity)) install(dest, false)
+      if (UpdateChecker.canInstall(activity)) install(dest, false, expectedSha256)
       else {
         // 仍未授权：再拉一次授权页并如实回执（旧实现此处只改 hint，按钮可点但点了没反应）。
         val opened = UpdateChecker.requestInstallPermission(activity)
@@ -765,6 +775,16 @@ internal class ApkUpdateController(private val activity: Activity) {
         }
       }
     }
+  }
+
+  private fun readyArtifactDigest(dest: File): String? {
+    val digest = readyToInstallSha256
+    if (!digest.isNullOrBlank()) return digest
+    dest.delete()
+    readyToInstall = null
+    readyToInstallSha256 = null
+    fail("待安装文件缺少已验证的摘要，已拒绝安装——请重新检查更新", ApkUpdateState.KIND_ARTIFACT_REJECTED)
+    return null
   }
 
   companion object {

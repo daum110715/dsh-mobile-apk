@@ -5,22 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * #675 回归：应用内自更新链的「发布者连续性」判据。
- *
- * 缺陷形态：发布私钥随公开仓分发（keystore/debug.keystore 直接签 release），APK 摘要与
- * 载荷又同出自镜像——「签名不匹配由系统安装器天然拒绝」不成立（同私钥 = 同证书，安装器
- * 只会放行），更新链因此没有真实性防线。
- *
- * 修法：安装前以待装 APK 的证书 vs **当前安装**的本应用证书做连续性校验（fail-closed：
- * 读不出/不一致一律拒装）；CI 发布密钥改走 secret 注入（app/build.gradle.kts 的
- * DSH_RELEASE_KEYSTORE 接缝），repoDebug 只签本地/PR 测试包。
- *
- * 纯判据 + 静态判据各守一半：archive/installed 证书读取走 PackageManager，属设备面
- * （本批未做设备验证，PR 显式标注，发版候选前补验）。
- * 反证（本类必须能红）：invokeInstaller 摘掉校验前置 → 静态判据红；
- * signerDigestsMatch 放宽空集合或改为顺序敏感 → 纯判据红。
- */
+/** Regression tests for signed update artifacts and the one-way APK signing lineage. */
 class UpdateSignerContinuityTest {
 
   private fun repoFile(rel: String): File {
@@ -41,38 +26,79 @@ class UpdateSignerContinuityTest {
     .joinToString("\n")
 
   private fun b(s: String): ByteArray = s.toByteArray()
+  private fun snapshot(current: String, vararg history: String) =
+    UpdateChecker.SignerSnapshot(listOf(b(current)), history.map(::b))
+
+  private fun digest(value: String): String = java.security.MessageDigest.getInstance("SHA-256")
+    .digest(b(value)).joinToString("") { "%02x".format(it) }
 
   // ── 纯判据 ──────────────────────────────────────────────────────────────────
 
   @Test
-  fun sameCertificateSetPasses() {
-    val certs = listOf(b("official-release-cert"))
-    assertTrue("同证书 = 官方发行链的合法升级", UpdateChecker.signerDigestsMatch(certs, certs))
+  fun legacySignerRemainsValidThroughApi32() {
+    val legacy = "legacy-release-cert"
+    assertTrue(
+      "API 26-32 must keep the legacy signer while the rotation minimum is API 33",
+      UpdateChecker.signerRotationMatches(
+        snapshot(legacy, legacy), snapshot(legacy, legacy), 32, digest(legacy), digest("rotated-cert"),
+      ),
+    )
   }
 
   @Test
-  fun differentCertificateIsRejected() {
-    val incoming = listOf(b("attessor-signed-with-leaked-repo-key"))
-    val installed = listOf(b("official-release-cert"))
-    assertFalse("证书不一致必须拒（repoDebug 私钥公开，同证书可被任何人签出）",
-      UpdateChecker.signerDigestsMatch(incoming, installed))
+  fun firstRotatedUpdateAcceptsInstalledLegacyAncestor() {
+    val legacy = "legacy-release-cert"
+    val rotated = "rotated-release-cert"
+    assertTrue(
+      "API 33+ must accept the pinned new signer when its lineage contains the installed legacy signer",
+      UpdateChecker.signerRotationMatches(
+        snapshot(rotated, legacy, rotated), snapshot(legacy, legacy), 33, digest(legacy), digest(rotated),
+      ),
+    )
   }
 
   @Test
-  fun unreadableSignaturesFailClosed() {
-    val certs = listOf(b("official-release-cert"))
-    assertFalse("待装包读不出签名块必须拒", UpdateChecker.signerDigestsMatch(emptyList(), certs))
-    assertFalse("已安装侧读不出证书同样拒（锚不可得 = 不放行）", UpdateChecker.signerDigestsMatch(certs, emptyList()))
-    assertFalse("两侧都读不出更不能放行", UpdateChecker.signerDigestsMatch(emptyList(), emptyList()))
+  fun subsequentUpdateAcceptsInstalledRotatedSigner() {
+    val legacy = "legacy-release-cert"
+    val rotated = "rotated-release-cert"
+    assertTrue(
+      "later API 33+ updates must accept the already-rotated installed signer",
+      UpdateChecker.signerRotationMatches(
+        snapshot(rotated, legacy, rotated), snapshot(rotated, legacy, rotated), 35, digest(legacy), digest(rotated),
+      ),
+    )
   }
 
   @Test
-  fun multiSignerComparisonIsOrderInsensitive() {
-    val a = listOf(b("cert-1"), b("cert-2"))
-    val b = listOf(b("cert-2"), b("cert-1"))
-    assertTrue("多签名者按集合比较（框架返回顺序不保证）", UpdateChecker.signerDigestsMatch(a, b))
-    val c = listOf(b("cert-1"), b("cert-3"))
-    assertFalse("集合有差即拒", UpdateChecker.signerDigestsMatch(a, c))
+  fun unrelatedSignersAndMissingLineageFailClosed() {
+    val legacy = "legacy-release-cert"
+    val rotated = "rotated-release-cert"
+    val attacker = "attacker-controlled-cert"
+    assertFalse(
+      "API 32 rejects a same-as-installed signer that is not the pinned legacy certificate",
+      UpdateChecker.signerRotationMatches(
+        snapshot(attacker, attacker), snapshot(attacker, attacker), 32, digest(legacy), digest(rotated),
+      ),
+    )
+    assertFalse(
+      "API 33+ rejects an unpinned incoming signer",
+      UpdateChecker.signerRotationMatches(
+        snapshot(attacker, legacy, attacker), snapshot(legacy, legacy), 33, digest(legacy), digest(rotated),
+      ),
+    )
+    assertFalse(
+      "API 33+ rejects an incoming signer whose lineage omits the installed signer",
+      UpdateChecker.signerRotationMatches(
+        snapshot(rotated, rotated), snapshot(legacy, legacy), 33, digest(legacy), digest(rotated),
+      ),
+    )
+    assertFalse(
+      "the application does not accept multiple current signers",
+      UpdateChecker.signerRotationMatches(
+        UpdateChecker.SignerSnapshot(listOf(b("one"), b("two")), listOf(b("one"), b("two"))),
+        snapshot(legacy, legacy), 33, digest(legacy), digest(rotated),
+      ),
+    )
   }
 
   // ── 静态判据 ────────────────────────────────────────────────────────────────
@@ -83,26 +109,27 @@ class UpdateSignerContinuityTest {
     val body = code.substringAfter("fun invokeInstaller(")
     val check = body.indexOf("signerContinuityHolds(")
     val fire = body.indexOf("startActivity(")
-    assertTrue("invokeInstaller 必须先做发布者连续性校验", check >= 0)
-    assertTrue("校验必须先于 startActivity（安装链最后一道闸，调用方绕不过）", fire >= 0 && check < fire)
+    assertTrue("invokeInstaller must verify the signed digest and signer lineage first", check >= 0)
+    assertTrue("verification must precede startActivity", fire >= 0 && check < fire)
   }
 
   @Test
   fun stateMachineRejectsWithAnHonestUserFacingReason() {
     val code = codeOnly(repoFile("app/src/main/java/com/dsharnessmobile/shell/ApkUpdateAction.kt").readText())
     val body = code.substringAfter("private fun install(")
-    assertTrue("状态机层必须有连续性校验前置（给出比「拉起失败」更诚实的文案）",
-      body.contains("UpdateChecker.signerContinuityHolds("))
-    assertTrue("拒绝必须走被拒产物语义（KIND_ARTIFACT_REJECTED），不得伪装成拉起失败",
+    assertTrue("the controller must verify the signed digest and lineage before install",
+      body.contains("UpdateChecker.signerContinuityHolds(activity, dest, expectedSha256)"))
+    assertTrue("verification failure must be reported as an artifact rejection",
       body.substringBefore("UpdateChecker.invokeInstaller(").contains("KIND_ARTIFACT_REJECTED"))
   }
 
   @Test
-  fun releaseSigningPrefersCiSecretAndFallsBackExplicitly() {
-    val gradle = repoFile("app/build.gradle.kts").readText()
-    assertTrue("必须保留 CI secret 接缝（#675：真发布密钥不随公开仓分发）",
-      gradle.contains("DSH_RELEASE_KEYSTORE"))
-    assertTrue("无 CI 密钥时必须显式回落 repoDebug（不静默换签）",
-      gradle.contains("signingConfigs.findByName(\"release\") ?: signingConfigs.getByName(\"repoDebug\")"))
+  fun releasePipelineRequiresTheSecretAndBuildsAOneWayLineage() {
+    val workflow = repoFile(".github/workflows/release.yml").readText()
+    assertTrue("release must require the private signing key secret", workflow.contains("secrets.DSH_RELEASE_KEY_PK8_BASE64"))
+    assertTrue("release must generate an APK signing lineage", workflow.contains("rotate --out"))
+    assertTrue("the rotated signer must be enabled from API 33", workflow.contains("--rotation-min-sdk-version 33"))
+    assertTrue("rollback to the compromised signer must be disabled", workflow.contains("--set-rollback false"))
+    assertTrue("release metadata must include the signed manifest", workflow.contains("MANIFEST.signed.json"))
   }
 }

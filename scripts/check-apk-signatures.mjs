@@ -26,8 +26,8 @@ export function buildApksignerCommand(apksigner, args, platform = process.platfo
   return { executable: apksigner, args }
 }
 
-export function buildVerifyArgs(apk) {
-  return ['verify', '--verbose', '--print-certs', '--min-sdk-version', String(VERIFY_MIN_SDK), apk]
+export function buildVerifyArgs(apk, minSdk = VERIFY_MIN_SDK) {
+  return ['verify', '--verbose', '--print-certs', '--min-sdk-version', String(minSdk), apk]
 }
 
 export function readSchemes(output) {
@@ -40,19 +40,62 @@ export function readSchemes(output) {
 }
 
 export function readCertificateDigests(output) {
-  return [...output.matchAll(/^[^\r\n]*certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$/gim)]
-    .map(match => match[1].replaceAll(':', '').toLowerCase())
-    .filter(digest => /^[0-9a-f]{64}$/.test(digest))
+  return readSignerCertificates(output).map(signer => signer.digest)
 }
 
-export function evaluateVerification({ exitCode, output, expectedCertificateSha256 }) {
+export function readSignerCertificates(output) {
+  return output.split(/\r?\n/).flatMap((line) => {
+    const match = line.match(/^\s*(?:(V[0-9.]+)\s+Signer:|Signer\s+#\d+)(.*?)certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$/i)
+    if (!match) return []
+    const digest = match[3].replaceAll(':', '').toLowerCase()
+    if (!/^[0-9a-f]{64}$/.test(digest)) return []
+    const range = match[2].match(/minSdkVersion=(\d+),\s*maxSdkVersion=(\d+)/i)
+    return [{
+      scheme: match[1]?.toUpperCase() ?? null,
+      minSdkVersion: range ? Number(range[1]) : null,
+      maxSdkVersion: range ? Number(range[2]) : null,
+      digest,
+    }]
+  })
+}
+
+export function evaluateVerification({ exitCode, output, expectedCertificateSha256, rotationCertificateSha256 }) {
   const schemes = readSchemes(output)
   const missing = REQUIRED.filter((scheme) => !schemes[scheme])
-  const certificates = readCertificateDigests(output)
+  const signers = readSignerCertificates(output)
+  const certificates = signers.map(signer => signer.digest)
   const expected = expectedCertificateSha256?.replaceAll(':', '').toLowerCase()
-  const certificateMatches = expected === undefined ||
-    (/^[0-9a-f]{64}$/.test(expected) && certificates.length > 0 && certificates.every(digest => digest === expected))
-  return { ok: exitCode === 0 && missing.length === 0 && certificateMatches, exitCode, schemes, missing, certificates, certificateMatches }
+  const rotated = rotationCertificateSha256?.replaceAll(':', '').toLowerCase()
+  let certificateMatches = expected === undefined
+  if (expected !== undefined && /^[0-9a-f]{64}$/.test(expected) && signers.length > 0) {
+    if (rotated === undefined) {
+      certificateMatches = signers.every(signer => signer.digest === expected)
+    } else if (/^[0-9a-f]{64}$/.test(rotated)) {
+      const allowed = new Set([expected, rotated])
+      certificateMatches = signers.every(signer => allowed.has(signer.digest)) &&
+        signers.some(signer => signer.scheme === 'V3.0' && signer.maxSdkVersion === 32 && signer.digest === expected) &&
+        signers.some(signer => signer.scheme === 'V3.1' && signer.minSdkVersion === 33 && signer.digest === rotated)
+    }
+  }
+  return { ok: exitCode === 0 && missing.length === 0 && certificateMatches, exitCode, schemes, missing, certificates, signers, certificateMatches }
+}
+
+export function evaluateLegacyRotationVerification({ exitCode, output, expectedCertificateSha256 }) {
+  const schemes = readSchemes(output)
+  const signers = readSignerCertificates(output)
+  const expected = expectedCertificateSha256?.replaceAll(':', '').toLowerCase()
+  const legacySignerMatches = /^[0-9a-f]{64}$/.test(expected ?? '') &&
+    signers.some(signer => signer.scheme === 'V3.0' && signer.maxSdkVersion === 32 && signer.digest === expected)
+  return { ok: exitCode === 0 && schemes.v3 && legacySignerMatches, exitCode, schemes, signers, legacySignerMatches }
+}
+
+export function evaluateRotatedVerification({ exitCode, output, expectedCertificateSha256 }) {
+  const schemes = readSchemes(output)
+  const signers = readSignerCertificates(output)
+  const expected = expectedCertificateSha256?.replaceAll(':', '').toLowerCase()
+  const certificateMatches = /^[0-9a-f]{64}$/.test(expected ?? '') &&
+    signers.some(signer => signer.scheme === 'V3.1' && signer.minSdkVersion === 33 && signer.digest === expected)
+  return { ok: exitCode === 0 && schemes.v3 && certificateMatches, exitCode, schemes, signers, certificateMatches }
 }
 
 export function readKeystoreCertificate(keystore) {
@@ -97,13 +140,14 @@ function parseArgs(args) {
   const parsed = { apks: [], dirs: [], apksigner: undefined }
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
-    if (['--apk', '--dir', '--apksigner', '--keystore'].includes(arg) && (!args[i + 1] || args[i + 1].startsWith('--'))) {
+    if (['--apk', '--dir', '--apksigner', '--keystore', '--rotation-certificate-sha256'].includes(arg) && (!args[i + 1] || args[i + 1].startsWith('--'))) {
       throw new Error('missing value for ' + arg)
     }
     if (arg === '--apk') parsed.apks.push(args[++i])
     else if (arg === '--dir') parsed.dirs.push(args[++i])
     else if (arg === '--apksigner') parsed.apksigner = args[++i]
     else if (arg === '--keystore') parsed.keystore = args[++i]
+    else if (arg === '--rotation-certificate-sha256') parsed.rotationCertificateSha256 = args[++i]
     else if (arg === '--self-test') parsed.selfTest = true
     else if (arg === '--help' || arg === '-h') parsed.help = true
     else throw new Error(`unknown argument: ${arg}`)
@@ -149,7 +193,7 @@ function main() {
     return fail(error.message)
   }
   if (options.help) {
-    console.log('Usage: node scripts/check-apk-signatures.mjs (--apk FILE | --dir DIR)+ [--apksigner PATH] [--keystore FILE] [--self-test]')
+    console.log('Usage: node scripts/check-apk-signatures.mjs (--apk FILE | --dir DIR)+ [--apksigner PATH] [--keystore FILE] [--rotation-certificate-sha256 SHA256] [--self-test]')
     return
   }
   if (options.selfTest) return runSelfTest()
@@ -160,6 +204,12 @@ function main() {
   if (options.keystore) {
     try { expectedCertificateSha256 = readKeystoreCertificate(options.keystore) }
     catch (error) { return fail(error.message) }
+  }
+  if (options.rotationCertificateSha256 && !/^(?:[0-9a-f]{2}:?){32}$/i.test(options.rotationCertificateSha256)) {
+    return fail('--rotation-certificate-sha256 must be a 32-byte SHA-256 fingerprint')
+  }
+  if (options.rotationCertificateSha256 && !options.keystore) {
+    return fail('--rotation-certificate-sha256 requires --keystore for the legacy signer')
   }
   const files = [...options.apks]
   for (const dir of options.dirs) {
@@ -180,6 +230,7 @@ function main() {
   console.log(`APK signature gate: apksigner=${apksigner}`)
   console.log('Required APK signature schemes: v1=true, v2=true, v3=true')
   if (expectedCertificateSha256) console.log('Required signing certificate SHA-256: ' + expectedCertificateSha256)
+  if (options.rotationCertificateSha256) console.log('Required API 33+ rotated certificate SHA-256: ' + options.rotationCertificateSha256)
   for (const apk of unique) {
     if (!fs.existsSync(apk) || !fs.statSync(apk).isFile()) {
       console.error(`FAIL ${apk}: file does not exist`)
@@ -192,14 +243,60 @@ function main() {
     const result = spawnSync(command.executable, command.args, { encoding: 'utf8', windowsHide: true })
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
     console.log(output.trimEnd())
-    const status = evaluateVerification({ exitCode: result.status, output, expectedCertificateSha256 })
+    const status = evaluateVerification({
+      exitCode: result.status,
+      output,
+      expectedCertificateSha256,
+      rotationCertificateSha256: options.rotationCertificateSha256,
+    })
     console.log(`apksigner exit-code=${result.status ?? 'null'}; schemes v1=${status.schemes.v1} v2=${status.schemes.v2} v3=${status.schemes.v3}`)
     if (result.error || !status.ok) {
       if (result.error) console.error(`spawn error: ${result.error.message}`)
       console.error(`FAIL ${apk}: required schemes missing/false: ${status.missing.join(', ') || 'none'}; exit=${result.status ?? 'null'}`)
       if (!status.certificateMatches) console.error(`FAIL ${apk}: signing certificate differs from the repository keystore or is absent`)
       failures += 1
-    } else console.log(`PASS ${apk}`)
+      continue
+    }
+    if (options.rotationCertificateSha256) {
+      const legacyArgs = buildVerifyArgs(apk, 32)
+      const legacyCommand = buildApksignerCommand(apksigner, legacyArgs)
+      console.log(`\n$ ${legacyCommand.executable} ${legacyCommand.args.join(' ')}`)
+      const legacyResult = spawnSync(legacyCommand.executable, legacyCommand.args, { encoding: 'utf8', windowsHide: true })
+      const legacyOutput = `${legacyResult.stdout ?? ''}${legacyResult.stderr ?? ''}`
+      console.log(legacyOutput.trimEnd())
+      const legacy = evaluateLegacyRotationVerification({
+        exitCode: legacyResult.status,
+        output: legacyOutput,
+        expectedCertificateSha256,
+      })
+      if (legacyResult.error || !legacy.ok) {
+        if (legacyResult.error) console.error(`spawn error: ${legacyResult.error.message}`)
+        console.error(`FAIL ${apk}: API 32 did not verify with the legacy certificate`)
+        failures += 1
+        continue
+      }
+      console.log(`PASS API 32 legacy signature ${apk}`)
+
+      const rotatedArgs = buildVerifyArgs(apk, 33)
+      const rotatedCommand = buildApksignerCommand(apksigner, rotatedArgs)
+      console.log(`\n$ ${rotatedCommand.executable} ${rotatedCommand.args.join(' ')}`)
+      const rotatedResult = spawnSync(rotatedCommand.executable, rotatedCommand.args, { encoding: 'utf8', windowsHide: true })
+      const rotatedOutput = `${rotatedResult.stdout ?? ''}${rotatedResult.stderr ?? ''}`
+      console.log(rotatedOutput.trimEnd())
+      const rotated = evaluateRotatedVerification({
+        exitCode: rotatedResult.status,
+        output: rotatedOutput,
+        expectedCertificateSha256: options.rotationCertificateSha256,
+      })
+      if (rotatedResult.error || !rotated.ok) {
+        if (rotatedResult.error) console.error(`spawn error: ${rotatedResult.error.message}`)
+        console.error(`FAIL ${apk}: API 33+ signature did not verify with the pinned rotated certificate`)
+        failures += 1
+        continue
+      }
+      console.log(`PASS API 33+ rotated signature ${apk}`)
+    }
+    console.log(`PASS ${apk}`)
   }
   if (failures) return fail(`${failures}/${unique.length} APK(s) failed verification`)
   console.log(`PASS all ${unique.length} final APK(s) have v1, v2, and v3 signatures`)

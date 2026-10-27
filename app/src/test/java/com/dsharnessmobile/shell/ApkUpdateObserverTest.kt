@@ -293,7 +293,9 @@ class ApkUpdateObserverTest {
     val code = codeOnly(shellSource("ApkUpdateAction.kt"))
     val body = code.substringAfter("private fun downloadAndInstall(").substringBefore("private fun onDownloadProgress(")
     assertTrue("摘要必须直接取自元数据", body.contains("val expectedSha = r.sha256"))
+    assertTrue("signed releases without an APK digest must fail closed", body.contains("expectedSha.isNullOrBlank()"))
     assertFalse("不得再把摘要当资产下载", body.contains("downloadText"))
     assertTrue("体积与摘要校验仍走同一份判定", body.contains("verifyApkArtifact("))
+    assertTrue("authorization return must retain the signed digest", code.contains("readyToInstallSha256 = expectedSha256"))
   }
 }

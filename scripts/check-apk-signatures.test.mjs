@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
-import { buildVerifyArgs, buildApksignerCommand, evaluateVerification, readSchemes, readCertificateDigests } from './check-apk-signatures.mjs'
+import { buildVerifyArgs, buildApksignerCommand, evaluateVerification, evaluateLegacyRotationVerification, evaluateRotatedVerification, readSchemes, readCertificateDigests } from './check-apk-signatures.mjs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +14,19 @@ const full = [
   'Number of signers: 1',
 ].join('\n')
 
+const legacyCertificate = '1d'.repeat(32)
+const rotatedCertificate = 'ac'.repeat(32)
+const rotatedOutput = [
+  'Verifies',
+  'Verified using v1 scheme (JAR signing): true',
+  'Verified using v2 scheme (APK Signature Scheme v2): true',
+  'Verified using v3 scheme (APK Signature Scheme v3): true',
+  'Verified using v3.1 scheme (APK Signature Scheme v3.1): true',
+  'Number of signers: 1',
+  `V3.1 Signer: (minSdkVersion=33, maxSdkVersion=2147483647) certificate SHA-256 digest: ${rotatedCertificate}`,
+  `V3.0 Signer: (minSdkVersion=24, maxSdkVersion=32) certificate SHA-256 digest: ${legacyCertificate}`,
+].join('\n')
+
 test('accepts successful apksigner output only when v1, v2, and v3 are true', () => {
   assert.deepEqual(readSchemes(full), { v1: true, v2: true, v3: true })
   assert.equal(evaluateVerification({ exitCode: 0, output: full }).ok, true)
@@ -22,6 +35,9 @@ test('accepts successful apksigner output only when v1, v2, and v3 are true', ()
 test('verifies v1 against the lowest SDK supported by the generated SHA-256 JAR signature', () => {
   assert.deepEqual(buildVerifyArgs('final.apk'), [
     'verify', '--verbose', '--print-certs', '--min-sdk-version', '18', 'final.apk',
+  ])
+  assert.deepEqual(buildVerifyArgs('final.apk', 33), [
+    'verify', '--verbose', '--print-certs', '--min-sdk-version', '33', 'final.apk',
   ])
 })
 
@@ -78,6 +94,63 @@ test('normalizes certificate fingerprints across build-tools output formats', ()
   const output = full + '\nSigner #1 certificate SHA-256 digest: ' + Array(32).fill('AB').join(':') + '\r\n'
   assert.equal(evaluateVerification({ exitCode: 0, output, expectedCertificateSha256: expected }).ok, true)
   assert.equal(evaluateVerification({ exitCode: 0, output, expectedCertificateSha256: 'invalid' }).ok, false)
+})
+
+test('accepts only the old V3.0 signer through API 32 and the pinned V3.1 signer from API 33', () => {
+  const base = evaluateVerification({
+    exitCode: 0,
+    output: rotatedOutput,
+    expectedCertificateSha256: legacyCertificate,
+    rotationCertificateSha256: rotatedCertificate,
+  })
+  assert.equal(base.ok, true)
+  assert.deepEqual(readCertificateDigests(rotatedOutput), [rotatedCertificate, legacyCertificate])
+  assert.equal(evaluateLegacyRotationVerification({
+    exitCode: 0,
+    output: rotatedOutput,
+    expectedCertificateSha256: legacyCertificate,
+  }).ok, true)
+  assert.equal(evaluateRotatedVerification({
+    exitCode: 0,
+    output: rotatedOutput,
+    expectedCertificateSha256: rotatedCertificate,
+  }).ok, true)
+  assert.equal(evaluateLegacyRotationVerification({
+    exitCode: 1,
+    output: rotatedOutput,
+    expectedCertificateSha256: legacyCertificate,
+  }).ok, false)
+  assert.equal(evaluateRotatedVerification({
+    exitCode: 1,
+    output: rotatedOutput,
+    expectedCertificateSha256: rotatedCertificate,
+  }).ok, false)
+})
+
+test('rejects a wrong signer, wrong API boundary, or third certificate in rotation output', () => {
+  assert.equal(evaluateVerification({
+    exitCode: 0,
+    output: rotatedOutput.replace(rotatedCertificate, 'cd'.repeat(32)),
+    expectedCertificateSha256: legacyCertificate,
+    rotationCertificateSha256: rotatedCertificate,
+  }).ok, false)
+  assert.equal(evaluateVerification({
+    exitCode: 0,
+    output: rotatedOutput.replace('maxSdkVersion=32', 'maxSdkVersion=33'),
+    expectedCertificateSha256: legacyCertificate,
+    rotationCertificateSha256: rotatedCertificate,
+  }).ok, false)
+  assert.equal(evaluateVerification({
+    exitCode: 0,
+    output: rotatedOutput + '\nSigner #2 certificate SHA-256 digest: ' + 'ef'.repeat(32),
+    expectedCertificateSha256: legacyCertificate,
+    rotationCertificateSha256: rotatedCertificate,
+  }).ok, false)
+  assert.equal(evaluateRotatedVerification({
+    exitCode: 0,
+    output: rotatedOutput,
+    expectedCertificateSha256: 'ab'.repeat(32),
+  }).ok, false)
 })
 
 test('an explicit keystore option cannot silently disable identity verification when its value is missing', () => {

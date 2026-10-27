@@ -10,6 +10,10 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.URL
+import java.nio.ByteBuffer
+import java.security.PublicKey
+import java.security.Signature
+import java.security.cert.CertificateFactory
 
 /**
  * APK 自更新（0.13.8 批 H，用户拍板交互）：
@@ -18,19 +22,11 @@ import java.net.URL
  * - **同按钮二次确认**：发现新版后同一按钮变为「下载并安装 vX.Y.Z」，再点才开始下载；
  * - 下载落 Documents/dshdata/updates/（FileProvider 既有映射内），.tmp→rename 原子；
  * - 安装：REQUEST_INSTALL_PACKAGES 未持有 → 先拉「安装未知应用」授权页（launcher 返回后续继）；
- *   发布数据带摘要时下载后校验（缺失则如实说明"本次未提供"）。签名侧兜底（#675）：唤起安装器
- *   前做发布者连续性校验（[signerContinuityHolds]）——「签名不匹配由系统安装器天然拒绝」在发布
- *   私钥随公开仓分发的前提下不成立（同私钥可签出同证书的包，安装器只会放行），摘要又由投递方
- *   自带、挡不住同源替换；唯一可信锚是设备上已安装本应用的证书。
+ *   发布清单由独立发布证书签名，下载与唤起安装前都校验 APK 摘要；APK 签名谱系负责系统升级连续性。
  * 与引擎快照更新（EngineStartFlow.startUpdateCheck / UpdateManager）完全分离。
  *
- * **版本号确认链（多源，顺序即优先级）**：见 [checkLatest]。
- *   为什么不再只打 api.github.com：未认证额度只有 60 次/小时/IP，而实测同一出口的配额被多个消费方
- *   共享（连续请求的 x-ratelimit-remaining 非单调递减），CGNAT 下随时可能被别人吃光。于是主源换成
- *   **不需要认证**的两类：镜像前缀上的 `releases/latest/download/MANIFEST.txt`（与 APK 下载共用同一套前缀）
- *   与下载站的 `data/releases.json`（CI 已把 MANIFEST 摘要与资产字节数对账过），API 降为末位兜底。
- *   硬纪律：**只有至少一档成功返回并解析出版本号，才允许说"已是最新"**；全部失败一律报失败——
- *   把"查不到"说成"没有新版"会让用户错过整轮更新，且没有任何一层能再纠正这个谎。
+ * **版本号确认链**只接受由内嵌发布公钥验证的 `MANIFEST.signed.json`。镜像只搬运字节，不签发版本、URL
+ * 或摘要；所有镜像失败时如实报失败，不回退到未签名的 Pages/API 数据。
  *
  * **摘要语义**：[CheckResult.Available.sha256] 是**摘要本身**，不再是 `.sha256` 资产的 URL。
  *   旧实现去找 `{apk}.sha256` 资产，而发布链从不产出该资产，于是下载后校验从未真正执行过；
@@ -45,6 +41,7 @@ object UpdateChecker {
 
   private const val TAG = "dsh-update"
   private const val REPO = "kelai141/dsh-mobile-apk"
+  private const val LEGACY_RELEASE_CERT_SHA256 = "1dde9d980f62b715f29c20b421063f1d3d796085adf7de7e9907dd16d845bcbd"
 
   /**
    * 镜像前缀表（**与下载站 `webpages/src/assets/release.js` 的 `MIRROR_TEMPLATES` 逐条同序**）。
@@ -74,9 +71,8 @@ object UpdateChecker {
     /**
      * 发现新版：tag + 双 ABI 资产 URL（按设备 ABI 已选好）。
      *
-     * [sha256] 是**摘要本身**（64 位十六进制小写），不是摘要文件的 URL；null = 本次发布的数据源里
-     * 没有提供摘要，完整性只剩安装前的发布者连续性校验（#675 [signerContinuityHolds]）这一层，
-     * 界面必须如实说明而不是沉默跳过。
+   * [sha256] 是**摘要本身**（64 位十六进制小写），不是摘要文件的 URL。签名发布清单必须包含所选 APK
+   * 的摘要；null 只保留给纯判定测试和非发布调用方，实际下载入口会拒绝它。
      */
     data class Available(
       val tag: String,
@@ -353,6 +349,36 @@ object UpdateChecker {
     return LatestFacts(tags.first(), sizes, digests)
   }
 
+  /** Verify the detached release-manifest envelope before parsing any release-controlled field. */
+  internal fun verifySignedManifestEnvelope(envelopeText: String, publicKey: PublicKey): String {
+    val envelope = JSONObject(envelopeText)
+    require(envelope.optString("format") == "dsh-release-manifest-v1") { "unsupported signed manifest format" }
+    require(envelope.optString("algorithm") == "RSA-SHA256") { "unsupported signed manifest algorithm" }
+    val payloadText = envelope.optString("payload", "")
+    val signatureText = envelope.optString("signature", "")
+    require(payloadText.isNotEmpty() && signatureText.isNotEmpty()) { "signed manifest is incomplete" }
+    val decoder = java.util.Base64.getDecoder()
+    val payload = decoder.decode(payloadText)
+    val signatureBytes = decoder.decode(signatureText)
+    require(java.util.Base64.getEncoder().encodeToString(payload) == payloadText) { "manifest payload is not canonical base64" }
+    require(java.util.Base64.getEncoder().encodeToString(signatureBytes) == signatureText) { "manifest signature is not canonical base64" }
+    require(payload.isNotEmpty() && payload.size <= METADATA_MAX_BYTES && signatureBytes.size in 1..16_384) {
+      "signed manifest has invalid lengths"
+    }
+    val verifier = Signature.getInstance("SHA256withRSA")
+    verifier.initVerify(publicKey)
+    verifier.update(payload)
+    require(verifier.verify(signatureBytes)) { "signed manifest signature is invalid" }
+    return Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(payload)).toString()
+  }
+
+  private fun releaseManifestPublicKey(context: Context): PublicKey {
+    val certificate = context.resources.openRawResource(R.raw.release_manifest_certificate).use { input ->
+      CertificateFactory.getInstance("X.509").generateCertificate(input)
+    }
+    return certificate.publicKey
+  }
+
   /**
    * 解析下载站 `data/releases.json`（Pages 站点）。失败抛异常，由调用方归类 PARSE。
    *
@@ -570,16 +596,14 @@ object UpdateChecker {
     else -> 15_000
   }
 
-  private fun probeSources(deadline: UpdateCheckDeadline): CheckResult {
+  private fun probeSources(context: Context, deadline: UpdateCheckDeadline): CheckResult {
     val abis = deviceAbis()
-    val latestPath = REPO + "/releases/latest/download/MANIFEST.txt"
+    val latestPath = REPO + "/releases/latest/download/MANIFEST.signed.json"
     val attempts: List<Pair<String, () -> SourceProbe>> = listOf(
-      "gh-proxy" to { probeManifest(MIRROR_PREFIXES[1] + latestPath, timeoutFor("gh-proxy"), deadline) },
-      "ghfast" to { probeManifest(MIRROR_PREFIXES[2] + latestPath, timeoutFor("ghfast"), deadline) },
-      "github" to { probeManifest(MIRROR_PREFIXES[0] + latestPath, timeoutFor("github"), deadline) },
-      "pages" to { probePages(SITE_URL + "data/releases.json", timeoutFor("pages"), deadline) },
-      "ghproxy.net" to { probeManifest(MIRROR_PREFIXES[3] + latestPath, timeoutFor("ghproxy.net"), deadline) },
-      "api" to { probeApi(timeoutFor("api"), deadline) },
+      "gh-proxy" to { probeManifest(context, MIRROR_PREFIXES[1] + latestPath, timeoutFor("gh-proxy"), deadline) },
+      "ghfast" to { probeManifest(context, MIRROR_PREFIXES[2] + latestPath, timeoutFor("ghfast"), deadline) },
+      "github" to { probeManifest(context, MIRROR_PREFIXES[0] + latestPath, timeoutFor("github"), deadline) },
+      "ghproxy.net" to { probeManifest(context, MIRROR_PREFIXES[3] + latestPath, timeoutFor("ghproxy.net"), deadline) },
     )
     return runChain(attempts, abis, abiFrom(abis), currentVersion())
   }
@@ -670,7 +694,7 @@ object UpdateChecker {
             deadline.remainingMs()
             if (n < 0) break
             if (buf.size() + n > METADATA_MAX_BYTES) {
-              throw IllegalStateException("元数据超过 " + METADATA_MAX_BYTES + " 字节上限（不是合法的 MANIFEST/releases.json）")
+              throw IllegalStateException("元数据超过 " + METADATA_MAX_BYTES + " 字节上限（不是合法的签名发布清单）")
             }
             buf.write(chunk, 0, n)
           }
@@ -713,8 +737,10 @@ object UpdateChecker {
     else -> SourceProbe.Unreachable(e)
   }
 
-  private fun probeManifest(url: String, timeoutMs: Int, deadline: UpdateCheckDeadline): SourceProbe = try {
-    SourceProbe.Parsed(parseManifest(fetchText(url, timeoutMs, null, deadline)))
+  private fun probeManifest(context: Context, url: String, timeoutMs: Int, deadline: UpdateCheckDeadline): SourceProbe = try {
+    val envelope = fetchText(url, timeoutMs, "application/json", deadline)
+    val manifest = verifySignedManifestEnvelope(envelope, releaseManifestPublicKey(context))
+    SourceProbe.Parsed(parseManifest(manifest))
   } catch (e: Exception) {
     probeFailure(e)
   }
@@ -733,18 +759,16 @@ object UpdateChecker {
   }
 
   /**
-   * 查最新版本：六档确认链（顺序与超时见 [probeSources] 与 [timeoutFor]）。
+   * 查最新版本：签名清单镜像回退链（顺序与超时见 [probeSources] 与 [timeoutFor]）。
    *
    * 资产按 [assetNameCandidates] 匹配（发布链口径优先，兼容历史口径）；版本比较用 [isNewer]。
    * **只有至少一档成功解析出版本号，才允许返回 [CheckResult.UpToDate]**——"查不到"与"没有新版"
    * 是两件事，混为一谈会让用户错过整轮更新，且没有任何一层能再纠正这个谎。
    *
-   * 元数据只取小文件（MANIFEST 约 1.4KB / releases.json 约 1.3KB），169MB 的 APK 才走镜像下载链（[download]）。
+   * 元数据只取小文件（签名清单约数 KB），169MB 的 APK 才走镜像下载链（[download]）。
    */
-  fun checkLatest(): CheckResult = checkLatest(UpdateCheckDeadline.start())
-
-  internal fun checkLatest(deadline: UpdateCheckDeadline): CheckResult = try {
-    probeSources(deadline)
+  internal fun checkLatest(context: Context, deadline: UpdateCheckDeadline): CheckResult = try {
+    probeSources(context, deadline)
   } catch (e: Exception) {
     android.util.Log.w(TAG, "check chain failed: " + (e.message ?: e.javaClass.simpleName))
     classifyTransportFailure(e)
@@ -916,52 +940,78 @@ object UpdateChecker {
   fun canInstall(context: Context): Boolean =
     if (android.os.Build.VERSION.SDK_INT >= 26) context.packageManager.canRequestPackageInstalls() else true
 
-  /**
-   * #675：发布者连续性校验——待装 APK 的签名证书必须与**当前安装**的本应用一致。
-   *
-   * 为什么锚在「已安装证书」而不是硬编码指纹：发布私钥随公开仓分发（keystore/debug.keystore
-   * 签 release），硬编码它的指纹等于没有校验（任何人都能签出同证书的包）；已安装应用的证书
-   * 是发行链可信的最小事实。读不出（解析失败/无签名块）一律 false——fail-closed。
-   *
-   * 纯判据部分 [signerDigestsMatch] JVM 单测直接覆盖；archive/installed 证书读取走
-   * PackageManager，属设备面（本批未做设备验证，PR 显式标注，发版候选前补验）。
-   */
-  fun signerContinuityHolds(context: Context, apk: File): Boolean = try {
-    val pm = context.packageManager
-    signerDigestsMatch(
-      archiveSignerCertificates(pm, apk.absolutePath),
-      installedSignerCertificates(pm, context.packageName),
-    )
-  } catch (_: Throwable) {
-    false
+  /** Verify both the signed release digest and the Android signing lineage before handoff. */
+  fun signerContinuityHolds(context: Context, apk: File, expectedSha256: String): Boolean {
+    return try {
+      if (!verifySha256(apk, expectedSha256)) return false
+      val pm = context.packageManager
+      val incoming = archiveSignerSnapshot(pm, apk.absolutePath) ?: return false
+      val installed = installedSignerSnapshot(pm, context.packageName) ?: return false
+      signerRotationMatches(
+        incoming,
+        installed,
+        android.os.Build.VERSION.SDK_INT,
+        LEGACY_RELEASE_CERT_SHA256,
+        sha256Hex(releaseSigningCertificate(context)),
+      )
+    } catch (_: Throwable) {
+      false
+    }
   }
 
-  /** 纯判据（JVM 单测）：两组证书 SHA-256 摘要集合一致（顺序无关；任一侧为空即不一致）。 */
-  internal fun signerDigestsMatch(incoming: List<ByteArray>, installed: List<ByteArray>): Boolean {
-    if (incoming.isEmpty() || installed.isEmpty()) return false
-    return incoming.map { sha256Hex(it) }.sorted() == installed.map { sha256Hex(it) }.sorted()
+  internal data class SignerSnapshot(val current: List<ByteArray>, val history: List<ByteArray>)
+
+  /** The release uses the legacy signer through API 32 and the rotated signer from API 33 onward. */
+  internal fun signerRotationMatches(
+    incoming: SignerSnapshot,
+    installed: SignerSnapshot,
+    sdk: Int,
+    expectedLegacySignerSha256: String,
+    expectedRotatedSignerSha256: String,
+  ): Boolean {
+    if (incoming.current.size != 1 || installed.current.size != 1) return false
+    val incomingDigest = sha256Hex(incoming.current.single())
+    val installedDigest = sha256Hex(installed.current.single())
+    if (sdk < 33) {
+      return incomingDigest.equals(expectedLegacySignerSha256, ignoreCase = true) &&
+        incomingDigest == installedDigest
+    }
+    if (!incomingDigest.equals(expectedRotatedSignerSha256, ignoreCase = true)) return false
+    val incomingHistory = (incoming.history + incoming.current).map(::sha256Hex).toSet()
+    return installedDigest in incomingHistory
   }
 
   private fun signerFlags(): Int =
     if (android.os.Build.VERSION.SDK_INT >= 28) android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
     else @Suppress("DEPRECATION") android.content.pm.PackageManager.GET_SIGNATURES
 
-  private fun archiveSignerCertificates(pm: android.content.pm.PackageManager, path: String): List<ByteArray> {
-    val pi = pm.getPackageArchiveInfo(path, signerFlags()) ?: return emptyList()
-    return signerCertificatesOf(pi)
+  private fun archiveSignerSnapshot(pm: android.content.pm.PackageManager, path: String): SignerSnapshot? {
+    val pi = pm.getPackageArchiveInfo(path, signerFlags()) ?: return null
+    return signerSnapshotOf(pi)
   }
 
-  private fun installedSignerCertificates(pm: android.content.pm.PackageManager, pkg: String): List<ByteArray> {
-    val pi = pm.getPackageInfo(pkg, signerFlags()) ?: return emptyList()
-    return signerCertificatesOf(pi)
+  private fun installedSignerSnapshot(pm: android.content.pm.PackageManager, pkg: String): SignerSnapshot? {
+    val pi = pm.getPackageInfo(pkg, signerFlags()) ?: return null
+    return signerSnapshotOf(pi)
   }
 
-  private fun signerCertificatesOf(pi: android.content.pm.PackageInfo): List<ByteArray> =
+  private fun signerSnapshotOf(pi: android.content.pm.PackageInfo): SignerSnapshot? {
     if (android.os.Build.VERSION.SDK_INT >= 28) {
-      pi.signingInfo?.apkContentsSigners?.map { it.toByteArray() } ?: emptyList()
+      val info = pi.signingInfo ?: return null
+      return SignerSnapshot(
+        info.apkContentsSigners?.map { it.toByteArray() } ?: emptyList(),
+        info.signingCertificateHistory?.map { it.toByteArray() } ?: emptyList(),
+      )
     } else {
       @Suppress("DEPRECATION")
-      pi.signatures?.map { it.toByteArray() } ?: emptyList()
+      val current = pi.signatures?.map { it.toByteArray() } ?: emptyList()
+      return SignerSnapshot(current, current)
+    }
+  }
+
+  private fun releaseSigningCertificate(context: Context): ByteArray =
+    context.resources.openRawResource(R.raw.release_manifest_certificate).use { input ->
+      CertificateFactory.getInstance("X.509").generateCertificate(input).encoded
     }
 
   private fun sha256Hex(bytes: ByteArray): String =
@@ -994,13 +1044,11 @@ object UpdateChecker {
 
   /**
    * FileProvider URI + ACTION_VIEW 唤起系统安装器。
-   * #675：唤起前**强制**做发布者连续性校验（[signerContinuityHolds]）——这是安装链的最后
-   * 一道闸，任何调用方都绕不过。正常路径由 ApkUpdateAction 先做过并给出更具体的用户文案；
-   * 这里再拦一次是防未来新增调用方直接打穿。
+   * 唤起前重验已签名清单中的摘要与 APK 签名谱系，避免授权页等待期间载荷被替换。
    */
-  fun invokeInstaller(activity: android.app.Activity, apk: File): Boolean {
-    if (!signerContinuityHolds(activity, apk)) {
-      LogCollector.log(TAG, "install aborted: signer continuity check failed (#675)")
+  fun invokeInstaller(activity: android.app.Activity, apk: File, expectedSha256: String): Boolean {
+    if (!signerContinuityHolds(activity, apk, expectedSha256)) {
+      LogCollector.log(TAG, "install aborted: signed release artifact verification failed")
       return false
     }
     return try {

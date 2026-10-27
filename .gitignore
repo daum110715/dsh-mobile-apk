@@ -18,6 +18,7 @@ token*
 *.key
 *.pem
 *.p12
+!app/src/main/res/raw/release_manifest_certificate.pem
 .kotlin/
 # 插件构建产物（云端/本地 npm 构建生成，不入库；2026-08-31 收口）
 plugins/*/lib/
