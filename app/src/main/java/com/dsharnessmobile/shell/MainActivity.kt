@@ -263,9 +263,16 @@ class MainActivity : ComponentActivity() {
     internal const val WEBVIEW_SYNTAX_FLOOR_MAJOR = 94
     /** 虚拟屏空闲回收扫描间隔（判定阈值在 VdisplayController.IDLE_RECLAIM_MS = 10 分钟）。 */
     private const val VDISPLAY_REAP_INTERVAL_MS = 2 * 60 * 1000L
-    const val ACTION_UPDATE = "com.dsharnessmobile.shell.action.UPDATE"
-    /** Set by the repair assistant's "back and retry" action; consumed once by onCreate. */
-    const val ACTION_RETRY_ENGINE = "com.dsharnessmobile.shell.action.RETRY_ENGINE"
+    /**
+     * #682：修复助手「返回并重试」的一次性进程内标志（[RepairActivity] 置位，onCreate/onNewIntent
+     * 消费一次）。取代旧的 `ACTION_RETRY_ENGINE` intent action：MainActivity 是 **exported** 的
+     * launcher Activity，外部应用可以构造显式组件 intent 冒充该 action，清掉持久修复闸门与快照
+     * 刷新账本——`RepairState` 的契约「explicit user retry is the only way past the persistent
+     * gate」由此被绕过。进程内静态标志外部应用摸不到；进程死亡时标志随之消失（该次重试退化为
+     * 普通启动，无副作用）。
+     */
+    @Volatile
+    internal var pendingSelfRetry: Boolean = false
 
     /** #120：显式拒绝哨兵路径前缀（引擎侧识别为拒绝而非取消，见 host-web-compat）。
      *  协议：`__dsh_pick_refused__:<reason>`，reason = permission-denied | android-10。 */
@@ -337,6 +344,16 @@ class MainActivity : ComponentActivity() {
     engineFlow.engineRetryCount = 0
     engineManager.clearRefreshLedger()
     startEngineFlow(splash = true)
+  }
+
+  /**
+   * 消费一次性重试标志（#682；仅主线程 onCreate/onNewIntent 调用）。读后即清，
+   * 同一次 intent 不会被两处重复触发；置位方只有 [RepairActivity]（进程内）。
+   */
+  private fun consumePendingSelfRetry(): Boolean {
+    val pending = pendingSelfRetry
+    pendingSelfRetry = false
+    return pending
   }
 
   private fun applyRepairRequiredGuide() {
@@ -672,14 +689,12 @@ class MainActivity : ComponentActivity() {
     // manage 插件广播时 --es auth 携带；幂等）。
     try { AdbKeyboardService.ensureNonce(this) } catch (_: Throwable) {
     }
-    // Testable update trigger: adb am start -n .../.MainActivity -a com.dsharnessmobile.shell.action.UPDATE
-    if (intent?.action == ACTION_RETRY_ENGINE) {
-      // The assistant's "back and retry" hands over a one-shot user intent. Clear it before
-      // automatic startup so a later resume cannot replay the retry on its own.
-      intent.action = null
+    // #682 收口：外部可达的特权 action 已全部移除——重试改为进程内一次性标志
+    // （见 pendingSelfRetry）；ACTION_UPDATE 的 adb 触发入口直接删除（runUpdate 定义
+    // 保留在 EngineStartFlow，但不再有任何外部 intent 入口——导出的 launcher Activity
+    // 无法区分「adb 联调」与「任意第三方应用」，两者走的是同一条显式组件 intent）。
+    if (consumePendingSelfRetry()) {
       retryEngineExplicitly()
-    } else if (intent?.action == ACTION_UPDATE) {
-      engineFlow.runUpdate()
     } else {
       // 来件接线（VIEW/SEND 外部来件）已迁至 FileIncoming.processIncomingIntent：
       // 校验净化→后台拷贝临时工作区→待发清单投递引擎侧插件；拒绝/失败经 showTestNotification 提示。
@@ -727,8 +742,7 @@ class MainActivity : ComponentActivity() {
     super.onNewIntent(intent)
     // SINGLE_TOP：应用已在前台时点击通知走这里（此前**没有这个覆写**，intent 直接丢掉）。
     setIntent(intent)
-    if (intent.action == ACTION_RETRY_ENGINE) {
-      intent.action = null
+    if (consumePendingSelfRetry()) {
       retryEngineExplicitly()
       return
     }
@@ -1411,6 +1425,9 @@ class MainActivity : ComponentActivity() {
     }
     webView.addJavascriptInterface(
       AndroidBridge(
+        // #686：桥面来源门禁——与导航闸门同一判据，守「顶层帧必须是引擎 origin」。
+        // isTrustedTopFrame 默认 false（fail-closed），这里必须在构造时显式放行引擎页。
+        isTrustedTopFrame = { ::webView.isInitialized && isEngineSource(webView.url ?: "") },
         onPickRequest = { callbackId -> dirPickerController.pickDirectoryWithPermissionCheck(callbackId) },
         onKeepScreen = { enable -> keepScreenOn(enable) },
         onNotify = { title, text -> NotifyCenter.notify(this, "task", title, text) },

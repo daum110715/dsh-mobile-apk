@@ -18,7 +18,10 @@ import java.net.URL
  * - **同按钮二次确认**：发现新版后同一按钮变为「下载并安装 vX.Y.Z」，再点才开始下载；
  * - 下载落 Documents/dshdata/updates/（FileProvider 既有映射内），.tmp→rename 原子；
  * - 安装：REQUEST_INSTALL_PACKAGES 未持有 → 先拉「安装未知应用」授权页（launcher 返回后续继）；
- *   签名不匹配由系统安装器天然拒绝；发布数据带摘要时下载后校验（缺失则如实说明"本次未提供"）。
+ *   发布数据带摘要时下载后校验（缺失则如实说明"本次未提供"）。签名侧兜底（#675）：唤起安装器
+ *   前做发布者连续性校验（[signerContinuityHolds]）——「签名不匹配由系统安装器天然拒绝」在发布
+ *   私钥随公开仓分发的前提下不成立（同私钥可签出同证书的包，安装器只会放行），摘要又由投递方
+ *   自带、挡不住同源替换；唯一可信锚是设备上已安装本应用的证书。
  * 与引擎快照更新（EngineStartFlow.startUpdateCheck / UpdateManager）完全分离。
  *
  * **版本号确认链（多源，顺序即优先级）**：见 [checkLatest]。
@@ -72,7 +75,8 @@ object UpdateChecker {
      * 发现新版：tag + 双 ABI 资产 URL（按设备 ABI 已选好）。
      *
      * [sha256] 是**摘要本身**（64 位十六进制小写），不是摘要文件的 URL；null = 本次发布的数据源里
-     * 没有提供摘要，调用方下载后只能靠系统安装器的签名校验兜底，界面必须如实说明而不是沉默跳过。
+     * 没有提供摘要，完整性只剩安装前的发布者连续性校验（#675 [signerContinuityHolds]）这一层，
+     * 界面必须如实说明而不是沉默跳过。
      */
     data class Available(
       val tag: String,
@@ -913,6 +917,57 @@ object UpdateChecker {
     if (android.os.Build.VERSION.SDK_INT >= 26) context.packageManager.canRequestPackageInstalls() else true
 
   /**
+   * #675：发布者连续性校验——待装 APK 的签名证书必须与**当前安装**的本应用一致。
+   *
+   * 为什么锚在「已安装证书」而不是硬编码指纹：发布私钥随公开仓分发（keystore/debug.keystore
+   * 签 release），硬编码它的指纹等于没有校验（任何人都能签出同证书的包）；已安装应用的证书
+   * 是发行链可信的最小事实。读不出（解析失败/无签名块）一律 false——fail-closed。
+   *
+   * 纯判据部分 [signerDigestsMatch] JVM 单测直接覆盖；archive/installed 证书读取走
+   * PackageManager，属设备面（本批未做设备验证，PR 显式标注，发版候选前补验）。
+   */
+  fun signerContinuityHolds(context: Context, apk: File): Boolean = try {
+    val pm = context.packageManager
+    signerDigestsMatch(
+      archiveSignerCertificates(pm, apk.absolutePath),
+      installedSignerCertificates(pm, context.packageName),
+    )
+  } catch (_: Throwable) {
+    false
+  }
+
+  /** 纯判据（JVM 单测）：两组证书 SHA-256 摘要集合一致（顺序无关；任一侧为空即不一致）。 */
+  internal fun signerDigestsMatch(incoming: List<ByteArray>, installed: List<ByteArray>): Boolean {
+    if (incoming.isEmpty() || installed.isEmpty()) return false
+    return incoming.map { sha256Hex(it) }.sorted() == installed.map { sha256Hex(it) }.sorted()
+  }
+
+  private fun signerFlags(): Int =
+    if (android.os.Build.VERSION.SDK_INT >= 28) android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+    else @Suppress("DEPRECATION") android.content.pm.PackageManager.GET_SIGNATURES
+
+  private fun archiveSignerCertificates(pm: android.content.pm.PackageManager, path: String): List<ByteArray> {
+    val pi = pm.getPackageArchiveInfo(path, signerFlags()) ?: return emptyList()
+    return signerCertificatesOf(pi)
+  }
+
+  private fun installedSignerCertificates(pm: android.content.pm.PackageManager, pkg: String): List<ByteArray> {
+    val pi = pm.getPackageInfo(pkg, signerFlags()) ?: return emptyList()
+    return signerCertificatesOf(pi)
+  }
+
+  private fun signerCertificatesOf(pi: android.content.pm.PackageInfo): List<ByteArray> =
+    if (android.os.Build.VERSION.SDK_INT >= 28) {
+      pi.signingInfo?.apkContentsSigners?.map { it.toByteArray() } ?: emptyList()
+    } else {
+      @Suppress("DEPRECATION")
+      pi.signatures?.map { it.toByteArray() } ?: emptyList()
+    }
+
+  private fun sha256Hex(bytes: ByteArray): String =
+    java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+  /**
    * 拉起「安装未知应用」授权页（普通 startActivity；返回时 onResume 结算，与目录授权同一惯例）。
    *
    * S1-10：**返回是否真的拉起了**。旧实现两级 catch 都失败也不回报，而调用方已经把
@@ -937,17 +992,28 @@ object UpdateChecker {
     }
   }
 
-  /** FileProvider URI + ACTION_VIEW 唤起系统安装器（签名不匹配由系统拒绝）。 */
-  fun invokeInstaller(activity: android.app.Activity, apk: File): Boolean = try {
-    val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", apk)
-    val intent = Intent(Intent.ACTION_VIEW).apply {
-      setDataAndType(uri, "application/vnd.android.package-archive")
-      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+  /**
+   * FileProvider URI + ACTION_VIEW 唤起系统安装器。
+   * #675：唤起前**强制**做发布者连续性校验（[signerContinuityHolds]）——这是安装链的最后
+   * 一道闸，任何调用方都绕不过。正常路径由 ApkUpdateAction 先做过并给出更具体的用户文案；
+   * 这里再拦一次是防未来新增调用方直接打穿。
+   */
+  fun invokeInstaller(activity: android.app.Activity, apk: File): Boolean {
+    if (!signerContinuityHolds(activity, apk)) {
+      LogCollector.log(TAG, "install aborted: signer continuity check failed (#675)")
+      return false
     }
-    activity.startActivity(intent)
-    true
-  } catch (e: Exception) {
-    LogCollector.log(TAG, "installer invoke failed: " + (e.message ?: e.javaClass.simpleName))
-    false
+    return try {
+      val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", apk)
+      val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/vnd.android.package-archive")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      activity.startActivity(intent)
+      true
+    } catch (e: Exception) {
+      LogCollector.log(TAG, "installer invoke failed: " + (e.message ?: e.javaClass.simpleName))
+      false
+    }
   }
 }

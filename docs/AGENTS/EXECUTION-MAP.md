@@ -128,7 +128,7 @@ sequenceDiagram
 
 | ID | 名称 | 一句话职责 | 入口/触发 | 阶段 | 依赖 | 被谁拉起 | 关键文件 | 耦合 |
 |---|---|---|---|---|---|---|---|---|
-| K01 | 启动与引导面 | 点开 App 到引擎页面可见的进程入口、引导页与 WebView 宿主 | LAUNCHER 图标、VIEW/SEND 来件、ACTION_UPDATE | 引导与启动 | 引擎进程与快照面、鉴权探活、诊断落盘 | 系统启动器与分享面板、BootReceiver、悬浮球跳转 | MainActivity.kt,EngineStartFlow.kt,GuidePageRenderer.kt,ForegroundPageRecoveryPolicy.kt | 高 |
+| K01 | 启动与引导面 | 点开 App 到引擎页面可见的进程入口、引导页与 WebView 宿主 | LAUNCHER 图标、VIEW/SEND 来件 | 引导与启动 | 引擎进程与快照面、鉴权探活、诊断落盘 | 系统启动器与分享面板、BootReceiver、悬浮球跳转 | MainActivity.kt,EngineStartFlow.kt,GuidePageRenderer.kt,ForegroundPageRecoveryPolicy.kt | 高 |
 | K02 | 引擎生命周期与保活 | 起 node 引擎、Activity独立观察启动准备窗、5s 探活、看门狗重启熔断与日志落盘 | EngineStartFlow.start及生命周期结束后排队启动前台服务、EngineService先前台提升后初始化及5s tick | 引导与启动 | K01,K03 | MainActivity、BootReceiver、EngineStartFlow | EngineManager.kt,EngineService.kt,WatchdogV2.kt,LogCollector.kt | 高 |
 | K03 | 快照事务与更新链 | 内嵌快照暂存交换事务与回滚（插件故障走**清单式外科拔除**，不整份回滚），兼在线更新与清单合并 | 启动流判指纹不新鲜 / 引导页检查更新 / WebView 下载 | 快照与更新 | 引导启动流、引擎探活、构建快照资产 | EngineStartFlow.runFlow、EngineService 看门狗、引导页按钮、MainActivity 的 WebView 回调 | SnapshotTransaction.kt,SnapshotFs.kt,SnapshotRefreshPolicy.kt,PublicRepoProvision.kt,UpdateManager.kt,PluginMounts.kt,SnapshotUserData.kt,SnapshotFingerprintPolicy.kt,ProfilePackageManifest.kt | 高 |
 | K04 | 桥与控制协议面 | 页面 JS 桥面、引擎鉴权与控制队列承载 | 页面调 androidBridge；EngineService 起控制承载 | 稳态控制 | 引导与启动（EngineService/MainActivity）、无障碍与虚拟屏宿主、快照与更新（UndoGate） | MainActivity 装桥；EngineService.onCreate 起 ControlCarrier；看门狗 tick 调 UndoGate | app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt,app/src/main/java/com/dsharnessmobile/shell/ClipboardReadController.kt,app/src/main/java/com/dsharnessmobile/shell/ControlPoller.kt,app/src/main/java/com/dsharnessmobile/shell/EngineAuth.kt,app/src/main/java/com/dsharnessmobile/shell/ControlProtocolV2.kt | 高 |
@@ -594,7 +594,7 @@ sequenceDiagram
 | 3. 插件列表在、点开不可用（0.14.0 实报形态）：`grep -n "disabled: true" files/home/.dsh/profiles/web/cordis.patch.yml`；查 `files/.profile-patch-repair-<版本名>` 标记是否已写（没写=上次启动修复失败，下轮重试）；对照 `files/home/.dsh/profiles/web/?` 的 node_modules 是否半合并（1/10 形态）。 | K03 | （待补） |
 | 4. 已摘除插件疑似仍在跑：`ls files/home/.dsh/profiles/web/node_modules/@aiwayds`（应为空/不存在）；`grep -n "dsh-model-sync" files/home/.dsh/profiles/web/cordis.patch.yml`；迁移只在发生刷新时执行，指纹未变的老设备需要触发一次刷新。 | K03 | （待补） |
 | 5. **APK 更新**（用户面，0.14.6 起）：读 `ApkUpdateController` 八态（`idle/checking/up-to-date/available/downloading/installing/need-permission/failed`）；引导页次级提示与设置页那一行读**同一份**状态；logcat grep `dsh-update`。不占主按钮/相位。 | K03 | （待补） |
-| 6. **快照更新 / adb 联调 `runUpdate`**（非用户面）：`cat files/update-status.txt`（`runUpdate` 逐行追加）、`ls files/ | grep -E "update-pending|usr-old|update-stage|update.tar.xz"`；`snapshot-fingerprint` 内容与 `assets/snapshot.sha256` 不一致 = 走的不是内嵌链。注意该路径由 `ACTION_UPDATE`（adb 显式 intent、manifest 未声明）触发且**无超时兜底**，见 known-gaps。 | K03 | （待补） |
+| 6. **快照更新 / adb 联调 `runUpdate`**（非用户面）：`cat files/update-status.txt`（`runUpdate` 逐行追加）、`ls files/ | grep -E "update-pending|usr-old|update-stage|update.tar.xz"`；`snapshot-fingerprint` 内容与 `assets/snapshot.sha256` 不一致 = 走的不是内嵌链。注意该路径的 adb 触发入口已随 #682 移除（当前无调用点、定义保留）且**无超时兜底**，见 known-gaps。 | K03 | （待补） |
 | 1. 「审批卡/提问卡不再弹出，必须重启 App」 | K04 | `adb logcat -d | grep dsh-overlay-mux`（应有 `mux handshake refused 401/403: invalidating + refreshing engine cookie`）+ `adb logcat -d | grep dsh-engine-auth`（`cookie acquired via token exchange` / `cookie minted from credentials grant`）；两条都静默则查 `dsh_engine_auth` prefs 里的 cookie 是否只剩本地未过期的死值。 |
 | 2. 「模型报设备控制超时/未知操作，可壳侧其实已经执行」 | K04 | `adb logcat -d | grep dsh-a11y`（`duplicate delivery skipped (reqId=…)`、`result post failed for <op> (HTTP …)`、`result too_large … L1 fallback`）+ 对比 `dsh-adb.xml → controlToken` 与引擎实时读到的值（不一致恒 403）。 |
 | 3. 「自动回撤到底跑没跑」 | K04 | `adb shell run-as com.dsharnessmobile.shell cat files/undo-gate.log`（前缀 `dsh-undo-gate`：`armed` / `trigger` / `executed ok snapshot=` / `aborted list-timeout` / `skipped no-snapshots` / `suppressed retry-window`），再看 `files/.undo-auto-done` 时间戳与 `files/.undo-auto-armed` 是否残留。 |
@@ -749,7 +749,7 @@ Terminal output delivery (#591): `ConsoleSession` sends stripped PTY text throug
     真有在途动作回 `busy`（`:398`）、其余（failed/up-to-date 等）回 `not-available`（`:399`）。
     旧实现只要 `currentResult` 非空就回 `busy`，这正是上述死循环的用户可见形态。
     **例外（显式化，勿误以为全线都有兜底）**：快照联调路径 `runUpdate`（`EngineStartFlow.kt:1143`）**无超时兜底**；
-    它由 `MainActivity.kt:475-476` 的 `ACTION_UPDATE`（`:197`，manifest 未声明）即 **adb 显式 intent** 触发，普通用户不可达；
+    它的 adb 显式 intent 触发入口已随 #682 移除（exported launcher 上任意应用可构造该 intent，故收口；当前无调用点、定义保留）；
     回执守卫在 `EngineStartFlow.kt:1150`，代次作废即静默丢弃回执、不落终态。见 `docs/AGENTS/known-gaps.md`。
   - **不变量 3（不碰共享页面桥对象）**：壳侧对 `window.__dshBridge` 写入面 = 0。
     反例锚点 `UpdateCheckerTest.kt:426`（`updatePathNeverTouchesTheSharedPageBridgeObject`）。
