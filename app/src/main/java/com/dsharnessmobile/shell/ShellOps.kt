@@ -27,7 +27,13 @@ internal object ShellOps {
    * 取值不数值化：`screencap -d` 吃的是 SurfaceFlinger display token，设备实测虚拟屏形如
    * `11529215046816944610`——超出 `Long` 上界，数值化即失真（见坑 147）。
    */
-  private val DISPLAY_OPTION = Regex("""(?:^|[ \t])(-d|--display|--display-id)[ \t=]+(\d+)""")
+  // **短选项 `-d` 不吃 `=`**（2026-10-28 根因修复，与引擎侧 `displayOptionsIn` 同口径）：
+  // getopt 里 `-d=7` 的值是字面量 `=7`，`atoi("=7") == 0` ⇒ 真实语义是**真实屏 0**，
+  // 与 `-d 7`（虚拟屏 7）完全不是一件事。旧正则用 `[ \t=]+` 把两者解析成同一个 `("-d","7")`，
+  // 于是在「7 恰好是已注册虚拟屏」时 `screencap -d=7` 被判 allow —— 虚拟屏范围限制被绕过。
+  // 长选项 `--display=7` / `--display-id=7` 的 `=` 形式才合法。
+  private val DISPLAY_OPTION_SHORT = Regex("""(?:^|[ \t])-d[ \t]+(\d+)""")
+  private val DISPLAY_OPTION_LONG = Regex("""(?:^|[ \t])(--display|--display-id)(?:[ \t]+|=)(\d+)""")
 
   /** 命令词家族：每个家族自带「哪种拼写才算它的目标屏」（与引擎侧 `SCREEN_COMMAND_FAMILIES` 同表）。 */
   private data class ScreenFamily(val name: String, val pattern: Regex, val targetFlags: List<String>)
@@ -582,11 +588,18 @@ internal object ShellOps {
   }
 
   /** 把目标屏参数整体抹成空白（命令词匹配前归一化，使 `input -d 0 tap …` 也进命令词面）。 */
-  internal fun stripDisplayOptions(text: String): String = DISPLAY_OPTION.replace(text, " ")
+  internal fun stripDisplayOptions(text: String): String =
+    DISPLAY_OPTION_SHORT.replace(DISPLAY_OPTION_LONG.replace(text, " "), " ")
 
   /** 命令里的全部目标屏参数（拼写 + 原样数字串）。 */
-  internal fun displayOptionsIn(text: String): List<Pair<String, String>> =
-    DISPLAY_OPTION.findAll(text).map { it.groupValues[1] to it.groupValues[2] }.toList()
+  internal fun displayOptionsIn(text: String): List<Pair<String, String>> {
+    // 两条正则的结果必须**按出现位置合并排序**，否则同一命令里短/长选项的先后会被打乱，
+    // 而下游（`owned.every(isOwnedTarget)` 与 index 限定）依赖原序。
+    val hits = ArrayList<Triple<Int, String, String>>()
+    for (m in DISPLAY_OPTION_SHORT.findAll(text)) hits += Triple(m.range.first, "-d", m.groupValues[1])
+    for (m in DISPLAY_OPTION_LONG.findAll(text)) hits += Triple(m.range.first, m.groupValues[1], m.groupValues[2])
+    return hits.sortedBy { it.first }.map { it.second to it.third }
+  }
 
   /**
    * 当前**已注册**虚拟屏的 SF token 集合（块G F6）。经 Shizuku shell 通道读

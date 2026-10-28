@@ -314,6 +314,16 @@
       ],
       "expect": "deny-unparsed",
       "why": "看不懂的命令不放行：解析失败必须是显式拒绝态，而不是「没命中命令词 ⇒ 放行」。"
+    },
+    {
+      "name": "S-9c -d=7 但 7 恰好已注册：短选项不吃 =，atoi('=7')=0 ⇒ 真实屏",
+      "command": "screencap -d=7 -p /sdcard/real.png",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "deny-uncertified-target",
+      "why": "getopt 里 -d=7 的值是字面量 =7，atoi 后为 0（真实屏）；旧正则用 [ \\t=]+ 把它和 -d 7 解析成同一个 {flag:'-d', value:'7'}，于是在 7 是已注册虚拟屏时放行 —— 虚拟屏范围限制被绕过。"
     }
   ]
 }

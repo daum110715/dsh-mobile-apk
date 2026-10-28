@@ -101,7 +101,13 @@ export interface DisplayOption {
 /** 扫描命令里出现的全部目标屏参数（含三种拼写，值原样字符串）。 */
 export function displayOptionsIn(text: string): DisplayOption[] {
   const out: DisplayOption[] = []
-  for (const m of text.matchAll(/(?:^|[ \t])(-d|--display|--display-id)[ \t=]+(\d+)/g)) {
+  // 短选项：`-d 7`（空格分隔）。刻意**不接受** `=` —— getopt 里 `-d=7` 的值是字面量 `=7`，
+  // `atoi("=7") == 0` ⇒ 真实语义是真实屏 0，与 `-d 7`（虚拟屏 7）不是一件事（2026-10-28 根因修复）。
+  for (const m of text.matchAll(/(?:^|[ \t])-d[ \t]+(\d+)/g)) {
+    out.push({ flag: '-d', value: m[1] })
+  }
+  // 长选项：`--display 7` / `--display=7` / `--display-id 7` / `--display-id=7`（`=` 形式合法）。
+  for (const m of text.matchAll(/(?:^|[ \t])(--display|--display-id)(?:[ \t]+|=)(\d+)/g)) {
     out.push({ flag: m[1], value: m[2] })
   }
   return out
@@ -322,7 +328,10 @@ export function stripQuotedText(text: string): string {
 
 /** 把目标屏参数整体抹成空白（命令词匹配前归一化，使 `input -d 0 tap …` 也进命令词面）。 */
 export function stripDisplayOptions(text: string): string {
-  return text.replace(/(?:^|[ \t])(?:-d|--display|--display-id)[ \t=]+\d+/g, ' ')
+  // 与 `displayOptionsIn` 同一口径：短选项 `-d` 不吃 `=`，长选项才认 `=值`。
+  return text
+    .replace(/(?:^|[ \t])-d[ \t]+\d+/g, ' ')
+    .replace(/(?:^|[ \t])(?:--display|--display-id)(?:[ \t]+|=)\d+/g, ' ')
 }
 
 // ── 命令词家族：每个家族自带「哪种拼写才算它的目标屏」 ──────────────────────────
