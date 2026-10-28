@@ -125,11 +125,29 @@ class UpdateSignerContinuityTest {
 
   @Test
   fun releasePipelineRequiresTheSecretAndBuildsAOneWayLineage() {
-    val workflow = repoFile(".github/workflows/release.yml").readText()
-    assertTrue("release must require the private signing key secret", workflow.contains("secrets.DSH_RELEASE_KEY_PK8_BASE64"))
-    assertTrue("release must generate an APK signing lineage", workflow.contains("rotate --out"))
-    assertTrue("the rotated signer must be enabled from API 33", workflow.contains("--rotation-min-sdk-version 33"))
-    assertTrue("rollback to the compromised signer must be disabled", workflow.contains("--set-rollback false"))
-    assertTrue("release metadata must include the signed manifest", workflow.contains("MANIFEST.signed.json"))
+    val workflow = repoFile(".github/workflows/release.yml").readText().replace("\r\n", "\n")
+    val buildJob = workflow.substringAfter("\n  release:\n").substringBefore("\n  sign:\n")
+    val signJob = workflow.substringAfter("\n  sign:\n").substringBefore("\n  publish:\n")
+    val publishJob = workflow.substringAfter("\n  publish:\n")
+
+    assertFalse(
+      "the release build must not receive a signing key",
+      buildJob.contains("DSH_RELEASE_SIGNING_KEY_PK8_BASE64") || buildJob.contains("DSH_RELEASE_KEY_PK8_BASE64"),
+    )
+    assertTrue("signing must run in the protected release-signing environment",
+      signJob.contains("environment:\n      name: release-signing"))
+    assertTrue("the signing job must use the environment-scoped key secret",
+      signJob.contains("secrets.DSH_RELEASE_SIGNING_KEY_PK8_BASE64"))
+    assertFalse("the retired repository-level key secret must not be used",
+      workflow.contains("secrets.DSH_RELEASE_KEY_PK8_BASE64"))
+    assertTrue("signing must be limited to the repository default branch",
+      signJob.contains("github.event.repository.default_branch"))
+    assertTrue("the signing job must depend on the unsigned release build",
+      signJob.contains("needs: [release]"))
+    assertTrue("the release workflow must generate an APK signing lineage", signJob.contains("rotate --out"))
+    assertTrue("the rotated signer must be enabled from API 33", signJob.contains("--rotation-min-sdk-version 33"))
+    assertTrue("rollback to the compromised signer must be disabled", signJob.contains("--set-rollback false"))
+    assertTrue("release metadata must include the signed manifest", signJob.contains("MANIFEST.signed.json"))
+    assertTrue("publication must wait for signing", publishJob.contains("needs: [sign]"))
   }
 }
