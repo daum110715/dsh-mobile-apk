@@ -195,41 +195,6 @@ jobs:
         run: |
           yes | sudo "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1 || true
           find "${ANDROID_HOME}/build-tools" -maxdepth 2 -type f -name apksigner | tail -1
-      - name: 准备受保护的发布签名谱系
-        shell: bash
-        env:
-          DSH_RELEASE_KEY_PK8_BASE64: ${{ secrets.DSH_RELEASE_KEY_PK8_BASE64 }}
-        run: |
-          set -euo pipefail
-          if [ -z "${DSH_RELEASE_KEY_PK8_BASE64:-}" ]; then
-            echo "::error::DSH_RELEASE_KEY_PK8_BASE64 secret is required for release signing"
-            exit 1
-          fi
-          SIGN_DIR="$GITHUB_WORKSPACE/.deploy-tmp/release-signing"
-          mkdir -p "$SIGN_DIR"
-          chmod 700 "$SIGN_DIR"
-          umask 077
-          NEW_KEY="$SIGN_DIR/release-key.pk8"
-          CERT="app/src/main/res/raw/release_manifest_certificate.pem"
-          LINEAGE="$SIGN_DIR/release-lineage.bin"
-          printf '%s' "$DSH_RELEASE_KEY_PK8_BASE64" | base64 --decode > "$NEW_KEY"
-          test -s "$NEW_KEY"
-          test -s "$CERT"
-          openssl pkey -inform DER -in "$NEW_KEY" -pubout -outform DER -out "$SIGN_DIR/key-public.der"
-          openssl x509 -in "$CERT" -pubkey -noout | openssl pkey -pubin -outform DER -out "$SIGN_DIR/cert-public.der"
-          cmp --silent "$SIGN_DIR/key-public.der" "$SIGN_DIR/cert-public.der" || {
-            echo "::error::release signing key does not match the pinned release certificate"
-            exit 1
-          }
-          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -1)"
-          test -x "$APKSIGNER"
-          "$APKSIGNER" rotate --out "$LINEAGE" \
-            --old-signer --ks keystore/debug.keystore --ks-key-alias androiddebugkey \
-              --ks-pass pass:android --key-pass pass:android \
-              --set-installed-data true --set-rollback false \
-            --new-signer --key "$NEW_KEY" --cert "$CERT"
-          test -s "$LINEAGE"
-          echo "Prepared one-way APK signing lineage"
       - name: 准备插件依赖（lock-only 后 npm ci；构建由正式入口统一执行）
         shell: bash
         run: |
@@ -302,32 +267,6 @@ jobs:
           set -e
           chmod +x gradlew
           pwsh -NoProfile -File scripts/build-apk-013.ps1 -Suffix "" -ExportSnapshots
-      - name: 使用签名谱系签发双 ABI APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          SIGN_DIR="$GITHUB_WORKSPACE/.deploy-tmp/release-signing"
-          NEW_KEY="$SIGN_DIR/release-key.pk8"
-          CERT="app/src/main/res/raw/release_manifest_certificate.pem"
-          LINEAGE="$SIGN_DIR/release-lineage.bin"
-          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -1)"
-          test -s "$NEW_KEY"
-          test -s "$CERT"
-          test -s "$LINEAGE"
-          shopt -s nullglob
-          apks=("out/v${ver}"/*.apk)
-          [ "${#apks[@]}" -ge 2 ] || { echo "::error::双 ABI APK 未生成"; exit 1; }
-          for apk in "${apks[@]}"; do
-            signed="${apk}.rotated"
-            "$APKSIGNER" sign \
-              --ks keystore/debug.keystore --ks-key-alias androiddebugkey \
-                --ks-pass pass:android --key-pass pass:android \
-              --next-signer --key "$NEW_KEY" --cert "$CERT" \
-              --lineage "$LINEAGE" --rotation-min-sdk-version 33 \
-              --out "$signed" "$apk"
-            mv "$signed" "$apk"
-            echo "Signed rotated release APK: $(basename "$apk")"
-          done
       - name: 子仓打包（复用正式入口已构建产物）
         shell: bash
         run: |
@@ -358,49 +297,112 @@ jobs:
           apk_count=$(find "$OUT/apk" -name '*.apk' | wc -l)
           [ "$apk_count" -ge 2 ] || { echo "::error::APK 少于 2 件（双 ABI 缺件）"; exit 1; }
           node scripts/check-apk-signatures.mjs --self-test
-          ROTATED_CERT_SHA256="$(openssl x509 -in app/src/main/res/raw/release_manifest_certificate.pem -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
-          node scripts/check-apk-signatures.mjs --dir "$OUT/apk" \
-            --keystore keystore/debug.keystore \
-            --rotation-certificate-sha256 "$ROTATED_CERT_SHA256"
+          node scripts/check-apk-signatures.mjs --dir "$OUT/apk" --keystore keystore/debug.keystore
           snap_count=$(find "$OUT/snapshot" -name 'snapshot-*.tar.xz' | wc -l)
           [ "$snap_count" -ge 2 ] || { echo "::error::注入后快照少于 2 件"; exit 1; }
-      - name: Signed MANIFEST + notes.md
+      - name: Prepare release notes
         shell: bash
         env:
           RELEASE_NOTES: ${{ inputs.notes }}
-          DSH_RELEASE_KEY_PK8_BASE64: ${{ secrets.DSH_RELEASE_KEY_PK8_BASE64 }}
         run: |
           set -euo pipefail
-          OUT="release/v${ver}"
-          ( cd "$OUT" && find . -type f ! -name MANIFEST.txt ! -name MANIFEST.signed.json ! -name notes.md | sort | while read -r f; do
-              rel=${f#./}
-              echo "$(sha256sum "$f" | awk '{print $1}')  ${rel}  $(stat -c%s "$f")"
-            done > MANIFEST.txt )
-          SIGN_DIR="$GITHUB_WORKSPACE/.deploy-tmp/release-signing"
-          printf '%s' "$DSH_RELEASE_KEY_PK8_BASE64" | base64 --decode > "$SIGN_DIR/release-key.pk8"
-          chmod 600 "$SIGN_DIR/release-key.pk8"
-          node scripts/sign-release-manifest.mjs \
-            --manifest "$OUT/MANIFEST.txt" \
-            --private-key "$SIGN_DIR/release-key.pk8" \
-            --out "$OUT/MANIFEST.signed.json"
-          node scripts/sign-release-manifest.mjs \
-            --verify \
-            --manifest "$OUT/MANIFEST.signed.json" \
-            --public-key app/src/main/res/raw/release_manifest_certificate.pem \
-            --payload-file "$OUT/MANIFEST.txt"
-          # 用 env 传多行 notes（避免把表达式直接嵌进 heredoc——YAML 缩进与多行内容都会出问题）
+          OUT="release/v$ver"
           printf '%s\n' "$RELEASE_NOTES" > "$OUT/notes.md"
-          [ -s "$OUT/notes.md" ] || printf '# v%s 发布说明\n\n## 改动\n- \n' "${ver}" > "$OUT/notes.md"
-          cat "$OUT/MANIFEST.txt"
+          [ -s "$OUT/notes.md" ] || printf '# v%s release notes\n\n## Changes\n- \n' "$ver" > "$OUT/notes.md"
       - uses: actions/upload-artifact@v4
         with:
-          name: release-v${{ inputs.version }}
+          name: release-unsigned-v${{ inputs.version }}
           path: release/v${{ inputs.version }}/
           retention-days: 30
 
-  publish:
+  sign:
     needs: [release]
-    if: ${{ needs.release.result == 'success' }}
+    if: ${{ github.ref == format(''refs/heads/{0}'', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    environment:
+      name: release-signing
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-unsigned-v${{ inputs.version }}
+          path: release/v${{ inputs.version }}
+      - name: Prepare Android SDK build-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1 || true
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+      - name: Sign APKs and release manifest
+        shell: bash
+        env:
+          DSH_RELEASE_SIGNING_KEY_PK8_BASE64: ${{ secrets.DSH_RELEASE_SIGNING_KEY_PK8_BASE64 }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DSH_RELEASE_SIGNING_KEY_PK8_BASE64" ]; then
+            echo "::error::DSH_RELEASE_SIGNING_KEY_PK8_BASE64 environment secret is required"
+            exit 1
+          fi
+          umask 077
+          SIGN_DIR="$(mktemp -d "$RUNNER_TEMP/release-signing.XXXXXX")"
+          trap 'rm -rf "$SIGN_DIR"' EXIT
+          OUT="release/v$RELEASE_VERSION"
+          NEW_KEY="$SIGN_DIR/release-key.pk8"
+          CERT="app/src/main/res/raw/release_manifest_certificate.pem"
+          LINEAGE="$SIGN_DIR/release-lineage.bin"
+          printf '%s' "$DSH_RELEASE_SIGNING_KEY_PK8_BASE64" | base64 --decode > "$NEW_KEY"
+          test -s "$NEW_KEY"
+          test -s "$CERT"
+          openssl pkey -inform DER -in "$NEW_KEY" -pubout -outform DER -out "$SIGN_DIR/key-public.der"
+          openssl x509 -in "$CERT" -pubkey -noout | openssl pkey -pubin -outform DER -out "$SIGN_DIR/cert-public.der"
+          cmp --silent "$SIGN_DIR/key-public.der" "$SIGN_DIR/cert-public.der" || { echo "::error::release signing key does not match the pinned certificate"; exit 1; }
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" rotate --out "$LINEAGE" \
+            --old-signer --ks keystore/debug.keystore --ks-key-alias androiddebugkey \
+              --ks-pass pass:android --key-pass pass:android \
+              --set-installed-data true --set-rollback false \
+            --new-signer --key "$NEW_KEY" --cert "$CERT"
+          test -s "$LINEAGE"
+          apk_count=$(find "$OUT/apk" -maxdepth 1 -type f -name '*.apk' | wc -l)
+          [ "$apk_count" -ge 2 ] || { echo "::error::dual-ABI APK set is incomplete"; exit 1; }
+          for apk in "$OUT"/apk/*.apk; do
+            [ -f "$apk" ] || continue
+            signed="$apk.rotated"
+            "$APKSIGNER" sign \
+              --ks keystore/debug.keystore --ks-key-alias androiddebugkey \
+                --ks-pass pass:android --key-pass pass:android \
+              --next-signer --key "$NEW_KEY" --cert "$CERT" \
+              --lineage "$LINEAGE" --rotation-min-sdk-version 33 \
+              --out "$signed" "$apk"
+            mv "$signed" "$apk"
+          done
+          node scripts/check-apk-signatures.mjs --self-test
+          ROTATED_CERT_SHA256="$(openssl x509 -in "$CERT" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          node scripts/check-apk-signatures.mjs --dir "$OUT/apk" --keystore keystore/debug.keystore --rotation-certificate-sha256 "$ROTATED_CERT_SHA256"
+          ( cd "$OUT" && find . -type f ! -name MANIFEST.txt ! -name MANIFEST.signed.json ! -name notes.md | sort | while read -r f; do
+              rel=$\{f#./}
+              echo "$(sha256sum "$f" | awk '{print $1}')  $rel  $(stat -c%s "$f")"
+            done > MANIFEST.txt )
+          node scripts/sign-release-manifest.mjs --manifest "$OUT/MANIFEST.txt" --private-key "$NEW_KEY" --out "$OUT/MANIFEST.signed.json"
+          node scripts/sign-release-manifest.mjs --verify --manifest "$OUT/MANIFEST.signed.json" --public-key "$CERT" --payload-file "$OUT/MANIFEST.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-v${{ inputs.version }}
+          path: release/v${{ inputs.version }}
+          retention-days: 30
+
+  publish:
+    needs: [sign]
+    if: ${{ needs.sign.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
