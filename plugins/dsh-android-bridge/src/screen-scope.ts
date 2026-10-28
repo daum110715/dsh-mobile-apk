@@ -555,6 +555,14 @@ const SCREEN_COMMAND_FAMILIES: readonly ScreenCommandFamily[] = [
   // `uiautomator dump` 没有目标屏参数：dump 的就是**默认屏**的语义树 ⇒ 无法自证，恒拒。
   { name: 'uiautomator', pattern: /\buiautomator\b/i, targetFlags: [] },
   { name: 'dumpsys', pattern: /\bdumpsys[ \t]+(?:window|display|input)\b/i, targetFlags: [] },
+  // 直接读写 input 设备的命令：`sendevent` 能向 `/dev/input/*` 注入任意事件（含触摸坐标），
+  // `getevent` 能读回用户的触摸/按键事件。两者**都没有目标屏参数** ⇒ 永远自证不了「作用于已注册
+  // 虚拟屏」，与 `uiautomator` 同档（恒拒）。
+  // 小米 14 Pro 实测（2026-10-28 自查）：shell 直写 `/dev/input/eventN` 被拒（Permission denied），
+  // 但设备已 root 时 `su -c 'sendevent /dev/input/event1 0 0 0'` **RC=0**；而 `su -c` 的载荷会被
+  // 本门禁展开重扫，扫到 `sendevent` 却不在任何家族里 ⇒ 整条放行（实测 `allow`）。
+  { name: 'sendevent', pattern: /\bsendevent\b/i, targetFlags: [] },
+  { name: 'getevent', pattern: /\bgetevent\b/i, targetFlags: [] },
   // `am` 的显示参数是 `--display`；`-d` 是 Intent data，**不得**作为目标屏凭据（见上）。
   { name: 'am', pattern: /\bam[ \t]+(?:start|start-activity|force-stop|kill)\b/i, targetFlags: ['--display', '--display-id'] },
   { name: 'monkey', pattern: /\bmonkey\b/i, targetFlags: ['--display', '--display-id'] },

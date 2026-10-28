@@ -69,6 +69,12 @@ internal object ShellOps {
     ScreenFamily("wm", Regex("""\bwm[ \t]+(?:size|density|overscan)\b""", RegexOption.IGNORE_CASE), ALL_DISPLAY_FLAGS),
     // `uiautomator dump` 没有目标屏参数：dump 的是**默认屏**的语义树 ⇒ 无法自证，恒拒。
     ScreenFamily("uiautomator", Regex("""\buiautomator\b""", RegexOption.IGNORE_CASE), emptyList()),
+    // 直接读写 input 设备的命令：`sendevent` 能注入任意事件（含触摸），`getevent` 能读回触摸/按键。
+    // 两者都没有目标屏参数 ⇒ 自证不了「作用于已注册虚拟屏」，与 `uiautomator` 同档（恒拒）。
+    // 小米 14 Pro 实测（2026-10-28 自查）：shell 直写 /dev/input/eventN 被拒，但已 root 时
+    // `su -c 'sendevent … 0 0 0'` RC=0，而 `su -c` 的载荷会被本门禁展开重扫 ⇒ 修前整条放行。
+    ScreenFamily("sendevent", Regex("""\bsendevent\b""", RegexOption.IGNORE_CASE), emptyList()),
+    ScreenFamily("getevent", Regex("""\bgetevent\b""", RegexOption.IGNORE_CASE), emptyList()),
     ScreenFamily("dumpsys", Regex("""\bdumpsys[ \t]+(?:window|display|input)\b""", RegexOption.IGNORE_CASE), emptyList()),
     // `am` 的显示参数是 `--display`；`-d` 是 Intent data，**不得**作为目标屏凭据。
     ScreenFamily("am", Regex("""\bam[ \t]+(?:start|start-activity|force-stop|kill)\b""", RegexOption.IGNORE_CASE),
@@ -334,7 +340,8 @@ internal object ShellOps {
     if (screenVerdictWithRegistry(context, command) == ScreenCommandVerdict.ALLOW) return null
     return JSONObject()
       .put("__error", "用户当前开放屏幕范围为 virtual-only，不允许经特权 shell 读取或操作真实屏幕"
-        + "（screencap / screenrecord / uiautomator / input / wm / dumpsys window|display|input / am / monkey）。"
+        + "（screencap / screenrecord / uiautomator / input / wm / dumpsys window|display|input / am / monkey /"
+        + " sendevent / getevent）。"
         + "命令里显式指定的目标屏若确为**已注册虚拟屏**（DisplayManager displayId 或该屏的 SurfaceFlinger token）即可放行；"
         + "本条命令的目标屏未能与壳侧注册表核对上，故拒绝。请确认虚拟屏仍在活跃状态"
         + "（android_vdisplay_create / vdInfo），或由用户在设置中修改范围后重试。")

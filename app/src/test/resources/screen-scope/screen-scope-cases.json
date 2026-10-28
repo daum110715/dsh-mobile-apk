@@ -844,6 +844,46 @@
       ],
       "expect": "allow",
       "why": "与 S-14a 成对且更严格：展开后自带已注册 `-d 7` ⇒ 必须放行，防「见到 -o 就拒」。"
+    },
+    {
+      "name": "S-15a 直接写 input 设备（sendevent）恒拒",
+      "command": "sendevent /dev/input/event1 3 57 1",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "deny-uncertified-target",
+      "why": "小米 14 Pro（SDK 37）实测 shell 直写被拒（Permission denied），但 `su -c` 下 RC=0；`sendevent` 能向 /dev/input/* 注入任意事件（含触摸坐标），而它**没有目标屏参数** ⇒ 永远自证不了「作用于已注册虚拟屏」，与 `uiautomator` 同档恒拒。修前整条放行。"
+    },
+    {
+      "name": "S-15b su -c 下的 sendevent 同样可达（载荷展开后仍要拦）",
+      "command": "su -c 'sendevent /dev/input/event1 0 0 0'",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "deny-uncertified-target",
+      "why": "小米 14 Pro（SDK 37）实测 `su -c 'sendevent /dev/input/event1 0 0 0'` 返回 RC=0（设备已 root 时真能写）。`su -c` 的载荷本来就会被本门禁展开重扫，但 `sendevent` 不在任何家族里 ⇒ 修前整条放行。"
+    },
+    {
+      "name": "S-15c 读 input 设备（getevent）也恒拒",
+      "command": "getevent -lt /dev/input/event1",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "deny-uncertified-target",
+      "why": "小米 14 Pro（SDK 37）实测 `getevent -p` 能列出输入设备并读回触摸/按键事件；它同样没有目标屏参数 ⇒ 无法证明读的是虚拟屏的输入 ⇒ 恒拒（与 `dumpsys` 读信息一律拒同一口径）。"
+    },
+    {
+      "name": "对照 只列举 /dev/input 目录不算操作设备",
+      "command": "ls -l /dev/input",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "allow",
+      "why": "判据是**命令词**不是路径：`ls /dev/input` 只是列目录，不注入也不读事件 ⇒ 必须放行（防「见到 /dev/input 就拒」）。"
     }
   ]
 }
