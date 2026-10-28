@@ -2136,3 +2136,9 @@ JVM 边界测试在 `EngineBootInstrumentationTest`（取值与 clamp 边界、�
     **因为每个需要目标屏的命令家族都要求 `targetFlags` 非空**，所以「认不出 option」与「option 畸形」在当前命令集下**必然同样落进 deny**，MALFORMED 成了双重保险。
     ⇒ 处置：**保留**（fail-closed 的方向、成本为零），但别误以为它有独立用例守着。**真要动它之前**，先确认「有没有哪个家族的 `targetFlags` 可以为空却仍然 allow」——有的话 MALFORMED 就是那条路的唯一门槛，删了会开洞。
     ⇒ 顺带记同一轮的有效覆盖（同一 63 条 fixture 上变异实测）：`family.targetFlags.length===0` **红 4**、`owned.length===0` **红 5**、`!owned.every(isOwnedTarget)` **红 15**、首个 `deny-unparsed` **红 1**、`interpreterPayloadUnparsed(bare)` **红 1**、`TRAP_PAYLOAD` 正则（`trap`→`trapZ`）**红 1**。
+
+    ⑯ **`PublicRepoProvision` 的 `status|trigger|nowMs|detail` 落盘格式：`trigger` 不转义 `|` 当前安全，但别给它传带 `|` 的值**（2026-10-28 复核）：
+    `encode()` 用 `|` 拼四段，`fold()` **只折叠换行**（CRLF→空格、CR/LF→空格、trim），**不转义 `|`**。
+    `parseStatus` 只取 `parts[0]` 且要求 `parts.size >= 4`（半截文件判 UNKNOWN，方向正确）；`parseDetail` 用 `parts.drop(3).joinToString("|")` **能正确还原含 `|` 的 detail**。
+    唯一脆弱点在第 2 段：若 `trigger` 含 `|`，`parseTrigger` 会截断、`parseDetail` 会把 `nowMs` 也当成 detail 的一部分。
+    **当前所有实参都是 `PublicRepoProvision.TRIGGER_*` 常量**（`EngineManager` 五处全是 `TRIGGER_ENGINE_START`），所以不构成缺陷 ⇒ **不要改 `fold()` 去转义 `|`**（会改变落盘格式、老文件读不对，收益为零）。真要加带 `|` 的 trigger 时，先给 trigger 单独做一层折叠。
