@@ -110,6 +110,24 @@ class ApkUpdateObserverTest {
   }
 
   @Test
+  fun releasesWithoutAnyDigestNeverBecomeAvailable() {
+    // #728 之后「未提供摘要」不再是 Available(sha256=null) 这种形态，而是根本没有可安装更新。
+    // 这条用例守住分流点：摘要缺失必须落 Failed(RELEASE_DATA_BROKEN)，不能退化成"已发现新版"。
+    val facts = UpdateChecker.LatestFacts(
+      "v99.0.0",
+      mapOf("dsh-mobile-apk-v99.0.0-arm64.apk" to 169_000_000L),
+      emptyMap(),
+    )
+    val r = UpdateChecker.classifyFacts(facts, listOf("arm64-v8a"), "arm64", "0.14.5-fx-2")
+    assertTrue("缺摘要必须判失败，不得给可安装更新：" + r, r is UpdateChecker.CheckResult.Failed)
+    assertEquals(
+      "分类必须是发布数据异常（不是设备不支持）",
+      UpdateChecker.CheckResult.FailureKind.RELEASE_DATA_BROKEN,
+      (r as UpdateChecker.CheckResult.Failed).kind,
+    )
+  }
+
+  @Test
   fun failedStateDropsDigest() {
     // 下载失败时产物已被删除：此时还留着摘要，界面就会对着一个不存在的文件说「已校验」。
     val s = ApkUpdateState()
