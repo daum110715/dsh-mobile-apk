@@ -2142,3 +2142,11 @@ JVM 边界测试在 `EngineBootInstrumentationTest`（取值与 clamp 边界、�
     `parseStatus` 只取 `parts[0]` 且要求 `parts.size >= 4`（半截文件判 UNKNOWN，方向正确）；`parseDetail` 用 `parts.drop(3).joinToString("|")` **能正确还原含 `|` 的 detail**。
     唯一脆弱点在第 2 段：若 `trigger` 含 `|`，`parseTrigger` 会截断、`parseDetail` 会把 `nowMs` 也当成 detail 的一部分。
     **当前所有实参都是 `PublicRepoProvision.TRIGGER_*` 常量**（`EngineManager` 五处全是 `TRIGGER_ENGINE_START`），所以不构成缺陷 ⇒ **不要改 `fold()` 去转义 `|`**（会改变落盘格式、老文件读不对，收益为零）。真要加带 `|` 的 trigger 时，先给 trigger 单独做一层折叠。
+
+    ⑰ **用不变量跑 fuzz 量 `screen-scope` 的覆盖面：`eval`/`trap` 这两族只在 batch3 分支被堵住**（2026-10-28 实测，**合 PR 前必看**）：
+    方法＝不变量 fuzz（不读代码、主动找洞）：固定 8 条真实屏命令词（`screencap -p` / `screenrecord` / `input tap` / `input keyevent` / `wm size` / `uiautomator dump` / `dumpsys window` / `am start`）× 20 种包装（裸写、`sh -c "…"`、`sh -c '…'`、`eval "…"`、`eval '…'`、`trap '…' EXIT`、`trap "…" INT`、`;`/`&&`/`|` 拼接、`(…)`、`{ …; }`、反引号、`$(…)`、`echo 'x' # …`、尾随换行、前后空格、`X=1 …`、`if…fi`、`while…done`），`isOwnedTarget` 恒 `false`（空注册表＝最严），**凡是 allow 就是洞**。
+    **结果**：
+    - `fix/self-audit-…`（基于 main）与 `main`：**160 例里 32 例放行** —— 全部是 `eval` / `trap` 两族（`eval "screencap -p …"`、`eval '…'`、`trap '…' EXIT`、`trap "…" INT` × 8 条命令）。
+    - `fix/issue-batch3-…`：**降到 8 例**，且这 8 例全是 `echo 'x' # screencap …` —— **`#` 后面 shell 本来就不执行，放行是对的**（batch3 加了词首注释剥离）。⇒ **batch3 这 160 例实际 0 真洞**。
+    ⇒ **纪律**：①`eval` / `trap` 的展开修复**只在 #717（batch3）里**；`#719`（batch4）与 `#733`（self-audit）都基于 main，**这两个合并了也不会带上它** —— 如果作者先合 #719/#733 再合 #717，中间窗口里 `eval "screencap …"` 是放行的。真要拆成两个不重叠的批次，得把 `EVAL_PAYLOAD`/`TRAP_PAYLOAD` 那两段单独摘出来。
+    ②写这类 fuzz 时**注释形态要单独分类**（我的不变量一开始把 `echo 'x' # cmd` 也算泄漏，属假阳）——判断"该不该拦"要看**shell 会不会执行**，而不是"命令词有没有出现"。
