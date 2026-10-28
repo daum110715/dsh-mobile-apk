@@ -1,6 +1,6 @@
 {
   "$comment": "Kotlin 单测基线（0.14.1）：只许升不许降。键=测试类名（=源文件名去 .kt），值=用例数。逐类记录而非只记总数——防「删 A 类用例 + 加 B 类用例」净零抵消。升档：node scripts/check-kotlin-test-count.mjs --update-baseline（会拒绝降档）。",
-  "totalTests": 1912,
+  "totalTests": 1926,
   "testsByClass": {
     "A11yHeartbeatCadenceTest": 5,
     "A11yPrefsReconcileTest": 6,
@@ -31,7 +31,7 @@
     "CapturePipeDrainTest": 11,
     "ClientPluginFailRouteTest": 25,
     "ClientRollbackGateTest": 24,
-    "ConsoleAnsiStripperTest": 12,
+    "ConsoleAnsiStripperTest": 15,
     "ConsoleImeOverlapTest": 6,
     "ConsoleInputHandshakeTest": 5,
     "ConsoleKeyCodecTest": 10,
@@ -58,7 +58,7 @@
     "EngineProbeTest": 12,
     "EngineStartPreludeProbeTest": 9,
     "ExternalLinksTest": 7,
-    "FactoryProfilePatchTest": 41,
+    "FactoryProfilePatchTest": 44,
     "FileIncomingCleanupTest": 17,
     "FileIncomingSafetyTest": 12,
     "ForegroundPageRecoveryPolicyTest": 9,
@@ -77,7 +77,7 @@
     "LocalDocsTest": 5,
     "LogRedactionTest": 6,
     "LogRotationTest": 4,
-    "LogSanitizerTest": 16,
+    "LogSanitizerTest": 18,
     "LogShareTest": 23,
     "LogShareWiringTest": 7,
     "MotionCoalescerTest": 8,
@@ -139,7 +139,8 @@
     "ShizukuBindStateTest": 40,
     "ShizukuCaptureSettlementFixtureTest": 5,
     "ShizukuRpcLeaseWiringFixtureTest": 4,
-    "ShotCachePolicyTest": 6,
+    "ShotCachePolicyNullListingTest": 2,
+    "ShotCachePolicyTest": 8,
     "SnapshotBundledAssetTest": 7,
     "SnapshotExtractorTest": 3,
     "SnapshotFileModeTest": 1,
@@ -170,6 +171,7 @@
     "VdisplayArbitrationTest": 4,
     "VdisplayLaunchLandingTest": 6,
     "VdisplayLetterboxTest": 8,
+    "VdisplayTouchLockTest": 1,
     "W3ShellContractTest": 22,
     "WakeActivityLeaseTest": 12,
     "WatchdogCadenceTest": 8,
@@ -178,7 +180,6 @@
     "WatchdogMarkerDebugGateTest": 6,
     "WatchdogPluginTreeTest": 5,
     "WebViewShimTest": 13,
-    "WindowPickTest": 5,
-    "VdisplayTouchLockTest": 1
+    "WindowPickTest": 5
   }
 }

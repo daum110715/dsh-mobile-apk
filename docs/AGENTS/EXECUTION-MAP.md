@@ -162,7 +162,7 @@ sequenceDiagram
 | 高 | K08 | 浏览器 op 在控制队列线程上自旋等导航：错误页路径必等满 10s 且仍回 `ok` | `app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1087`、`app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1101-1107` | 一次 `browser_open` 占住整条设备控制队列 10s，无障碍与特权命令全排队 | 未修（S-7/F-6） |
 | 高 | K08 | 浏览器截图只写不删、`health` 恒 `ok`、失败原因串上一轮 `lastError` | `app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1565`、`app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1581`、`app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1589` | 长任务磁盘累积（全页 PNG）；截图失败原因误导 | 未修（S-6/F-7） |
 | 高 | K08 | 「隔离浏览器」没有存储隔离：无 `setDataDirectorySuffix` 与清理 op，且引擎鉴权 cookie 在**进程级** `CookieManager` | `app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:815` | AI 访问过的站点 cookie/localStorage 持久驻留且用户无撤销入口；过滤一旦有缺口即带引擎 cookie 出网 | 未修（S-3/F-9） |
-| — | K06 | ~~双引号内的命令替换不被扫描~~ **已修（issue #674）**：`"` 分支对引号内的 `$(...)` 与反引号按原文递归扫描，两层同源 | `app/src/main/java/com/dsharnessmobile/shell/ShellOps.kt:354#expect=interpreterPayloadUnparsed` · `plugins/dsh-android-bridge/src/screen-scope.ts:385#expect=text%5Bj%20%2B%201%5D`（两侧同算法） | fixture `S-4a`/`S-4b`/`S-4c` 三条反证 + `对照 双引号内纯文本不得误拦`（防过度拦截） |
+| — | K06 | ~~双引号内的命令替换不被扫描~~ **已修（issue #674）**：`"` 分支对引号内的 `$(...)` 与反引号按原文递归扫描，两层同源 | `app/src/main/java/com/dsharnessmobile/shell/ShellOps.kt:412#expect=interpreterPayloadUnparsed` · `plugins/dsh-android-bridge/src/screen-scope.ts:420#expect=text%5Bj%20%2B%201%5D`（两侧同算法） | fixture `S-4a`/`S-4b`/`S-4c` 三条反证 + `对照 双引号内纯文本不得误拦`（防过度拦截） |
 | — | K06 | **`eval` 载荷不被展开（漏拦）＋ shell 注释被当命令词面（误拦）**（2026-10-28 自查，issue #674 同类）：`eval "screencap -p …"` 的引号内容被引号抹除逻辑吃掉 ⇒ 命令词面看不到 `screencap` ⇒ 一路放行；反过来 `echo hi # screencap …` 把注释文本当命令 ⇒ 误拦合法命令。两层同源修法：`EVAL_PAYLOAD` 与 `sh -c` **并列进"再解释一层"的展开队列**（`;`/`&&`/`||`/管道后的 eval 同样展开），且 `#` 位于**词首**（行首或空白/`;`/`&`/`|` 之后）时剥到行尾 | `app/src/main/java/com/dsharnessmobile/shell/ShellOps.kt`（`EVAL_PAYLOAD`）· `plugins/dsh-android-bridge/src/screen-scope.ts`（`EVAL_PAYLOAD`） | fixture `S-5a`/`S-5b`/`S-5c`/`对照 eval 内无屏命令`/`S-6a` 五条 |
 | 高 | K06 | 壳侧无危险命令黑名单，`controlExec` 直连路径同样没有 | `app/src/main/aidl/com/dsharnessmobile/shell/ShizukuUserService.aidl:31` | AIDL 注释声称黑名单在壳侧，实现里没有；服务面「地板」只落了一半 | 未修（S-5 残留） |
 | 高 | K07 | `touch()` 全仓零调用点，「空闲回收」实为「建屏后 10 分钟必回收」 | `app/src/main/java/com/dsharnessmobile/shell/VdisplayController.kt:84`、`app/src/main/java/com/dsharnessmobile/shell/VdisplayController.kt:60` | 长任务看虚拟屏时中途黑屏 | 未修（F-10/V-R0） |
@@ -1976,7 +1976,7 @@ flowchart LR
 
 - 漂移：`历史 BRIDGE-API 副本（当前契约见§6 K04）` 说聚合入口「`--list` 现数，当前 17 项」，源码 `scripts/check-release-gates.mjs:28`（`GATES` 数组）是 27 项（同仓 `docs/AGENTS/build-and-env.md:48` 写的是 27 项，两份文档自相矛盾）。
 - 漂移：5 个门禁脚本的两仓副本行尾不同（协调仓 CRLF、apk 仓 LF），`cmp` 字节不等、归一化后内容一致：`scripts/check-boot-budget.mjs`、`scripts/check-browser-syntax-floor.mjs`、`scripts/check-build-parallel-cap.mjs`、`scripts/check-snapshot-builder-output.mjs`、`scripts/check-tool-output-schema.mjs`；镜像门禁只按「仅行尾差异」告警放行（`scripts/check-patch-mirror.mjs:339`）——「逐字节镜像」在行尾层不成立。
-- Resolved: `scripts/check-code-map.mjs` is registered in `MIRROR_TOP` (`scripts/check-patch-mirror.mjs:370#expect=scripts%2Fcheck-code-map.mjs`), the aggregate gate, both APK build chains, and APK CI. The coordination CI intentionally does not run this APK-specific map gate.
+- Resolved: `scripts/check-code-map.mjs` is registered in `MIRROR_TOP` (`scripts/check-patch-mirror.mjs:371#expect=scripts%2Fcheck-code-map.mjs`), the aggregate gate, both APK build chains, and APK CI. The coordination CI intentionally does not run this APK-specific map gate.
 
 ```mermaid
 flowchart TD
@@ -2359,6 +2359,10 @@ plugins/dsh-android-manage/src/protocol-v2.ts
 plugins/dsh-android-manage/src/vd-shot.ts
 plugins/dsh-android-manage/src/detail-store.ts
 plugins/dsh-android-manage/src/ime-broadcast.ts
+plugins/dsh-android-manage/src/coord-basis.ts
+plugins/dsh-android-manage/src/screen-fields.ts
+plugins/dsh-android-manage/src/node-list.ts
+plugins/dsh-android-manage/src/semantic-fail.ts
 glob:plugins/dsh-android-manage/test/*.test.mjs
 glob:plugins/dsh-android-manage/test/*.mjs
 plugins/dsh-android-browser/src/tools.ts
@@ -2536,7 +2540,7 @@ app/src/main/java/com/dsharnessmobile/shell/ApkUpdateAction.kt
 - [B01] 漂移：`AGENTS.md:21` 说 `vendor/`（marketplace / undo-savepoint / dsh-model-sync），源码实际 `vendor/` 只有 `dsh-undo-savepoint` 与 `dshmarketplace-plugin`（model-sync 已随 0.14.1 整体摘除，见 `scripts/profile-web.cordis.patch.yml:128-138` 与 `scripts/check-patch-mirror.mjs:231-233`）。
 - [B02] 漂移：`历史 BRIDGE-API 副本（当前契约见§6 K04）` 说聚合入口「`--list` 现数，当前 17 项」，源码 `scripts/check-release-gates.mjs:28`（`GATES` 数组）是 27 项（同仓 `docs/AGENTS/build-and-env.md:48` 写的是 27 项，两份文档自相矛盾）。
 - [B02] 漂移：5 个门禁脚本的两仓副本行尾不同（协调仓 CRLF、apk 仓 LF），`cmp` 字节不等、归一化后内容一致：`scripts/check-boot-budget.mjs`、`scripts/check-browser-syntax-floor.mjs`、`scripts/check-build-parallel-cap.mjs`、`scripts/check-snapshot-builder-output.mjs`、`scripts/check-tool-output-schema.mjs`；镜像门禁只按「仅行尾差异」告警放行（`scripts/check-patch-mirror.mjs:339`）——「逐字节镜像」在行尾层不成立。
-- [B02] Resolved: `scripts/check-code-map.mjs` is registered in `MIRROR_TOP` (`scripts/check-patch-mirror.mjs:370#expect=scripts%2Fcheck-code-map.mjs`), the aggregate gate, both APK build chains, and APK CI. The coordination CI intentionally does not run this APK-specific map gate.
+- [B02] Resolved: `scripts/check-code-map.mjs` is registered in `MIRROR_TOP` (`scripts/check-patch-mirror.mjs:371#expect=scripts%2Fcheck-code-map.mjs`), the aggregate gate, both APK build chains, and APK CI. The coordination CI intentionally does not run this APK-specific map gate.
 
 WebView verification locales (#600): scripts/verify-webview-015.mjs resolves Chinese and English accessible names, prioritizes the account-menu trigger and retains missing/disabled-control failures. scripts/verify-webview-settings.test.mjs covers both navigation paths and attachment labels; PR CI installs its declared UI test dependencies and runs the same self-test. Device invocation remains positional WebSocket with a fresh target per run.
 
