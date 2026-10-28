@@ -1,5 +1,6 @@
 package com.dsharnessmobile.shell
 
+import java.io.File
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import org.junit.Assert.assertEquals
@@ -94,5 +95,29 @@ class AndroidBridgeFrameGuardTest {
     }
     trusted = true
     assertEquals("判据翻真后同一实例必须放行（按调用时判据动态判定）", BuildConfig.VERSION_NAME, bridge.version())
+  }
+
+  /**
+   * 接线必须**只读主线程镜像字段**，不得在 lambda 里调 WebView 方法。
+   *
+   * 为什么单开一条：lambda 跑在 JavaBridge 线程，而 `WebView.getUrl()` 是 WebView 方法——
+   * 仓内四处文档（`BackGate.kt` 类注释、gotchas 坑 226、`ANDROID-API-USAGE.md` 的
+   * 「@JavascriptInterface 跑在 JavaBridge 线程」、`BRIDGE-API.md` 开头）都要求切回主线程。
+   * 桥面每个入口都过这道门禁，把一个线程争议乘 77 次不划算。
+   *
+   * 反证（本类必须能红）：把接线改回 `webView.url`，这条立刻红。
+   */
+  @Test
+  fun wiringReadsAMainThreadUrlMirrorInsteadOfCallingWebView() {
+    val code = File("src/main/java/com/dsharnessmobile/shell/MainActivity.kt").readText()
+    val wiring = code.substringAfter("isTrustedTopFrame = {").substringBefore("},")
+    assertTrue("接线必须读主线程镜像字段 trustedTopFrameUrl：" + wiring, wiring.contains("trustedTopFrameUrl"))
+    assertTrue("接线不得在 JavaBridge 线程调用 WebView 方法（webView.url 等）：" + wiring,
+      !wiring.contains("webView.") && !wiring.contains("getUrl("))
+    assertTrue("镜像字段必须 @Volatile（JavaBridge 线程读、主线程写）",
+      Regex("@Volatile\\s+\\n?\\s*internal var trustedTopFrameUrl").containsMatchIn(code))
+    // 写入方必须是主线程回调：至少 onPageStarted 与 onPageFinished 都要更新它。
+    assertTrue("onPageStarted 必须更新镜像", code.substringAfter("override fun onPageStarted").substringBefore("}").contains("trustedTopFrameUrl ="))
+    assertTrue("onPageFinished 必须更新镜像", code.substringAfter("override fun onPageFinished").substringBefore("}").contains("trustedTopFrameUrl ="))
   }
 }

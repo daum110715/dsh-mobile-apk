@@ -13,8 +13,9 @@ import org.junit.Test
  * 只会放行），更新链因此没有真实性防线。
  *
  * 修法：安装前以待装 APK 的证书 vs **当前安装**的本应用证书做连续性校验（fail-closed：
- * 读不出/不一致一律拒装）；CI 发布密钥改走 secret 注入（app/build.gradle.kts 的
- * DSH_RELEASE_KEYSTORE 接缝），repoDebug 只签本地/PR 测试包。
+ * 读不出/不一致一律拒装）。锚点刻意是「已安装证书」而不是硬编码指纹：本项目的签名密钥
+ * 随仓公开是**既定选择**（开源、不上 Google Play），硬编码同一把密钥的指纹等于没有校验；
+ * 已安装应用的证书是发行链可信的最小事实，且**不要求存在第二把密钥**。
  *
  * 纯判据 + 静态判据各守一半：archive/installed 证书读取走 PackageManager，属设备面
  * （本批未做设备验证，PR 显式标注，发版候选前补验）。
@@ -97,12 +98,22 @@ class UpdateSignerContinuityTest {
       body.substringBefore("UpdateChecker.invokeInstaller(").contains("KIND_ARTIFACT_REJECTED"))
   }
 
+  /**
+   * 签名配置必须保持「单把仓库内置密钥」——这是既定选择，不是待补的缺口。
+   *
+   * 曾经在本 PR 里引入过 `DSH_RELEASE_KEYSTORE` 的 CI secret 接缝，已按仓库所有者裁定撤回：
+   * 开源项目、不上 Google Play，密钥随仓公开是既定选择。这条用例反着钉：
+   * 一旦有人再引入第二把密钥的环境变量接缝，必须判红并回到所有者那边确认。
+   */
   @Test
-  fun releaseSigningPrefersCiSecretAndFallsBackExplicitly() {
+  fun signingConfigStaysOnTheSingleRepoKeystore() {
     val gradle = repoFile("app/build.gradle.kts").readText()
-    assertTrue("必须保留 CI secret 接缝（#675：真发布密钥不随公开仓分发）",
+    // release 档必须紧接 isMinifyEnabled 之后显式指向 repoDebug（不静默换签、不回落别的档）。
+    assertTrue("release 必须显式用仓库内置 repoDebug 密钥（不静默换签）",
+      gradle.contains("signingConfig = signingConfigs.getByName(\"repoDebug\")"))
+    assertFalse("不得引入第二把发布密钥的 secret 接缝（密钥随仓公开是既定选择）",
       gradle.contains("DSH_RELEASE_KEYSTORE"))
-    assertTrue("无 CI 密钥时必须显式回落 repoDebug（不静默换签）",
-      gradle.contains("signingConfigs.findByName(\"release\") ?: signingConfigs.getByName(\"repoDebug\")"))
+    assertTrue("repoDebug 必须仍指向仓库内置 keystore（内容不得被改写/轮换）",
+      gradle.contains("storeFile = rootProject.file(\"keystore/debug.keystore\")"))
   }
 }

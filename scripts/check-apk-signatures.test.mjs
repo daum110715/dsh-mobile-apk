@@ -108,8 +108,6 @@ test('Gradle debug and release variants explicitly use the all-schemes signing c
   const gradle = readFileSync(gradlePath, 'utf8')
   const signing = /create\("repoDebug"\)\s*\{([\s\S]*?)\n\s*\}/.exec(gradle)?.[1] ?? ''
   for (const scheme of ['V1', 'V2', 'V3']) assert.match(signing, new RegExp(`enable${scheme}Signing\\s*=\\s*true`))
-  // #675：release 签名走 CI secret 接缝——注入了 DSH_RELEASE_KEYSTORE 用 release 档，
-  // 没有则显式回落 repoDebug；两条路都必须是显式写法，不允许静默默认签名。
-  assert.match(gradle, /release\s*\{\s*isMinifyEnabled\s*=\s*false[\s\S]*?signingConfig\s*=\s*signingConfigs\.findByName\("release"\)\s*\?\:\s*signingConfigs\.getByName\("repoDebug"\)/)
+  assert.match(gradle, /release\s*\{\s*isMinifyEnabled\s*=\s*false\s*signingConfig\s*=\s*signingConfigs\.getByName\("repoDebug"\)/)
   assert.match(gradle, /debug\s*\{\s*signingConfig\s*=\s*signingConfigs\.getByName\("repoDebug"\)/)
 })

@@ -72,6 +72,22 @@ class MainActivity : ComponentActivity() {
   /** True only after WebView reported a load error for the local engine origin. */
   @Volatile
   internal var enginePageFailed = false
+  /**
+   * #686：顶层帧 URL 的**主线程镜像**，供 JavaBridge 线程上的桥面来源门禁判读。
+   *
+   * 为什么不直接读 `webView.url`：`@JavascriptInterface` 入口跑在 **JavaBridge 线程**，
+   * 而 `WebView.getUrl()` 是 WebView 方法——仓内四处约定（`BackGate.kt` 类注释、
+   * `docs/AGENTS/gotchas.md` 坑 226、`docs/AGENTS/ANDROID-API-USAGE.md` 的
+   * 「@JavascriptInterface 跑在 JavaBridge 线程」一行、`docs/AGENTS/BRIDGE-API.md` 开头）
+   * 都要求 WebView 方法切回主线程。桥面每个入口都要过这道门禁，把一个不确定性乘 77 次
+   * 不值得；改成一个字段读，语义不变且不存在线程争议。
+   *
+   * 写入方只有主线程回调：`onPageStarted` / `onPageFinished` / `shouldOverrideUrlLoading`
+   * （同源放行那一支）。与 [enginePageFailed] / `webFrameCommitted` 同形（都是 `@Volatile` 镜像）。
+   * 初值空串 = 还没开始导航 ⇒ 门禁按 fail-closed 拒（首帧前一律拒是 #686 的既定姿态）。
+   */
+  @Volatile
+  internal var trustedTopFrameUrl: String = ""
   /** 返回策略：页面层栈信号缓存（JS 经 dshBackBridge 主动推送；onPageStarted 复位、
    *  onPageFinished 拉平）。返回回调只读它，绝不 evaluateJavascript 现问页面。 */
   internal val backGateState = BackGateState()
@@ -1191,6 +1207,8 @@ class MainActivity : ComponentActivity() {
         // 只允许引擎同源页面留在 WebView（特权桥 + 下载能力仅对引擎可信）；
         // 外部链接交给系统浏览器，防止不可信页面获得桥能力（社工/通知轰炸/任意下载）。
         if (isEngineSource(url)) {
+          // #686：主线程镜像顶层帧 URL——现场放行同源导航时同步一次，避免门禁读到上一文档。
+          if (view === webView) trustedTopFrameUrl = url
           view.loadUrl(url)
           return true
         }
@@ -1293,6 +1311,8 @@ class MainActivity : ComponentActivity() {
        */
       override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
         super.onPageStarted(view, url, favicon)
+        // #686：主线程镜像顶层帧 URL（桥面门禁在 JavaBridge 线程只读这个字段）。
+        trustedTopFrameUrl = url
         clipboardRead?.cancel()
         if (isEngineSource(url)) enginePageFailed = false
         // 新文档：上一文档的层栈信号作废（页面插件在新文档里重新推）。
@@ -1317,6 +1337,8 @@ class MainActivity : ComponentActivity() {
 
       override fun onPageFinished(view: WebView, url: String) {
         super.onPageFinished(view, url)
+        // #686：主线程镜像顶层帧 URL（与 onPageStarted 同写者，保证门禁看到的是当前文档）。
+        if (view === webView) trustedTopFrameUrl = url
         if (!pageUiActive || view !== webView) return // Resume replays theme/insets/routes; do not restart background page probes.
         // 层栈缓存拉平（插件可能晚于首帧挂载，初始上行信号会漏）。
         if (isEngineSource(url)) pullBackGateState(view)
@@ -1427,7 +1449,8 @@ class MainActivity : ComponentActivity() {
       AndroidBridge(
         // #686：桥面来源门禁——与导航闸门同一判据，守「顶层帧必须是引擎 origin」。
         // isTrustedTopFrame 默认 false（fail-closed），这里必须在构造时显式放行引擎页。
-        isTrustedTopFrame = { ::webView.isInitialized && isEngineSource(webView.url ?: "") },
+        // 只读主线程镜像字段，不在这里调用任何 WebView 方法（本 lambda 跑在 JavaBridge 线程）。
+        isTrustedTopFrame = { isEngineSource(trustedTopFrameUrl) },
         onPickRequest = { callbackId -> dirPickerController.pickDirectoryWithPermissionCheck(callbackId) },
         onKeepScreen = { enable -> keepScreenOn(enable) },
         onNotify = { title, text -> NotifyCenter.notify(this, "task", title, text) },
