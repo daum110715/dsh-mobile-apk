@@ -744,6 +744,76 @@
       ],
       "expect": "allow",
       "why": "跳过终结符后耗尽 ⇒ 没有载荷可展开（shell 会读 stdin，但这条命令本身不含屏命令词）；与 S-10e 成对，防「见 -- 即拒」。"
+    },
+    {
+      "name": "S-11f nice 包装裸解释器：载荷同样不可见",
+      "command": "echo 'screencap -p /sdcard/x.png' | nice sh",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "deny-unparsed",
+      "why": "小米 14 Pro（SDK 37）实测 `echo 'echo NICE_RAN' | nice sh` 打印了标记 ⇒ 真的执行了 stdin 里的脚本。裸 `| sh` 判 deny-unparsed，但包装词不在白名单时循环停在 `nice` 上返回 false（当成「不是解释器」）⇒ 多套一层包装即可绕过 #509 的裸解释器判据。"
+    },
+    {
+      "name": "S-11g setsid 包装（带自己的选项）",
+      "command": "echo 'screencap -p /sdcard/x.png' | setsid -w sh",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "deny-unparsed",
+      "why": "小米 14 Pro（SDK 37）实测 `setsid -w sh` 打印了标记。注意 `-w` 是 setsid 自己的选项，必须先跳过包装器再跳过选项才认得出裸 `sh`。"
+    },
+    {
+      "name": "S-11h ionice 包装裸解释器",
+      "command": "echo 'screencap -p /sdcard/x.png' | ionice sh",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "deny-unparsed",
+      "why": "小米 14 Pro（SDK 37）实测 `ionice sh` 打印了标记（ionice 在 /system/bin）。"
+    },
+    {
+      "name": "S-11i taskset 包装（带数字参数）",
+      "command": "echo 'screencap -p /sdcard/x.png' | taskset 1 sh",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "deny-unparsed",
+      "why": "小米 14 Pro（SDK 37）实测 `taskset 1 sh` 打印了标记；`1` 是 taskset 的 CPU 掩码参数，必须连同包装词一起跳过。"
+    },
+    {
+      "name": "S-11j 不带管道同样成立（sh 读 stdin 即可）",
+      "command": "nice -n 5 sh",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "deny-unparsed",
+      "why": "小米 14 Pro（SDK 37）实测 真机上 `nice -n 5 sh` 会等 stdin；`shExec` 自己就是 `sh -c`，上游一旦把内容喂进 stdin 就是同一条路。"
+    },
+    {
+      "name": "对照 nice 包装普通命令不得误拦",
+      "command": "nice -n 5 getprop ro.product.model",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "allow",
+      "why": "与 S-11f 成对：跳过包装词后命中 `getprop`（不是解释器）⇒ 放行。若把「出现 `sh` 以外的一切」写宽，会把正常命令一起拒掉。"
+    },
+    {
+      "name": "对照 nice 后跟普通命令同样放行",
+      "command": "nice echo hi",
+      "ownedTargets": [
+        "7",
+        "11529215046816944610"
+      ],
+      "expect": "allow",
+      "why": "同上，且覆盖「包装词后无选项」的形态。"
     }
   ]
 }

@@ -104,8 +104,23 @@ internal object ShellOps {
    * 与引擎侧 `screen-scope.ts` 的同构判据同批演进（fixture 权威源用例另行补充）。
    */
   private val INTERPRETER_NAMES = setOf("sh", "bash", "mksh", "ash", "dash", "zsh")
-  private val INTERPRETER_WRAPPERS =
-    setOf("env", "timeout", "nohup", "xargs", "busybox", "toybox", "su", "command", "exec")
+
+  /**
+   * 自己**不执行脚本**、只把 argv 原样转给下一个词的包装器（`nice sh` 真正跑的是 `sh`）。
+   *
+   * 与引擎侧 `INTERPRETER_WRAPPERS` 逐条同源。缺一个 = 该包装器后面的裸解释器识别不出来，循环停在
+   * 包装词上返回 false（当成"不是解释器"）⇒ 载荷不可见的段放行。小米 14 Pro（SDK 37）实测
+   * `echo '…' | nice sh` / `| setsid -w sh` / `| ionice sh` / `| taskset 1 sh` 都会真的执行
+   * stdin 里的脚本，而 `| sh` 本来就判 deny-unparsed ⇒ 多套一层包装即可绕过 #509 的裸解释器判据。
+   * 白名单固有边界：没登记的包装词（如带路径参数的 `flock <path> sh`）仍会漏。
+   */
+  private val INTERPRETER_WRAPPERS = setOf(
+    "env", "timeout", "nohup", "xargs", "busybox", "toybox", "su", "command", "exec",
+    // 调度 / 资源类（真机实测可喂 sh）
+    "nice", "ionice", "taskset", "setsid", "chrt", "numactl", "unshare", "runcon",
+    // 缓冲 / 计时 / 锁类
+    "stdbuf", "time", "flock", "watch",
+  )
 
   /**
    * 该段的命令词是不是「载荷对判定器不可见」的解释器调用（#509 的放宽版，与引擎侧

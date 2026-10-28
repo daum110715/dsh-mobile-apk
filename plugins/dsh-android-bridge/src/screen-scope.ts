@@ -286,7 +286,24 @@ function firstPayloadWord(text: string): string {
 }
 
 const INTERPRETER_NAMES = new Set(['sh', 'bash', 'mksh', 'ash', 'dash', 'zsh'])
-const INTERPRETER_WRAPPERS = new Set(['env', 'timeout', 'nohup', 'xargs', 'busybox', 'toybox', 'su', 'command', 'exec'])
+/**
+ * 自己**不执行脚本**、只把 argv 原样转给下一个词的包装器（`nice sh` 真正跑的是 `sh`）。
+ *
+ * 缺一个 = 该包装器后面的裸解释器识别不出来：循环停在包装词上、`return false`（当成"不是解释器"）
+ * ⇒ 载荷不可见的段判 allow。小米 14 Pro（SDK 37）实测 `echo '…' | nice sh` / `| setsid -w sh` /
+ * `| ionice sh` / `| taskset 1 sh` **都会真的执行 stdin 里的脚本**，而 `| sh` 本来就判 deny-unparsed
+ * ⇒ 多套一层包装即可绕过 #509 的裸解释器判据（2026-10-28 自查实测）。
+ *
+ * 这是**白名单**，固有边界：下一个没登记的包装词（`flock <path> sh` 这类还带路径参数）仍会漏。
+ * 本轮只登记真机实测可执行 + Linux 常规形态；`stdbuf` 在小米 14 Pro 上不存在，登记是为了 Linux 侧不漏面。
+ */
+const INTERPRETER_WRAPPERS = new Set([
+  'env', 'timeout', 'nohup', 'xargs', 'busybox', 'toybox', 'su', 'command', 'exec',
+  // 调度 / 资源类（真机实测可喂 sh）
+  'nice', 'ionice', 'taskset', 'setsid', 'chrt', 'numactl', 'unshare', 'runcon',
+  // 缓冲 / 计时 / 锁类
+  'stdbuf', 'time', 'flock', 'watch',
+])
 
 /**
  * 该段的命令词是不是「载荷对判定器不可见」的解释器调用（#509 的放宽版）。
