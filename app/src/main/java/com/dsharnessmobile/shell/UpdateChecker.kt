@@ -65,6 +65,29 @@ object UpdateChecker {
   fun updatesDir(context: Context): File =
     File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS), "dshdata/updates")
 
+  /**
+   * 清扫更新目录（issue #676）：只保留本次要装的那一个包，删掉更早的 APK 与中断留下的 `.tmp`。
+   *
+   * 为什么需要：`updatesDir` 落在公共外部存储（`Documents/dshdata/updates`），全仓只有"写"没有"删"。
+   * 每换一版就多一个 169MB 的包；下载被进程中断时 `.tmp` 还会留在原地（`finally` 只在正常退出时跑）。
+   *
+   * 判据刻意保守：只删 `*.apk`（且不是 [keepName]）与 `*.tmp`，只删普通文件——不碰目录、不跟符号链接。
+   * 返回实际删除个数（0 = 没有可删的，也算正常结果）。
+   */
+  internal fun pruneUpdatesDir(dir: File, keepName: String?): Int {
+    val entries = dir.listFiles() ?: return 0
+    var removed = 0
+    for (file in entries) {
+      if (!file.isFile) continue
+      val name = file.name
+      val staleApk = name.endsWith(".apk", ignoreCase = true) && name != keepName
+      val staleTmp = name.endsWith(".tmp", ignoreCase = true)
+      if (!staleApk && !staleTmp) continue
+      if (runCatching { file.delete() }.getOrDefault(false)) removed++
+    }
+    return removed
+  }
+
   sealed class CheckResult {
     /** 已是最新（latest.tag == 当前版本）。 */
     data object UpToDate : CheckResult()

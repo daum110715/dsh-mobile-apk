@@ -220,6 +220,11 @@ internal object SafeMode {
     }
     if (!id.matches(Regex("[A-Za-z0-9._-]{1,80}"))) return Result(false, "安全模式档案 id 不合法，已拒绝进入。")
     val stateFile = File(selectedAutoDir, STATE_FILE)
+    // 进入前的状态字节（issue #683：失败必须回滚，不能留下 active=true 的半成品）。
+    val stateBefore: ByteArray? = if (stateFile.isFile) runCatching { stateFile.readBytes() }.getOrNull() else null
+    // live patch 的进入前字节：失败时用来区分「一个字节都没动」（回滚状态安全）与「已被部分改写」
+    // （必须留着状态才能 off 还原）。
+    val patchBytesBefore: ByteArray? = if (patch.isFile) runCatching { patch.readBytes() }.getOrNull() else null
     if (Files.exists(stateFile.toPath(), LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(stateFile.toPath(), LinkOption.NOFOLLOW_LINKS)) {
       return Result(false, "安全模式状态不是普通文件，已拒绝读取或覆盖。")
     }
@@ -230,7 +235,13 @@ internal object SafeMode {
           return Result(false, "安全模式状态绑定到 profile ${existing.optString("profile")}，拒绝按 web 状态处理。")
         }
         if (existing.optBoolean("active", false)) {
-          return Result(true, "安全模式已开启；保留现有恢复档，未重复改写。", existing.optString("snapshotId", ""))
+          // issue #683：`active` 只能证明「状态落过盘」，不能证明 live 文件已经改成安全形态——
+          // 进入流程是「先落状态、后改 patch」，中间任一步失败（ENOSPC / EACCES / 进程被杀）都会
+          // 留下半成品。此时若按 active 早退，用户会被告知「已开启」并去重启引擎，而该摘的第三方
+          // 条目永远没被摘掉，页面继续报同样的插件失败。所以再加一道形态判据：形态已对才早退。
+          if (livePatchLooksSafe(patch, hardEntries)) {
+            return Result(true, "安全模式已开启；保留现有恢复档，未重复改写。", existing.optString("snapshotId", ""))
+          }
         }
       } catch (t: Throwable) {
         return Result(false, "安全模式状态文件损坏（" + t.javaClass.simpleName + "），已拒绝覆盖；请先恢复状态文件。")
@@ -314,8 +325,42 @@ internal object SafeMode {
         id,
       )
     } catch (t: Throwable) {
+      // issue #683：进入失败就把状态文件回滚到进入前——否则下一次进入会命中 active 早退，
+      // 被摘除的第三方条目永远不会补写（用户看到「已生效」却仍报同样的插件失败）。
+      // 回滚本身失败也不能掩盖失败回执：真因优先回给用户。
+      runCatching {
+        // 但有一条例外：如果 live patch 已经被**部分改写**（写了一半就失败/被杀），状态必须留着——
+        // 那时 off 是唯一能把 live 文件还原回去的路，删状态等于把用户锁在半坏的配置上。
+        // 生产路径的 atomicWrite 是「先写 .tmp 再 rename」，失败时 live 不变；这里做内容比对，
+        // 是为了让注入式（非原子）写入的中断现场也能被正确区分。
+        val patchUntouched = if (patchBytesBefore == null) {
+          !patch.isFile
+        } else {
+          patch.isFile && runCatching { patch.readBytes().contentEquals(patchBytesBefore) }.getOrDefault(false)
+        }
+        if (patchUntouched) {
+          if (stateBefore == null) stateFile.delete() else atomicWrite(stateFile, stateBefore)
+        }
+      }
       // 失败回执不得吞掉真因（用户要拿它去修）。
       Result(false, "进入安全模式失败：" + t.javaClass.simpleName + ": " + (t.message ?: "无消息"))
+    }
+  }
+
+  /**
+   * live patch 是否**已经**处于安全模式形态（issue #683）。
+   *
+   * 判据：把当前 patch 再过滤一次，结果与原文逐字相同 ⇒ 第三方 insert 条目已不在里面。
+   * 这是可判读的形态判据，不依赖状态文件——「状态已 active、live 文件没改」正是半成品的特征，
+   * 也是这个 issue 的现场。
+   */
+  internal fun livePatchLooksSafe(patch: File, hardEntries: Set<PluginMounts.HardEntry>?): Boolean {
+    if (!patch.isFile) return false
+    return try {
+      val text = patch.readText()
+      filterThirdPartyInserts(text, hardEntries.orEmpty()) == text
+    } catch (t: Throwable) {
+      false
     }
   }
 
