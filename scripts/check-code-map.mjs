@@ -100,7 +100,12 @@ const PATH_GROUP = '((?:[A-Za-z0-9_.@-]+/)*[A-Za-z0-9_.@-]+[.](?:' + EXT + '))'
 const LINE_GROUP = ':([0-9]+)'
 const RANGE_GROUP = '(?:-[0-9]+)?'
 const EXPECT_GROUP = '(?:#expect=([^`\\n]*))?'
-const ANCHOR_RE = new RegExp('(?:^|[^A-Za-z0-9_./:@-])' + PATH_GROUP + LINE_GROUP + RANGE_GROUP + EXPECT_GROUP, 'g')
+// 符号锚点：`path#Symbol` 或 `path#Symbol#<行号提示>`。行号只作缓存，不当判据。
+// 排除 `#L1499-L1634` 这类既有的行号范围引用（L 后紧跟数字），以及 CSS 颜色字面量。
+const SYMBOL_GROUP = '#((?!L[0-9])[A-Za-z_][A-Za-z0-9_$]*(?:[.][A-Za-z_$][A-Za-z0-9_$]*)*)(?![A-Za-z0-9_$.-])'
+const SYMBOL_HINT_GROUP = '(?:#([0-9]+))?'
+const ANCHOR_RE = new RegExp('(?:^|[^A-Za-z0-9_./:@-])' + PATH_GROUP + LINE_GROUP + RANGE_GROUP + EXPECT_GROUP
+  + '|(?:^|[^A-Za-z0-9_./:@-])' + PATH_GROUP + SYMBOL_GROUP + SYMBOL_HINT_GROUP, 'g')
 const EVIDENCE_RE = new RegExp(PATH_GROUP + LINE_GROUP + RANGE_GROUP + EXPECT_GROUP)
 
 function parseExpectation(raw) {
@@ -113,9 +118,84 @@ function parseExpectation(raw) {
   }
 }
 
+/**
+ * 从源码里定位符号的定义行与**归一化后的符号体**。
+ *
+ * 为什么改成符号锚定（2026-10-28 用户裁定，方案 B）：旧锚点是「行号 + 期望内容字面量」，
+ * 任何一次合并只要在这些文件里插了几行，整批锚点立刻集体漂移——实测 #718 / #771 / #788
+ * 三次合并各把 main 判红一次，每次都要人工重铺基线。符号锚点把判据换成
+ * 「符号在不在、符号体变没变」，行号只当缓存：符号存在而行号变了 = 自动重算，**不算 drift**。
+ *
+ * 支持：顶层 fun/class/object/interface/val/const/function/def，嵌套成员用点号（Foo.bar）。
+ * 归一化：逐行 trim、丢空行、连续空白压成一个空格——使纯排版改动不改变符号体。
+ * 不做完整 AST 解析：本仓三种语言 x 两种布局，成本远大于收益；「定义行 + 配对花括号」
+ * 足够稳，且误报方向是判红（保守）。
+ */
+function symbolAt(lines, symbol) {
+  const parts = symbol.split('.')
+  const findIn = (fromLine, toLine, name) => {
+    const re = new RegExp(
+      '(?:^|[^A-Za-z0-9_$])'
+      + '(?:(?:private|public|internal|protected|export|default|override|suspend|inline|operator|abstract|open|final|static|async|const|data|sealed|enum)[ ]+)*'
+      + '((?:fun|class|object|interface|val|var|let|function|type|def)[ ]+)?'
+      + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      + '(?![A-Za-z0-9_$])',
+    )
+    for (let i = fromLine; i < toLine; i += 1) if (re.test(lines[i])) return i
+    return -1
+  }
+  const start = findIn(0, lines.length, parts[0])
+  if (start < 0) return { found: false }
+  if (parts.length === 1) return { found: true, line: start + 1, body: normalizedSymbolBody(lines, start) }
+  let cur = start
+  let curEnd = matchingBrace(lines, start)
+  if (curEnd < 0) return { found: false }
+  for (let k = 1; k < parts.length; k += 1) {
+    const idx = findIn(cur + 1, curEnd, parts[k])
+    if (idx < 0) return { found: false }
+    if (k === parts.length - 1) return { found: true, line: idx + 1, body: normalizedSymbolBody(lines, idx) }
+    const close = matchingBrace(lines, idx)
+    if (close < 0) return { found: false }
+    cur = idx
+    curEnd = close
+  }
+  return { found: false }
+}
+
+/** 从 startLine 起找配对花括号的结束行下标（0-based）；无花括号时退化为「到空行为止」。 */
+function matchingBrace(lines, startLine) {
+  let depth = 0
+  let opened = false
+  for (let i = startLine; i < lines.length; i += 1) {
+    for (const ch of lines[i]) {
+      if (ch === '{') { depth += 1; opened = true } else if (ch === '}') { depth -= 1; if (opened && depth === 0) return i }
+    }
+    if (!opened && i > startLine && lines[i].trim() === '') return i - 1
+  }
+  return opened ? -1 : Math.min(startLine, lines.length - 1)
+}
+
+/** 符号体归一化：逐行 trim、丢空行、连续空白压成一个空格。 */
+function normalizedSymbolBody(lines, startLine) {
+  const end = matchingBrace(lines, startLine)
+  const stop = end < 0 ? lines.length - 1 : end
+  const out = []
+  for (let i = startLine; i <= stop; i += 1) {
+    const t = lines[i].replace(/\s+/g, ' ').trim()
+    if (t !== '') out.push(t)
+  }
+  return out.join('\n')
+}
+
+/** 已有符号基线（符号 -> 归一化符号体）。refresh 时在其上逐条更新，不清掉未出现的条目。 */
+function anchorBaselineSymbols() {
+  return (ANCHOR_BASELINE && ANCHOR_BASELINE.symbols) || {}
+}
+
 function countLegacyReferences(anchors) {
   const counts = {}
   for (const anchor of anchors) {
+    if (anchor.symbolForm) continue
     if (anchor.expect !== undefined || anchor.expectError !== undefined) continue
     const key = anchor.path + ':' + anchor.line
     counts[key] = (counts[key] ?? 0) + 1
@@ -206,7 +286,11 @@ export function parseDoc(text) {
   const anchors = []
   // 负向后顾：路径前不能是路径字符或 `:`（后者用来跳过 `coord:docs/...:12` 这类跨仓引用）
   for (const m of text.matchAll(ANCHOR_RE)) {
-    anchors.push({ path: norm(m[1]), line: Number(m[2]), ...parseExpectation(m[3]) })
+    if (m[1] !== undefined) {
+      anchors.push({ path: norm(m[1]), line: Number(m[2]), ...parseExpectation(m[3]) })
+    } else {
+      anchors.push({ path: norm(m[4]), line: m[6] === undefined ? null : Number(m[6]), symbol: m[5], symbolForm: true })
+    }
   }
   const mermaid = []
   const fences = text.split('```')
@@ -250,6 +334,32 @@ export function checkDoc(text, universe, fsView, anchorBaseline = ANCHOR_BASELIN
   for (const id of sectionSet) if (!tableSet.has(id)) push('missing-row', '章节 ' + id + ' 未登记进主表')
   const dup = doc.tableIds.filter((id, i) => doc.tableIds.indexOf(id) !== i)
   for (const id of new Set(dup)) push('dup-row', '主表重复登记：' + id)
+
+  // 符号锚点的判别：符号在不在、符号体变没变。行号完全不参与判定。
+  const checkSymbolReference = (path, symbol, hintLine, label) => {
+    const src = fsView.sourceLines ? fsView.sourceLines(path) : null
+    if (src === null) {
+      push('bad-anchor', 'Referenced file does not exist: ' + path + '#' + symbol + ' (' + label + ')')
+      return
+    }
+    const hit = symbolAt(src, symbol)
+    if (!hit.found) {
+      push('symbol-missing', 'Symbol not found in ' + path + ': #' + symbol
+        + (hintLine === null ? '' : '（提示行 ' + hintLine + '）') + ' (' + label + ')')
+      return
+    }
+    const expectedBody = (anchorBaseline.symbols ?? {})[path + '#' + symbol]
+    if (expectedBody === undefined) {
+      push('symbol-unbaselined', 'Symbol anchor has no baseline body (run --refresh-anchor-baseline): '
+        + path + '#' + symbol)
+      return
+    }
+    if (expectedBody !== hit.body) {
+      push('symbol-body-drift', 'Symbol body changed at ' + path + '#' + symbol
+        + '（定义行 ' + hit.line + '）; rerun --refresh-anchor-baseline after review')
+    }
+    // 行号变了不判红：这正是本方案要消灭的假红。
+  }
 
   const checkedReferences = new Set()
   const checkReference = (path, line, expectation, expectationError, label) => {
@@ -320,6 +430,11 @@ export function checkDoc(text, universe, fsView, anchorBaseline = ANCHOR_BASELIN
   // 4. 锚点
   const seen = new Set()
   for (const a of doc.anchors) {
+    if (a.symbolForm) {
+      seen.add(a.path + '#' + a.symbol)
+      checkSymbolReference(a.path, a.symbol, a.line, 'anchor')
+      continue
+    }
     const key = a.path + ':' + a.line
     seen.add(key)
     checkReference(a.path, a.line, a.expect, a.expectError, 'anchor')
@@ -415,8 +530,21 @@ function makeFsView(repo, parent) {
     }
     rec(repo)
   }
+  const sourceLinesOf = (rel) => {
+    const abs = locate(rel)
+    if (abs) return linesOf(abs)
+    if (!rel.includes('/')) {
+      if (index === null) buildIndex()
+      const cands = index.get(rel) ?? []
+      if (cands.length === 0) return null
+      weak.add(rel)
+      return linesOf(cands[0])
+    }
+    return null
+  }
   return {
     weak,
+    sourceLines: sourceLinesOf,
     exists: (rel) => locate(rel) !== null,
     lineContents: (rel, line) => {
       const abs = locate(rel)
@@ -459,6 +587,7 @@ function selfTest() {
     lineCount: (p) => (Object.prototype.hasOwnProperty.call(map, p) ? map[p].length : null),
     lineContents: (p, line) => (Object.prototype.hasOwnProperty.call(map, p) && map[p][line - 1] !== undefined
       ? [{ file: p, text: map[p][line - 1].trim() }] : []),
+    sourceLines: (p) => (Object.prototype.hasOwnProperty.call(map, p) ? map[p] : null),
   })
   const fsFull = mk({ 'app/a.kt': ['header', 'fun ready()', 'fun other()', 'fun helper()'], 'app/b.kt': ['field', 'value'] })
   const baseline = {
@@ -500,10 +629,38 @@ function selfTest() {
     ['A coupling without evidence is rejected', clean.replace('| 自环 | app/a.kt:4', '| 自环 |'), fsFull, 1, baseline],
     ['Emoji is rejected', clean.replace('### K01 甲', '### K01 甲 ' + String.fromCodePoint(0x26A0)), fsFull, 1, baseline],
   ]
+  // ── 符号锚点（方案 B，2026-10-28 用户裁定）────────────────────────────────
+  // 只有两条会红：① 符号消失；② 符号体（归一化后）变了。
+  // 行号变化、上方插代码、加空行、纯缩进变化 —— 一律绿。这是本方案存在的理由。
+  const symSrc = ['header', 'fun alpha() {', '  return 1', '}', '', 'fun beta() {', '  return 2', '}']
+  const curSym = (lines, s2) => { const h = symbolAt(lines, s2); return h.found ? h.body : null }
+  const sBase = {
+    sourceLines: { 'app/a.kt:4': ['fun helper()'] },
+    legacyReferenceCounts: { 'app/a.kt:4': 1 },
+    symbols: { 'app/c.kt#alpha': curSym(symSrc, 'alpha') },
+  }
+  const symDoc = '<!-- TABLE-ROW\n| K01 | 甲 | 一句话 | 入口 | 稳态控制 | - | - | app/a.kt | 低 |\n-->\n'
+    + '### K01 甲\n\n- **一句话**：x\n- 关键坐标：`app/c.kt#alpha`\n\n'
+    + '<!-- COUPLING\nK01 -> K01 | 自环 | app/a.kt:4\n-->\n'
+    + head + 'app/a.kt\napp/b.kt\napp/c.kt\n-->\n'
+  const symFs = (src) => mk({
+    'app/a.kt': ['header', 'fun ready()', 'fun other()', 'fun helper()'],
+    'app/b.kt': ['field', 'value'],
+    'app/c.kt': src,
+  })
+  cases.push(
+    ['SYM 行号偏移不判红（上方插 3 行）', symDoc, symFs(['h1', 'h2', 'h3', ...symSrc]), 0, sBase, ['app/a.kt', 'app/b.kt', 'app/c.kt']],
+    ['SYM 加空行不判红', symDoc, symFs(['header', '', 'fun alpha() {', '', '  return 1', '', '}', '', 'fun beta() {', '  return 2', '}']), 0, sBase, ['app/a.kt', 'app/b.kt', 'app/c.kt']],
+    ['SYM 纯缩进变化不判红', symDoc, symFs(['header', 'fun alpha() {', '        return 1', '}', '', 'fun beta() {', '  return 2', '}']), 0, sBase, ['app/a.kt', 'app/b.kt', 'app/c.kt']],
+    ['SYM 符号改名判红', symDoc, symFs(['header', 'fun renamed() {', '  return 1', '}', '', 'fun beta() {', '  return 2', '}']), 1, sBase],
+    ['SYM 函数体改了判红', symDoc, symFs(['header', 'fun alpha() {', '  return 99', '}', '', 'fun beta() {', '  return 2', '}']), 1, sBase],
+    ['SYM 未登记基线判红', symDoc, symFs(symSrc), 1, { sourceLines: { 'app/a.kt:4': ['fun helper()'] }, legacyReferenceCounts: { 'app/a.kt:4': 1 }, symbols: {} }],
+  )
+
   let pass = 0
   const lines = []
-  for (const [name, text, fsView, want, expected] of cases) {
-    const { issues } = checkDoc(text, universe, fsView, expected)
+  for (const [name, text, fsView, want, expected, uni] of cases) {
+    const { issues } = checkDoc(text, uni ?? universe, fsView, expected)
     const ok = issues.length === want
     if (ok) pass += 1
     lines.push((ok ? '  ok   ' : '  FAIL ') + name + ': matched ' + issues.length + ' / expected ' + want
@@ -542,7 +699,7 @@ if (isMain) {
       }
     }
     const references = new Set(parsed.anchors
-      .filter((a) => a.expect === undefined && a.expectError === undefined)
+      .filter((a) => !a.symbolForm && a.expect === undefined && a.expectError === undefined)
       .map((a) => a.path + ':' + a.line))
     for (const c of parsed.couplings) {
       const ev = (c.evidence || '').match(EVIDENCE_RE)
@@ -565,12 +722,30 @@ if (isMain) {
       }
       sourceLines[key] = [...new Set(contents.map((candidate) => candidate.text))].sort()
     }
+    // 符号锚点：缓存「符号体归一化结果」。行号**不写入基线**——它只是缓存。
+    const symbols = { ...(anchorBaselineSymbols()) }
+    const symbolKeys = parsed.anchors.filter((a) => a.symbolForm)
+    for (const a of symbolKeys) {
+      const src = fsView.sourceLines(a.path)
+      if (src === null) {
+        console.error('Cannot refresh symbol anchor (file missing): ' + a.path + '#' + a.symbol)
+        process.exit(1)
+      }
+      const hit = symbolAt(src, a.symbol)
+      if (!hit.found) {
+        console.error('Cannot refresh symbol anchor (symbol missing): ' + a.path + '#' + a.symbol)
+        process.exit(1)
+      }
+      symbols[a.path + '#' + a.symbol] = hit.body
+    }
     writeFileSync(ANCHOR_BASELINE_ABS, JSON.stringify({
-      formatVersion: 1,
+      formatVersion: 2,
       legacyReferenceCounts: countLegacyReferences(parsed.anchors),
       sourceLines,
+      symbols,
     }, null, 2) + '\n')
-    console.log('CHECK-CODE-MAP baseline refreshed: ' + references.size + ' legacy references')
+    console.log('CHECK-CODE-MAP baseline refreshed: ' + references.size + ' legacy references, '
+      + symbolKeys.length + ' symbol anchors')
     process.exit(0)
   }
   const { issues, stats } = checkDoc(text, universe, fsView)
