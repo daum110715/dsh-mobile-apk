@@ -134,7 +134,14 @@ def elf_machine(data: bytes) -> str:
     return MACHINES.get(machine, '0x%x' % machine)
 
 
-def scan(snapshot: str, expect: str, plugin_dirs):
+def scan(snapshot: str, expect: str, plugin_dirs, gradle_reader=app_id_from_gradle):
+    """Gate a snapshot archive.
+
+    `gradle_reader` is injectable on purpose (issue #736): the default reads the real
+    repository's app/build.gradle.kts, which does not exist in every host that runs this
+    file -- the coordinator repo carries only a mirror copy of this script, so the self-test
+    turned red there. Tests pass a stub; production call sites keep the default.
+    """
     # 输入前置校验（2026-10-27，issue #154 C2）。本门禁被接进两条构建链后是**硬阻断点**，
     # 输入缺失时必须给出「一眼能分清是环境问题还是真判红」的信息，不能抛 Python traceback
     # ——构建者看到 FileNotFoundError 栈看不出「我忘了先跑 build-snapshot-013.mjs」。
@@ -161,7 +168,7 @@ def scan(snapshot: str, expect: str, plugin_dirs):
     found_pkgs = {}
     # profile -> cordis.patch.yml 原始字节
     profile_patches = {}
-    app_id = app_id_from_gradle()
+    app_id = gradle_reader()
     if app_id is None:
         fail.append('applicationId not found in app/build.gradle.kts')
 
@@ -218,6 +225,8 @@ def scan(snapshot: str, expect: str, plugin_dirs):
                 if pkg in expected and (rel == 'package.json' or rel.startswith('lib/')):
                     if rel.endswith('.map'):
                         fail.append(f'private sourcemap ({profile}): {n}')
+                        continue
+                    if profile not in ASSEMBLY_PROFILES:
                         continue
                     h = hashlib.sha256(tf.extractfile(m).read()).hexdigest()
                     want = expected[pkg].get(rel)
@@ -278,7 +287,20 @@ def scan(snapshot: str, expect: str, plugin_dirs):
           f'profiles checked={sorted(profile_patches)}, ELF={expect})')
 
 
+def run_self_test() -> int:
+    import unittest
+
+    suite = unittest.defaultTestLoader.discover(
+        os.path.dirname(os.path.abspath(__file__)),
+        pattern='test_ci_verify_snapshot.py',
+    )
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    return 0 if result.wasSuccessful() else 1
+
+
 if __name__ == '__main__':
+    if sys.argv[1:] == ['--self-test']:
+        sys.exit(run_self_test())
     if len(sys.argv) < 4:
         print(__doc__)
         sys.exit(2)

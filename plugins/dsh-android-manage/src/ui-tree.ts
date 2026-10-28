@@ -299,7 +299,16 @@ export function resolveRef(
   }
   if (kind === 'id') {
     const hit = byId.get(value)
-    if (!hit) return { ok: false, error: `id "${value}" 不在最近一次取树结果中（页面可能已变化）——请重新取树（android_ui_dump 或 android_ui_tree）` }
+    if (!hit) {
+      // 「页面可能已变化」对了一半：更常见的成因是 **id 形态用错**（缓存键是 n0/n1 这种
+      // 剪枝后编号，不是壳侧原始 id "0.1"）。原文案只引导「重新取树」，而重新取树后
+      // id:0.1 仍然找不到（缓存键永远是 nN）⇒ 死循环引导。把两种成因与正确形态一起说清。
+      const sample = nodes.length > 0 ? nodes[0].id : 'n0'
+      return {
+        ok: false,
+        error: `id "${value}" 不在最近一次取树结果中——两种可能：① id 形态用错（本次取树的 id 形如 ${sample}，请直接用它，而不是壳侧原始 id）；② 页面已变化（请重新取树 android_ui_dump / android_ui_tree）`,
+      }
+    }
     return { ok: true, node: hit.n }
   }
   // 消歧后缀：#N（第 N 个匹配）/ @nX（限定在 nX 子树内）
@@ -316,6 +325,18 @@ export function resolveRef(
     value = value.slice(0, scopeMatch.index)
   }
   const t = value.trim()
+  // 空值必须在进匹配之前拒掉。`text:` / `desc:` / `rid:` 是**线性字段比对**，空串会命中
+  // 「该字段恰好为空」的节点——目录里只要只剩一个空文本节点（很常见：说明性 TextView、
+  // 占位 View），`text:` 就会静默命中它并返回 ok。模型漏写值的手误于是变成一次**看似成功
+  // 的点击**，落到一个完全无关的节点上。`id:` 因为 byId 没有 "" 键天然被拒，四条前缀行为
+  // 不一致，这里统一 fail-closed。
+  if (t === '') {
+    return {
+      ok: false,
+      error: `ref "${kind}:" 的值不能为空——请写成 ${kind}:<具体值>`
+        + (kind === 'text' || kind === 'desc' ? `（例如 ${kind}:确定）` : '（例如 rid:com.app:id/btn）'),
+    }
+  }
   let pool = nodes
   if (scopeId !== '') {
     const scope = byId.get(scopeId)
