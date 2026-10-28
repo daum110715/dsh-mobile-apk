@@ -473,31 +473,6 @@ object PluginMounts {
    * 只允许对 insert 子条目做隔离；顶层 `- id:` 是对已有 Hard entry 的配置覆盖，不是插件来源。
    * 禁用 override 使用和 profile editor 相同的 Cordis PatchOptions 语义，原始 insert 内容不作修改。
    */
-  /**
-   * 这个 `name:` 行是不是某条目的**键层**（与它所属条目的首键同列）。
-   *
-   * `config:` 子树里的键缩进必然更深 ⇒ 被判为"不是条目自己的 name"。
-   * 条目首键若本身就是 name（`- name: x`），该行自己就是首行，同列成立。
-   */
-  private fun isEntryKeyLine(lines: List<String>, index: Int): Boolean {
-    // 命中行**自己就是条目首行**（`- name: x`）⇒ 它就是本条目的键，直接成立。
-    // 首行的 `-` 在键列左边 2 格，用"与键同列"的判据会把它自己判掉。
-    if (ITEM_LINE.containsMatchIn(lines[index])) return true
-    val indent = lines[index].indexOfFirst { !it.isWhitespace() }
-    if (indent < 0) return false
-    for (probe in index downTo 0) {
-      val line = lines[probe]
-      if (probe != index && line.isBlank()) continue
-      val first = line.indexOfFirst { !it.isWhitespace() }
-      // 列 0 的非条目行：说明还没找到条目首行就已经出了条目范围 ⇒ 不在任何条目里。
-      if (probe != index && first == 0 && !ITEM_LINE.containsMatchIn(line)) return false
-      val match = ITEM_LINE.find(line) ?: continue
-      val keyColumn = match.groupValues[1].length + line.substring(match.groupValues[1].length).indexOfFirst { it.isLetter() }
-      return indent == keyColumn
-    }
-    return false
-  }
-
   fun removeEntry(patchText: String, name: String?, id: String?): String? {
     val wanted = listOfNotNull(name?.trim()?.trim('\'', '"'), id?.trim()).filter { it.isNotEmpty() }
     if (wanted.isEmpty()) return null
@@ -505,14 +480,9 @@ object PluginMounts {
     val hits = ArrayList<Int>()
     for (i in lines.indices) {
       val trimmed = lines[i].trim()
-      // `name:` 既可能是条目的一个键，也可能是条目的**首键**（`- name: x`，没有 `- id:`）——
-      // 两种都要认出，否则首键形态永远无法按 name 移除。
-      if (trimmed.startsWith("name:") || trimmed.startsWith("- name:")) {
-        val v = trimmed.removePrefix("- ").removePrefix("name:").trim().trim('\'', '"')
-        // 只在**条目键层**命中：`config:` 子树里也可能出现 `name:`（插件自己的配置字段），
-        // 全深度匹配会让"要移除 X"误删掉一个 config 里恰好有个 X 的**产品条目**
-        // （2026-10-28 自查；与 SafeMode.itemName 的误摘同一类判据错，两侧口径必须一致）。
-        if (wanted.contains(v) && isEntryKeyLine(lines, i)) hits.add(i)
+      if (trimmed.startsWith("name:")) {
+        val v = trimmed.removePrefix("name:").trim().trim('\'', '"')
+        if (wanted.contains(v)) hits.add(i)
       } else if (trimmed.startsWith("- id:")) {
         val v = trimmed.removePrefix("- id:").trim().trim('\'', '"')
         if (name == null && wanted.contains(v)) hits.add(i)
