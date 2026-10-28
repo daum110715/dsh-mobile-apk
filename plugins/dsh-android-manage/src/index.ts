@@ -26,6 +26,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 import { join } from 'node:path'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { coordBasisNote, basisFields, COMPAT_NOTE } from './coord-basis.js'
 import { parseUiTreeXml, pruneNodes, resolveRef, findActionableAncestor, checkUiTreeParse, type UiNode, actionableAncestorV2, scopePoolV2, treeFingerprint } from './ui-tree.js'
 import { cacheFromV2, decodeV2, isV2Payload, type V2Decoded } from './protocol-v2.js'
 import { detailRecord, pageRows, writeDetailStore } from './detail-store.js'
@@ -229,7 +230,6 @@ function tools(ctx: Context, priv: PrivilegeFace) {
   const SCOPE_PROP = { type: 'string' } as const
 
   /** 壳侧版本兼容标记：老壳侧不回显基准时文案里的这句即为唯一线索（wire 上有测试钉住）。 */
-  const COMPAT_NOTE = '（基准未回显：壳侧版本较旧）'
 
   /**
    * issue #258：**回显归一化基准**。
@@ -242,17 +242,6 @@ function tools(ctx: Context, priv: PrivilegeFace) {
    * 老壳侧（未修版本）不回显基准时，这里**如实标注**而不是假装知道：回显的全部意义就是自证，
    * 猜一个基准等于又制造一个看不见的错。
    */
-  const coordBasisNote = (data: unknown): string => {
-    const d = (data ?? {}) as { basis?: unknown; basisWidth?: unknown; basisHeight?: unknown }
-    if (typeof d.basis !== 'string' || d.basis === '') return COMPAT_NOTE
-    const w = typeof d.basisWidth === 'number' ? d.basisWidth : 0
-    const h = typeof d.basisHeight === 'number' ? d.basisHeight : 0
-    // window-current = 壳侧未拿到整屏尺寸（issue #258 的缺陷基准），必须显式告警。
-    const warn = d.basis === 'window-current'
-      ? '——本机未给出整屏尺寸，本次按**当前窗口**换算，多窗口下可能偏左'
-      : ''
-    return `（基准 ${d.basis} = ${w}x${h}${warn}）`
-  }
 
   /**
    * issue #258：把壳侧回显的基准字段并进工具返回值（schema 已声明 basis/basisWidth/basisHeight）。
@@ -260,15 +249,6 @@ function tools(ctx: Context, priv: PrivilegeFace) {
    * 只在壳侧真的回显时才带键——老壳侧不回显时**不编造** 0 值（那会让「没回显」看起来像
    * 「基准是 0x0」）；文案侧由 [coordBasisNote] 如实标注。
    */
-  const basisFields = (data: unknown): Record<string, unknown> => {
-    const d = (data ?? {}) as { basis?: unknown; basisWidth?: unknown; basisHeight?: unknown }
-    if (typeof d.basis !== 'string' || d.basis === '') return {}
-    return {
-      basis: d.basis,
-      ...(typeof d.basisWidth === 'number' ? { basisWidth: d.basisWidth } : {}),
-      ...(typeof d.basisHeight === 'number' ? { basisHeight: d.basisHeight } : {}),
-    }
-  }
 
   /** 归一化基准回显字段（issue #258；仅 android_ui_click 用，故就地声明不走共享常量）。 */
   const BASIS_PROP = { type: 'string' } as const
