@@ -237,8 +237,25 @@ export function splitCommandSegments(command: string): CommandSegments {
       if (ch === '"') {
         let j = i + 1
         while (j < text.length) {
-          if (text[j] === '\\') { j += 2; continue }
-          if (text[j] === '"') break
+          const inner = text[j]
+          if (inner === '\\') { j += 2; continue }
+          if (inner === '"') break
+          // 双引号内的 `$(...)` 与反引号**会执行**（单引号才不执行）：必须按原文递归扫，
+          // 否则 `echo "$(screencap -p /sdcard/real.png)"` 会把真实屏命令当纯文本放行（issue #674）。
+          if (inner === '`') {
+            const end = backtickEnd(text, j + 1)
+            if (end < 0) { unparsed = true; j = text.length; break }
+            scan(text.slice(j + 1, end), depth + 1)
+            j = end + 1
+            continue
+          }
+          if (inner === '$' && text[j + 1] === '(') {
+            const end = parenEnd(text, j + 2)
+            if (end < 0) { unparsed = true; j = text.length; break }
+            scan(text.slice(j + 2, end), depth + 1)
+            j = end + 1
+            continue
+          }
           j += 1
         }
         if (j >= text.length) { unparsed = true; buf += text.slice(i); i = text.length; continue }

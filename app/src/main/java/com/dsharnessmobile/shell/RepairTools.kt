@@ -201,10 +201,17 @@ internal class RepairTools(
         LogCollector.log("dsh-repair", "restart keeps unowned listener; managed engine will use a fallback port")
       }
       if (generation.get() != callGeneration) throw RepairFailure("cancelled", "重启已取消")
-      if (!engine.startEngine(force = true)) {
+      // issue #684：让行（快照刷新中）不是拒启，文案必须如实区分——用户点「重启引擎」
+      // 却得到「引擎启动被拒」会被误导去找一个不存在的故障。
+      val restartOutcome = engine.startEngine(force = true)
+      if (restartOutcome != EngineStartOutcome.STARTED) {
         throw RepairFailure(
           "restart-failed",
-          engine.lastStartRefusal ?: "EngineManager.startEngine(force=true) 返回 false",
+          if (restartOutcome == EngineStartOutcome.DEFERRED_REFRESHING) {
+            "快照刷新进行中，本次重启已让行（非失败）：刷新完成后由启动流拉起引擎"
+          } else {
+            engine.lastStartRefusal ?: "EngineManager.startEngine(force=true) 被拒"
+          },
         )
       }
       val deadline = System.currentTimeMillis() + RESTART_HTTP_WAIT_MS

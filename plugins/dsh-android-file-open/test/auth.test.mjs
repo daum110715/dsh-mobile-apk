@@ -8,7 +8,8 @@
 // 因此本文件同时验证「测试开关下 env 生效」这条路径。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync, realpathSync, rmSync, truncateSync } from 'node:fs'
+import { Writable } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -148,15 +149,26 @@ async function call(ctx, path, { method = 'POST', headers = {}, body, url = path
   assert.ok(route, 'route must be registered: ' + path)
   const req = fakeReq({ method, headers, body, url })
   const chunks = []
-  const res = {
-    code: 0, body: undefined, headers: {},
-    writeHead(code, h) { this.code = code; this.headers = h ?? {} },
-    write(chunk) { chunks.push(Buffer.from(chunk)); return true },
-    end(b) { this.body = b ?? (chunks.length === 0 ? '' : Buffer.concat(chunks)) },
+  // res 必须是真 Writable：`GET /content` 走 `stream.pipeline`（issue #687），
+  // 手写的普通对象没有 on/destroy，pipeline 会拒绝它 —— 那会把「实现已修」测成红。
+  const res = new Writable({
+    write(chunk, _enc, cb) { chunks.push(Buffer.from(chunk)); cb() },
+  })
+  res.code = 0
+  res.headers = {}
+  res.writeHead = function (code, h) { this.code = code; this.headers = h ?? {} }
+  const baseEnd = res.end.bind(res)
+  res.end = function (b) {
+    if (b !== undefined && b !== null && typeof b !== 'function') {
+      chunks.push(Buffer.from(b))
+      return baseEnd()
+    }
+    return baseEnd(b)
   }
   const done = route.handler(req, res)
   if (body !== undefined) req.emit()
   await done
+  res.body = chunks.length === 0 ? '' : Buffer.concat(chunks)
   return res
 }
 
@@ -405,6 +417,38 @@ test('external file stays opaque received until trusted browser creates its blan
   })
   assert.equal(complete.code, 200)
   assert.equal(JSON.parse(complete.body).state, 'draft-ready')
+})
+
+test('#687 外发源超过上限 → 413，且一个正文字节都不写', async () => {
+  const ws = freshWorkspace()
+  const huge = join(ws, 'huge.bin')
+  writeFileSync(huge, '')
+  // 稀疏文件：stat 报 256 MiB + 1 却不真占磁盘，也不进入流式阶段（超限在写状态行前拒绝）。
+  truncateSync(huge, 256 * 1024 * 1024 + 1)
+  const harness = makeCtx(undefined, {
+    workspaces: [],
+    sessionController: {
+      async create() { return { sessionId: 'session-abcdef12-3456' } },
+    },
+  })
+  await boot(harness.ctx)
+  const delivered = await call(harness.ctx, ROUTES.list, { method: 'POST', headers: legit(), body: { path: huge } })
+  assert.equal(delivered.code, 200)
+  const listed = await call(harness.ctx, ROUTES.list, { method: 'GET', headers: legit() })
+  const item = JSON.parse(listed.body).items[0]
+  const claim = await call(harness.ctx, ROUTES.claim, {
+    headers: legit(), body: { entryId: item.entryId, sessionId: 'session-abcdef12-3456' },
+  })
+  assert.equal(claim.code, 200)
+  const ticket = JSON.parse(claim.body).ticket
+  const content = await call(harness.ctx, ROUTES.content, {
+    method: 'GET', headers: legit(), url: ROUTES.content + '?ticket=' + encodeURIComponent(ticket),
+  })
+  assert.equal(content.code, 413)
+  const payload = JSON.parse(content.body)
+  assert.equal(payload.error, 'incoming source too large')
+  assert.equal(payload.limit, 256 * 1024 * 1024)
+  assert.equal(payload.bytes, 256 * 1024 * 1024 + 1)
 })
 
 test('claim rejects a non-durable browser session before deleting queue state', async () => {

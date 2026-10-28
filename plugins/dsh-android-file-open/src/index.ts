@@ -13,6 +13,7 @@
  * 确实把界面路由到新会话后执行。
  */
 import { mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, rmSync, existsSync, realpathSync, statSync, createReadStream } from 'node:fs'
+import { pipeline } from 'node:stream/promises'
 import { randomBytes } from 'node:crypto'
 import { join, resolve, sep, basename } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -31,6 +32,14 @@ import {
 
 export const name = 'dsh-android-file-open'
 export const inject = ['tools', 'webServer', 'sessions', 'workspaceRegistry'] as const
+
+/**
+ * 一次外发附件流的上限（issue #687）。
+ *
+ * 为什么要上限：这条 GET 直接把 `files/` 里的原文件灌给浏览器，没有上限时一个被拖错的
+ * 超大文件会占满 WebView 的下载通道与内存。256 MiB 之上直接 413，不进入流式阶段。
+ */
+const MAX_CONTENT_BYTES = 256 * 1024 * 1024
 
 /** 临时工作区（与壳侧 FileIncoming.tmpWorkspace 一致；环境注入 DSH_HOME 决定配置根） */
 function tmpWorkspace(): string {
@@ -748,18 +757,27 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
           res.end(JSON.stringify({ ok: false, error: String((e as Error).message) }))
           return
         }
+        // 超限必须在写状态行之前拒绝：先 200 再断流，浏览器侧只会看到截断的附件。
+        if (bytes > MAX_CONTENT_BYTES) {
+          draftLeases.delete(ticket)
+          res.writeHead(413, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, error: 'incoming source too large', bytes, limit: MAX_CONTENT_BYTES }))
+          return
+        }
         res.writeHead(200, {
           'content-type': 'application/octet-stream',
           'content-length': String(bytes),
           'content-disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(lease.name),
           'cache-control': 'no-store',
         })
-        await new Promise<void>((resolve) => {
-          const stream = createReadStream(path)
-          stream.on('data', (chunk: string | Buffer) => { res.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)) })
-          stream.on('error', () => { res.end(); resolve() })
-          stream.on('end', () => { res.end(); resolve() })
-        })
+        // pipeline 自带背压与错误传播：客户端中途断开时立即销毁源流。
+        // 旧写法手写 data 事件并丢弃 res.write() 的返回值 —— 整个文件会被读进 socket 缓冲，
+        // 断开后仍读到 EOF，fd 与 buffer 一起泄漏（issue #687）。
+        try {
+          await pipeline(createReadStream(path), res as unknown as NodeJS.WritableStream)
+        } catch {
+          // 断开/传输失败：pipeline 已销毁两端与源流句柄，这里不再追加任何正文。
+        }
       },
     }))
     // Finalize the process-local lease only after the browser has placed the File into the composer.

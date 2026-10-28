@@ -227,6 +227,34 @@
       "ownedTargets": ["7", "11529215046816944610"],
       "expect": "deny-unparsed",
       "why": "看不懂的命令不放行：解析失败必须是显式拒绝态，而不是「没命中命令词 ⇒ 放行」。"
+    },
+    {
+      "name": "S-4a 双引号内的 $() 命令替换必须被扫（issue #674）",
+      "command": "echo \"$(screencap -p /sdcard/real.png)\"",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "deny-uncertified-target",
+      "why": "双引号不阻止命令替换执行：旧实现把双引号内整段当纯文本放进 buf，内层 screencap 从未成为独立段 ⇒ fail-open（真实屏产物落盘）。递归扫描后内层 screencap 无 -d ⇒ 真实屏 ⇒ 拒。"
+    },
+    {
+      "name": "S-4b 双引号内的反引号命令替换必须被扫（issue #674）",
+      "command": "echo \"`screencap -p /sdcard/real.png`\"",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "deny-uncertified-target",
+      "why": "与 S-4a 同源：反引号在双引号内同样执行。裸反引号（S-2f）早已覆盖，双引号包一层就逃逸 ⇒ 递归扫描后同样命中命令词面。"
+    },
+    {
+      "name": "S-4c sh -c 双引号载荷里的命令替换（带尾随词）（issue #674）",
+      "command": "sh -c \"echo $(input tap 1 2)\" x",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "deny-uncertified-target",
+      "why": "两层嵌套同时成立：sh -c 载荷解一层、载荷内 $( ) 再解一层。任一层漏掉都会让无目标屏参数的 input 放行。"
+    },
+    {
+      "name": "对照 双引号内纯文本（无替换）不得误拦",
+      "command": "echo \"screencap -p /sdcard/x.png\"",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "allow",
+      "why": "双引号内没有 $() / 反引号 ⇒ 不产生独立执行体；引号内文本被 stripQuotedText 抹掉 ⇒ 不命中命令词面。递归扫描不得把纯文本当成命令（防过度拦截）。"
     }
   ]
 }

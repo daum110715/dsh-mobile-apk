@@ -829,7 +829,19 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         }
       }
       if (!isCurrentEngineFlow(generation)) return@Thread
-      if (!activity.engineManager.startEngine()) {
+      // issue #684：让行与失败必须分开 ——「刷新中让行」没有进程，不能进存活判据、不能计重试预算。
+      // 旧实现把它当 true（已发起），于是存活判据当拍为假，一次正常的 8-12 分钟刷新被误判成
+      // 「进程在预算内死亡」，两次重试后落持久修复门。
+      val startOutcome = activity.engineManager.startEngine()
+      if (startOutcome == EngineStartOutcome.DEFERRED_REFRESHING) {
+        LogCollector.writeBootFail(
+          activity, "engine-start-deferred-refresh",
+          "本次启动请求撞上正在进行的快照刷新，已让行（非失败）：未 spawn、未置 STARTING、未计重试预算；"
+            + "由持有刷新的启动流在完成后拉起引擎。",
+        )
+        return@Thread
+      }
+      if (startOutcome == EngineStartOutcome.REFUSED) {
         requireCurrentEngineFlow(generation)
       // A Hard ownership mismatch is itself an install/runtime integrity failure.
       // There is no separate UI retry state that can resolve it: the assistant

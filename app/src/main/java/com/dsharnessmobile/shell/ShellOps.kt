@@ -398,11 +398,36 @@ internal object ShellOps {
         if (ch == '"') {
           var j = i + 1
           while (j < text.length) {
-            if (text[j] == '\\') {
+            val inner = text[j]
+            if (inner == '\\') {
               j += 2
               continue
             }
-            if (text[j] == '"') break
+            if (inner == '"') break
+            // 双引号内的 `$(...)` 与反引号**会执行**（单引号才不执行）：必须按原文递归扫，
+            // 否则 `echo "$(screencap -p /sdcard/real.png)"` 会把真实屏命令当纯文本放行（issue #674）。
+            if (inner == '`') {
+              val end = backtickEnd(text, j + 1)
+              if (end < 0) {
+                unparsed = true
+                j = text.length
+                break
+              }
+              scan(text.substring(j + 1, end), depth + 1)
+              j = end + 1
+              continue
+            }
+            if (inner == '$' && j + 1 < text.length && text[j + 1] == '(') {
+              val end = parenEnd(text, j + 2)
+              if (end < 0) {
+                unparsed = true
+                j = text.length
+                break
+              }
+              scan(text.substring(j + 2, end), depth + 1)
+              j = end + 1
+              continue
+            }
             j += 1
           }
           if (j >= text.length) {
