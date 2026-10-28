@@ -70,13 +70,18 @@ export interface NodeEntry {
 const ATTR_RE = /([a-zA-Z-]+)="([^"]*)"/g
 
 export function decodeEntities(s: string): string {
+  // `&amp;` **必须最后处理**（且只解一次）：它代表一个字面量 `&`，若提前展开，后续的数字实体
+  // 规则会把 `&amp;#60;`（应显示成 `&#60;`）再解成 `<` —— 双重解码。
+  // 2026-10-28 自查：旧实现把 `&#(\d+);` 排在 `&amp;` 之后，于是**只有数字实体这一支**会双重解码
+  // （`&amp;lt;` 反而正确，因为命名实体都在 `&amp;` 之前 ⇒ 同一个函数两种口径）。
+  // 调用点在 protocol-v2 的 text/desc/rid 解码（控件文本上屏路径）。
   return s
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&')
     .replace(/&#(\d+);/g, (_m, n: string) => String.fromCodePoint(Number(n)))
+    .replace(/&amp;/g, '&')
 }
 
 /** bounds="[x1,y1][x2,y2]" → {x,y,w,h}；畸形/缺省按零尺寸（0,0,0,0）——V2 编码保留零尺寸节点做骨架。 */

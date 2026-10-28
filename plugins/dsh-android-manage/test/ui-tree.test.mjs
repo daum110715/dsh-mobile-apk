@@ -3,7 +3,7 @@
 // 不可点击目标的「可点击祖先」回退静默失效。本测试锁死该边界。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseUiTreeXml, pruneNodes, resolveRef, findActionableAncestor, checkUiTreeParse } from '../lib/ui-tree.js'
+import { parseUiTreeXml, pruneNodes, resolveRef, findActionableAncestor, checkUiTreeParse, decodeEntities } from '../lib/ui-tree.js'
 
 const ATTRS = 'checkable="false" checked="false" enabled="true" focusable="false" focused="false" ' +
   'long-clickable="false" password="false" selected="false" package="com.android.settings"'
@@ -241,4 +241,19 @@ test('FX-212.4：根下 11 个顺序兄弟按屏幕顺序输出 btn0..btn10（�
   let maxJump = 0
   for (let i = 1; i < nodes.length; i++) maxJump = Math.max(maxJump, nodes[i].depth - nodes[i - 1].depth)
   assert.equal(maxJump, 1)
+})
+
+// decodeEntities 在 protocol-v2 的 text/desc/rid 解码路径上（控件文本上屏），此前零覆盖。
+// 2026-10-28 自查：旧实现把 `&#(\d+);` 排在 `&amp;` 之后 ⇒ `&amp;#60;` 被解成 `<`
+// （应显示字面量 `&#60;`），而 `&amp;lt;` 反而是对的 —— 同一个函数两种口径。
+test('decodeEntities：&amp; 只解一次，数字实体不得二次解码', () => {
+  // 修的形态：转义过的数字实体保持字面量
+  assert.equal(decodeEntities('&amp;#60;'), '&#60;')
+  assert.equal(decodeEntities('&amp;amp;'), '&amp;')
+  // 不能被带走的形态：真正的数字实体照样解、命名实体依旧正确、普通 & 解一次
+  assert.equal(decodeEntities('&#60;'), '<')
+  assert.equal(decodeEntities('&#20320;&#22909;'), '你好')
+  assert.equal(decodeEntities('&amp;lt;'), '&lt;')
+  assert.equal(decodeEntities('a &amp; b'), 'a & b')
+  assert.equal(decodeEntities('&lt;b&gt;'), '<b>')
 })
