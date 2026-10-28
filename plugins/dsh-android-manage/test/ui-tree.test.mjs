@@ -332,3 +332,24 @@ test('resolveRef：#0 必须报错（1 基），#N 正常，#00 也算非法', (
   assert.equal(multi.ok, false, '多候选被静默挑了一个')
   assert.ok(Array.isArray(multi.matches) && multi.matches.length === 2)
 })
+
+// **覆盖缺口**（2026-10-28 变异扫描发现）：把 `if (cands.length === 0)` 这个分支变异成永不成立后，
+// 整个测试文件仍然 16/16 全绿 —— 说明没有任何用例断言「引用一个不存在的节点时必须明确报错」。
+// 这个分支很重要：模型引用已被销毁的节点时，必须收到「没有 text 为 X 的节点——请重新取树」，
+// 而不是拿到空 matches / 静默失败。补上反向用例。
+test('resolveRef：找不到节点时必须明确报错，不得静默返回', () => {
+  const raw = [{ attrs: { bounds: '[0,0][10,10]', text: '设置', class: 'V' }, id: '0', parentId: '' }]
+  const p = pruneNodes(raw)
+  for (const ref of ['text:不存在的文本', 'desc:不存在的描述', 'rid:no.such.id']) {
+    const r = resolveRef(p.byId, p.nodes, ref)
+    assert.equal(r.ok, false, ref + ' 找不到却返回了节点：' + (r.ok ? r.node.id : ''))
+    assert.match(r.error, /没有 (text|desc|rid) 为/, '错误信息没说清「没有该文本的节点」：' + r.error)
+    assert.match(r.error, /重新取树/, '错误信息没引导重新取树：' + r.error)
+  }
+  // 不能被带走的形态：存在时必须命中（同一个函数两种结果都测）
+  assert.equal(resolveRef(p.byId, p.nodes, 'text:设置').node.id, 'n0')
+  // id 不存在同样要报错
+  const byId = resolveRef(p.byId, p.nodes, 'id:n999')
+  assert.equal(byId.ok, false)
+  assert.match(byId.error, /不在最近一次取树结果中/)
+})
