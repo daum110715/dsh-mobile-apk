@@ -348,6 +348,14 @@ function deriveSymbolAnchor(lines, line, contentHash) {
     }
     return depth
   }
+  /** 该行是否落在**另一个** fun 的花括号范围内（即它是局部函数 / 局部声明）。 */
+  const hasEnclosingFun = (lineIdx) => {
+    for (let j = lineIdx - 1; j >= 0; j -= 1) {
+      if (!/^\s*(?:(?:private|public|internal|protected|override|suspend|inline|operator|tailrec|infix|external)\s+)*fun\s+[A-Za-z_$]/.test(lines[j])) continue
+      if (matchingBrace(lines, j) >= lineIdx) return true
+    }
+    return false
+  }
   const isLocalValueDecl = (lineIdx) => {
     const t = lines[lineIdx]
     if (!/^\s*(?:(?:private|public|internal|protected|lateinit|override|const)\s+)*(?:val|var)\s/.test(t)) return false
@@ -366,7 +374,21 @@ function deriveSymbolAnchor(lines, line, contentHash) {
       // 它下面的 KDoc 吞了，refresh 时报「该行内容不在符号体内」）。
       // 判据：符号的配对花括号结束行 >= 目标行；单表达式体（无花括号）时要求同行或下一行。
       const close = matchingBrace(lines, i)
-      if (close >= idx) { symbol = dm[1]; symbolLine = i; break }
+      if (close < idx) continue
+      // 用户裁定 1（2026-10-29）：锚点解析到**最近的「非局部」包围符号**。
+      //
+      // 局部函数（定义在另一个 fun 里，如 ShellOps.kt 的 viaSu）不是稳定的契约单元，
+      // 随时可能被内联或改名，所以跳过它、归到外层 exec。
+      //
+      // 判据不能只看花括号深度：internal object ShellOps 里的成员函数深度也是 2，
+      // 那样会把 exec 也误判成局部（实测 :319 被归到整个 ShellOps 对象上）。
+      // 正确判据：存在另一个更早的 fun，其花括号范围覆盖当前 fun 的定义行。
+      const isNestedFun = /^\s*(?:(?:private|public|internal|protected|override|suspend|inline|operator|tailrec|infix|external)\s+)*fun\s/.test(lines[i])
+        && hasEnclosingFun(i)
+      if (isNestedFun) continue
+      symbol = dm[1]
+      symbolLine = i
+      break
     }
   }
   if (symbol === null) {
@@ -600,17 +622,35 @@ export function checkDoc(text, universe, fsView, anchorBaseline = ANCHOR_BASELIN
       return
     }
     const key = path + '#' + symbol
+
+    // ── 判据：符号范围 + 行内容**唯一匹配**（2026-10-29 所有者裁定）───────────────
+    //
+    // 为什么不比对「整符号体 hash」：符号体粒度太粗，符号内任何一处无关改动都会把
+    // 所有指向它的锚点一起弄红——假红比漏报更消耗人（`exec` 有 30+ 行，改任意一行就全红）。
+    //
+    // 正确口径：锚点只记「该行归一化内容」的哈希，判定时在这个符号的花括号范围里
+    // 找有没有**唯一**一行匹配。三个方向都对：
+    //   · 上方插 50 行   -> 行号变了但内容还在   => 绿
+    //   · 符号内别处改动 -> 目标行内容没变       => 不影响
+    //   · 目标行真的被改 -> 找不到 / 出现多次    => 红
+    //
+    // 无 @hash 的锚点（`path#Symbol`）仍比整个符号体：那是「引用整个符号」的语义，
+    // 与「引用符号内某一行」是两回事，两种形式都保留。
     if (symbolHash !== undefined) {
-      const bodyHashes = new Set(hit.body.split('\n').map((l) => contentHashOf(l)))
-      const expected = (anchorBaseline.symbolHashes ?? {})[key + '@' + symbolHash]
-      if (expected === undefined) {
+      const registered = (anchorBaseline.symbolHashes ?? {})[key + '@' + symbolHash]
+      if (registered === undefined) {
         push('symbol-unbaselined', 'Symbol-hash anchor has no baseline entry (run --refresh-anchor-baseline): '
           + key + '@' + symbolHash)
         return
       }
-      if (!bodyHashes.has(symbolHash)) {
+      const matches = hit.body.split('\n').filter((l) => contentHashOf(l) === symbolHash).length
+      if (matches === 0) {
         push('symbol-content-drift', 'Anchored line content vanished from ' + key + '@' + symbolHash
           + '（定义行 ' + hit.line + '）; rerun --refresh-anchor-baseline after review')
+      } else if (matches > 1) {
+        push('symbol-content-ambiguous', 'Anchored line content matches ' + matches
+          + ' lines inside ' + key + '@' + symbolHash
+          + '（定义行 ' + hit.line + '）; anchor cannot pin a single line, use a more specific symbol')
       }
       return
     }
