@@ -2722,10 +2722,10 @@
       "fun fxRevisionNumberIsCompared() {"
     ],
     "app/src/test/java/com/dsharnessmobile/shell/VdisplayArbitrationTest.kt:14": [
-      "@Test"
+      "class VdisplayArbitrationTest {"
     ],
     "app/src/test/java/com/dsharnessmobile/shell/VdisplayArbitrationTest.kt:30": [
-      "@Test"
+      "}"
     ],
     "app/src/test/java/com/dsharnessmobile/shell/W3ShellContractTest.kt:107": [
       "// `AdbLiveProbeTest.kt`（TTL 内复用 / 过期重探 / 失败不冒充实测成功 / TCP 探测区分端口，4 项全绿）。"
