@@ -2130,3 +2130,9 @@ JVM 边界测试在 `EngineBootInstrumentationTest`（取值与 clamp 边界、�
 
     ⑬ **`plugins/dsh-android-file-open` 的 `purgeStaleUnclaimed` 里 `join(queueDir(), item.file)` 不构成路径逃逸**（2026-10-28 复核，我差点报它）：`item.file` 看着像"清单 JSON 里的字段"，实际是 `readItems()` 里 `readdirSync(dir)` 的目录项名（`file: f`）—— readdir 只返回 basename，**不含 `../`**。判据：**先看那个字段的唯一赋值处，再判它是不是外部可控**。同文件的 `enqueueSession` 有 "ws+sep 边界 + realpath 规范化"（H3 修复），两处删除操作的安全模型不同是因为**入参来源不同**（一个是外部路径、一个是目录项名），不是口径不一致。
     ⑭ **`canonicalPath` 对不存在路径回落词法 `resolve` 在 `ownedInsideWorkspace` 里无害**：回落会让"指向不存在目标的符号链接"通过 `real === wsReal` 与 `startsWith(wsReal + sep)` 两道判据，但调用方是 `rmSync(target, { recursive: true, force: true })` —— `rm` 遇符号链接**删链接本身、不跟进目标**（`rm -r` 同理）。⇒ 结论安全。**别**照搬"canonical 回落 = 悬空链接漏洞"这条直觉（它在"写入"场景成立、在"删除链接"场景不成立）：判据取决于**下一步动作是否会跟随链接**。
+
+    ⑮ **`MALFORMED_DISPLAY_OPTION` 这条判据当前没有「独家覆盖」——删掉它测试仍然全绿**（2026-10-28 变异验证实测，别当成缺陷去删或者去补）：
+    `MALFORMED_DISPLAY_OPTION = /(?:^|[ \t])-d(?:[ \t]*=[ \t]*\S|(?![0-9\s])\S)/` 拦「形似 display 选项但取值不是纯数字」（`-d=7`、`-dx`）。把它变异成 `false` 后 `screen-scope.test.mjs` **47/47 全绿** —— 原因不是没覆盖，而是**判据重叠**：`-d=7` 已有一条 fixture（`S-9b`），它走的是另一条路——`displayOptionsIn` 认不出 `-d=7` ⇒ 该段无 option ⇒ `family.targetFlags.length === 0` ⇒ 同样 `deny-uncertified-target`。
+    **因为每个需要目标屏的命令家族都要求 `targetFlags` 非空**，所以「认不出 option」与「option 畸形」在当前命令集下**必然同样落进 deny**，MALFORMED 成了双重保险。
+    ⇒ 处置：**保留**（fail-closed 的方向、成本为零），但别误以为它有独立用例守着。**真要动它之前**，先确认「有没有哪个家族的 `targetFlags` 可以为空却仍然 allow」——有的话 MALFORMED 就是那条路的唯一门槛，删了会开洞。
+    ⇒ 顺带记同一轮的有效覆盖（同一 63 条 fixture 上变异实测）：`family.targetFlags.length===0` **红 4**、`owned.length===0` **红 5**、`!owned.every(isOwnedTarget)` **红 15**、首个 `deny-unparsed` **红 1**、`interpreterPayloadUnparsed(bare)` **红 1**、`TRAP_PAYLOAD` 正则（`trap`→`trapZ`）**红 1**。
