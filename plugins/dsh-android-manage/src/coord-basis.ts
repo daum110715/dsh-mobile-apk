@@ -20,8 +20,11 @@ export const COMPAT_NOTE = '（基准未回显：壳侧版本较旧）'
 export function coordBasisNote(data: unknown): string {
   const d = (data ?? {}) as { basis?: unknown; basisWidth?: unknown; basisHeight?: unknown }
   if (typeof d.basis !== 'string' || d.basis === '') return COMPAT_NOTE
-  const w = typeof d.basisWidth === 'number' ? d.basisWidth : 0
-  const h = typeof d.basisHeight === 'number' ? d.basisHeight : 0
+  // 文案侧必须给出**具体数值**（它的全部意义就是让人看出这次按哪块尺寸换算），所以非有限数
+  // 按 0 呈现；而返回值侧的 basisFields 是「不带键」（那边要过 schema，NaN 会让整值被拒）。
+  // 两处策略不同是刻意的，别「统一」——但都不能把 NaN 原样吐给模型看。
+  const w = typeof d.basisWidth === 'number' && Number.isFinite(d.basisWidth) ? d.basisWidth : 0
+  const h = typeof d.basisHeight === 'number' && Number.isFinite(d.basisHeight) ? d.basisHeight : 0
   // window-current = 壳侧未拿到整屏尺寸（issue #258 的缺陷基准），必须显式告警。
   const warn = d.basis === 'window-current'
     ? '——本机未给出整屏尺寸，本次按**当前窗口**换算，多窗口下可能偏左'

@@ -47,3 +47,14 @@ test('basisFields：NaN / Infinity 宽高不得透传（同 screenOut 的 #204 �
       { basis: 'full-screen' }, '透传了非有限数：' + String(bad))
   }
 })
+
+test('coordBasisNote：非有限宽高不得渲染成 NaN（文案要给人看出基准）', () => {
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    const t = coordBasisNote({ basis: 'full-screen', basisWidth: bad, basisHeight: bad })
+    assert.doesNotMatch(t, /NaN|Infinity/, '文案里出现了非有限数：' + t)
+    assert.match(t, /0x0/, '非有限数应按 0 呈现：' + t)
+  }
+  // 合法值必须原样呈现（别把 0 也当成缺失）
+  assert.match(coordBasisNote({ basis: 'full-screen', basisWidth: 0, basisHeight: 0 }), /0x0/)
+  assert.match(coordBasisNote({ basis: 'full-screen', basisWidth: 1080, basisHeight: -1 }), /1080x-1/)
+})
