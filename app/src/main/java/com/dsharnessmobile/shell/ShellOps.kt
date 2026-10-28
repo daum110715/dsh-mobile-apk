@@ -66,10 +66,32 @@ internal object ShellOps {
       ),
       ALL_DISPLAY_FLAGS,
     ),
-    ScreenFamily("wm", Regex("""\bwm[ \t]+(?:size|density|overscan)\b""", RegexOption.IGNORE_CASE), ALL_DISPLAY_FLAGS),
+    // `wm` 的改屏子命令（`user-rotation` 在本机 MIUI 上未生效，但命令语义同样是改真实屏）。
+    ScreenFamily(
+      "wm",
+      Regex("""\bwm[ \t]+(?:size|density|overscan|user-rotation|fixed-to-user-rotation)\b""", RegexOption.IGNORE_CASE),
+      ALL_DISPLAY_FLAGS,
+    ),
+    // `cmd window …` 是 `wm` 的等价拼写（实测 `cmd window size 900x1600` 真改真实屏）；
+    // 目标屏参数是**子命令内**的 `[-d DISPLAY_ID]`（实测 `cmd window size 900x1600 -d 7` 被接受）。
+    ScreenFamily("cmd-window", Regex("""\bcmd[ \t]+window\b""", RegexOption.IGNORE_CASE), ALL_DISPLAY_FLAGS),
+    // `cmd display …` 用 `--id DISPLAY_ID`（不是 ScreenTarget 的两种 id 空间）⇒ 无法自证，恒拒。
+    ScreenFamily("cmd-display", Regex("""\bcmd[ \t]+display\b""", RegexOption.IGNORE_CASE), emptyList()),
     // `uiautomator dump` 没有目标屏参数：dump 的是**默认屏**的语义树 ⇒ 无法自证，恒拒。
     ScreenFamily("uiautomator", Regex("""\buiautomator\b""", RegexOption.IGNORE_CASE), emptyList()),
-    ScreenFamily("dumpsys", Regex("""\bdumpsys[ \t]+(?:window|display|input)\b""", RegexOption.IGNORE_CASE), emptyList()),
+    // 直接读写 input 设备的命令：`sendevent` 能注入任意事件（含触摸），`getevent` 能读回触摸/按键。
+    // 两者都没有目标屏参数 ⇒ 自证不了「作用于已注册虚拟屏」，与 `uiautomator` 同档（恒拒）。
+    // 小米 14 Pro 实测（2026-10-28 自查）：shell 直写 /dev/input/eventN 被拒，但已 root 时
+    // `su -c 'sendevent … 0 0 0'` RC=0，而 `su -c` 的载荷会被本门禁展开重扫 ⇒ 修前整条放行。
+    ScreenFamily("sendevent", Regex("""\bsendevent\b""", RegexOption.IGNORE_CASE), emptyList()),
+    ScreenFamily("getevent", Regex("""\bgetevent\b""", RegexOption.IGNORE_CASE), emptyList()),
+    // `dumpsys activity` 也会打完整 `View Hierarchy:`（含每个控件的 bounds）—— 与 `uiautomator dump`
+    // 同级的「读真实屏 UI」，2026-10-28 自查补进来；`battery`/`meminfo` 这类与屏无关的不受影响。
+    ScreenFamily(
+      "dumpsys",
+      Regex("""\bdumpsys[ \t]+(?:window|display|input|activity)\b""", RegexOption.IGNORE_CASE),
+      emptyList(),
+    ),
     // `am` 的显示参数是 `--display`；`-d` 是 Intent data，**不得**作为目标屏凭据。
     ScreenFamily("am", Regex("""\bam[ \t]+(?:start|start-activity|force-stop|kill)\b""", RegexOption.IGNORE_CASE),
       listOf("--display", "--display-id")),
@@ -104,8 +126,19 @@ internal object ShellOps {
    * 与引擎侧 `screen-scope.ts` 的同构判据同批演进（fixture 权威源用例另行补充）。
    */
   private val INTERPRETER_NAMES = setOf("sh", "bash", "mksh", "ash", "dash", "zsh")
+  // 包装词白名单：与引擎侧 INTERPRETER_WRAPPERS 逐条同源。缺一个 = 该包装器后面的裸解释器
+  // 识别不出来，循环停在包装词上返回 false（当成"不是解释器"）⇒ 载荷不可见的段放行。
+  // 小米 14 Pro（SDK 37）实测（2026-10-28 自查）：`echo '…' | nice sh` / `| setsid -w sh` /
+  // `| ionice sh` / `| taskset 1 sh` 都会真的执行 stdin 里的脚本，而 `| sh` 本来就判
+  // deny-unparsed ⇒ 多套一层包装即可绕过 #509 的裸解释器判据。
   private val INTERPRETER_WRAPPERS =
-    setOf("env", "timeout", "nohup", "xargs", "busybox", "toybox", "su", "command", "exec")
+    setOf(
+      "env", "timeout", "nohup", "xargs", "busybox", "toybox", "su", "command", "exec",
+      // 调度 / 资源类（真机实测可喂 sh）
+      "nice", "ionice", "taskset", "setsid", "chrt", "numactl", "unshare", "runcon",
+      // 缓冲 / 计时 / 锁类
+      "stdbuf", "time", "flock", "watch",
+    )
 
   /**
    * 该段的命令词是不是「载荷对判定器不可见」的解释器调用（#509 的放宽版，与引擎侧
@@ -176,6 +209,30 @@ internal object ShellOps {
       rest = remainder
     }
     return ""
+  }
+
+  /**
+   * 「当前段已经走到**载荷位置**」的尾巴判据（`sh -c ` / `eval ` / `trap ` 之后），与引擎侧同名。
+   *
+   * 用来认**不带引号**的运行时载荷：`` sh -c `cat /sdcard/x.sh` `` 的反引号在顶层切段时就被展开，
+   * 段里不再留反引号字符，段级判据看不见它 —— 只能在切段当场看「替换前那段 buf 是否停在载荷位置」。
+   * `sh -c "a b" $(date)` 这种「载荷已给、替换在下一个参数」的形态不命中（脚本静态可见）。
+   */
+  private val PAYLOAD_SLOT_TAIL = Regex("""(?:^|[ \t])(?:-[^\s]*c|eval|trap)[ \t]+$""")
+
+  /**
+   * 段**命令名位置**上是不是运行时值（`$CMD`、`$(…)`、反引号）。
+   *
+   * 小米 14 Pro（SDK 37）实测都会真的执行变量/文件里的内容：`sh -c "$CMD"`、
+   * `sh -c "$(cat /sdcard/x.sh)"`、`` sh -c `cat /sdcard/x.sh` ``、`trap "$(cat …)" EXIT`、
+   * `eval "$(cat …)"` —— 与 `sh /x.sh`（脚本文件）同一性质：静态看不到执行什么 ⇒ fail-closed。
+   * 只看**段首词**：参数位置的替换不改变命令身份，不得误拦；`$'…'` / `$"…"` 是 ANSI-C 引号
+   * （静态字面量），必须排除。
+   */
+  private fun isRuntimeCommandName(segment: String): Boolean {
+    val head = firstShellWord(segment.trim()).first
+    if (head.startsWith("$'") || head.startsWith("$\"")) return false
+    return head.startsWith("$") || head.startsWith("`")
   }
 
   /**
@@ -334,7 +391,8 @@ internal object ShellOps {
     if (screenVerdictWithRegistry(context, command) == ScreenCommandVerdict.ALLOW) return null
     return JSONObject()
       .put("__error", "用户当前开放屏幕范围为 virtual-only，不允许经特权 shell 读取或操作真实屏幕"
-        + "（screencap / screenrecord / uiautomator / input / wm / dumpsys window|display|input / am / monkey）。"
+        + "（screencap / screenrecord / uiautomator / input / wm / cmd window / cmd display /"
+        + " dumpsys window|display|input / am / monkey / sendevent / getevent）。"
         + "命令里显式指定的目标屏若确为**已注册虚拟屏**（DisplayManager displayId 或该屏的 SurfaceFlinger token）即可放行；"
         + "本条命令的目标屏未能与壳侧注册表核对上，故拒绝。请确认虚拟屏仍在活跃状态"
         + "（android_vdisplay_create / vdInfo），或由用户在设置中修改范围后重试。")
@@ -458,6 +516,8 @@ internal object ShellOps {
     if (parsed.unparsed) return ScreenCommandVerdict.DENY_UNPARSED
     for (segment in parsed.segments) {
       val bare = stripQuotedText(segment)
+      // 命令名来自运行时（`$CMD` / `"$(cat /sdcard/x.sh)"` / 反引号）：执行什么静态不可判。
+      if (isRuntimeCommandName(segment)) return ScreenCommandVerdict.DENY_UNPARSED
       // 裸解释器段：管道/重定向喂 shell 的载荷对判定器不可见（#509），fail-closed。
       if (interpreterPayloadUnparsed(bare)) {
         return ScreenCommandVerdict.DENY_UNPARSED
@@ -603,6 +663,10 @@ internal object ShellOps {
             i = text.length
             continue
           }
+          // **命令位置**上的命令替换：替换结果是运行时文本、会被当成命令执行 ⇒ 执行什么静态不可判
+          // （`sh -c "\`cat /sdcard/x.sh\`"` 真机实测执行文件内容）；**载荷位置**上的替换
+          // （`` sh -c \`cat f\` ``）等于整段脚本来自运行时，同样 fail-closed。参数位置的替换不影响命令身份。
+          if (buf.isBlank() || PAYLOAD_SLOT_TAIL.containsMatchIn(buf)) unparsed = true
           scan(text.substring(i + 1, end), depth + 1)
           buf.append(' ')
           i = end + 1
@@ -616,6 +680,9 @@ internal object ShellOps {
             i = text.length
             continue
           }
+          // 同上：`sh -c "$(cat /sdcard/x.sh)"` / `sh -c "echo hi; $(cat x.sh)"` 的第二段都是
+          // 「命令名来自运行时」⇒ 与 `sh /x.sh`（脚本文件）同档，fail-closed。
+          if (buf.isBlank() || PAYLOAD_SLOT_TAIL.containsMatchIn(buf)) unparsed = true
           scan(text.substring(i + 2, end), depth + 1)
           buf.append(' ')
           i = end + 1

@@ -300,7 +300,13 @@ function firstPayloadWord(text: string): string {
 }
 
 const INTERPRETER_NAMES = new Set(['sh', 'bash', 'mksh', 'ash', 'dash', 'zsh'])
-const INTERPRETER_WRAPPERS = new Set(['env', 'timeout', 'nohup', 'xargs', 'busybox', 'toybox', 'su', 'command', 'exec'])
+const INTERPRETER_WRAPPERS = new Set([
+  'env', 'timeout', 'nohup', 'xargs', 'busybox', 'toybox', 'su', 'command', 'exec',
+  // 调度 / 资源类（真机实测可喂 sh）
+  'nice', 'ionice', 'taskset', 'setsid', 'chrt', 'numactl', 'unshare', 'runcon',
+  // 缓冲 / 计时 / 锁类
+  'stdbuf', 'time', 'flock', 'watch',
+])
 
 /**
  * 该段的命令词是不是「载荷对判定器不可见」的解释器调用（#509 的放宽版）。
@@ -329,6 +335,35 @@ export function interpreterPayloadUnparsed(segment: string): boolean {
     return false
   }
   return false
+}
+
+/**
+ * 段**命令名位置**上是不是运行时值（`$CMD`、`$(…)`、`` `…` ``）。
+ *
+ * 小米 14 Pro（SDK 37）实测都会真的执行变量/文件里的内容：
+ *   `CMD='echo X'; sh -c "$CMD"` → `X`
+ *   `sh -c "$(cat /data/local/tmp/s.sh)"` → 文件里的命令
+ *   `sh -c "\`cat /data/local/tmp/s.sh\`"` → 同上
+ *   `trap "$(cat …)" EXIT` / `eval "$(cat …)"` → 同上
+ * 与 `sh /x.sh`（脚本文件）同一性质：执行什么静态看不到 ⇒ fail-closed。
+ *
+ * 只看**段首词**：参数位置的替换（`echo "$(date)"`、`x=$(cat f); echo $x`）不改变命令身份，不得误拦。
+ */
+/**
+ * 「当前段已经走到**载荷位置**」的尾巴判据（`sh -c ` / `eval ` / `trap ` 之后）。
+ *
+ * 用来认**不带引号**的运行时载荷：`` sh -c `cat /sdcard/x.sh` `` 的反引号在顶层切段时就被展开，
+ * 段里不再留反引号字符，段级判据看不见它 —— 只能在切段当场看「替换前那段 buf 是否停在载荷位置」。
+ * 带引号的同型形态（`sh -c "$CMD"`）由 `payloadIsRuntimeValue` 覆盖。
+ * `sh -c "a b" $(date)` 这种「载荷已给、替换在下一个参数」的形态**不命中**（脚本静态可见）。
+ */
+const PAYLOAD_SLOT_TAIL = /(?:^|[ \t])(?:-[^\s]*c|eval|trap)[ \t]+$/
+
+function isRuntimeCommandName(segment: string): boolean {
+  const head = firstShellWord(segment.trim()).word
+  // `$'…'` / `$"…"` 是 **ANSI-C 引号**（静态字面量），不是变量引用 —— 不得误拦（S-7c）。
+  if (head.startsWith('$\'') || head.startsWith('$"')) return false
+  return head.startsWith('$') || head.startsWith('`')
 }
 
 /** 去掉一层首尾成对的引号（`sh -c "…"` 的载荷取值）。不成对则原样返回。 */
@@ -397,12 +432,19 @@ export function splitCommandSegments(command: string): CommandSegments {
       if (ch === '`') {
         const end = backtickEnd(text, i + 1)
         if (end < 0) { unparsed = true; buf += text.slice(i); i = text.length; continue }
+        // **命令位置**上的命令替换：替换结果是运行时文本，会被当成命令执行 ⇒ 执行什么静态不可判
+        // （`sh -c "\`cat /sdcard/x.sh\`"` 真机实测执行文件内容）。参数位置的替换不影响命令身份；
+        // 但**载荷位置**上的替换（`` sh -c \`cat f\` ``）等于整段脚本来自运行时，同样 fail-closed。
+        if (buf.trim().length === 0 || PAYLOAD_SLOT_TAIL.test(buf)) unparsed = true
         scan(text.slice(i + 1, end), depth + 1)
         buf += ' '; i = end + 1; continue
       }
       if (ch === '$' && text[i + 1] === '(') {
         const end = parenEnd(text, i + 2)
         if (end < 0) { unparsed = true; buf += text.slice(i); i = text.length; continue }
+        // 同上：`sh -c "$(cat /sdcard/x.sh)"` / `sh -c "echo hi; $(cat x.sh)"` 的第二段都是
+        // 「命令名来自运行时」⇒ 与 `sh /x.sh`（脚本文件）同档，fail-closed。
+        if (buf.trim().length === 0 || PAYLOAD_SLOT_TAIL.test(buf)) unparsed = true
         scan(text.slice(i + 2, end), depth + 1)
         buf += ' '; i = end + 1; continue
       }
@@ -551,10 +593,42 @@ const SCREEN_COMMAND_FAMILIES: readonly ScreenCommandFamily[] = [
       /\binput[ \t]+(?:(?:touchscreen|keyboard|mouse|joystick|touchnavigation|trackball|stylus|dpad|gamepad|rotaryencoder)[ \t]+)?(?:tap|swipe|roll|draganddrop|motionevent|text|keyevent|keycombination|press)\b/i,
     targetFlags: ALL_DISPLAY_FLAGS,
   },
-  { name: 'wm', pattern: /\bwm[ \t]+(?:size|density|overscan)\b/i, targetFlags: ALL_DISPLAY_FLAGS },
+  // `wm` 的改屏子命令。`user-rotation` / `fixed-to-user-rotation` 语义同样是「改真实屏显示参数」
+  // （本机 MIUI 上实测 `wm user-rotation lock 1` 返回 0 但 mRotation 不变，但别的 ROM 会生效 ——
+  // 判据看的是命令能不能操作真实屏，不是这一台有没有生效）。
+  {
+    name: 'wm',
+    pattern: /\bwm[ \t]+(?:size|density|overscan|user-rotation|fixed-to-user-rotation)\b/i,
+    targetFlags: ALL_DISPLAY_FLAGS,
+  },
+  // `cmd window <size|density|scaling|user-rotation|dismiss-keyguard>` 是 `wm` 的等价拼写：
+  // 小米 14 Pro 实测 `cmd window size 900x1600` 真的把真实屏改成 `Override size: 900x1600`
+  // （`wm size reset` 才恢复），而修前它不在任何家族里 ⇒ 放行（2026-10-28 自查）。
+  // 它的目标屏参数是**子命令内**的 `[-d DISPLAY_ID]`（实测 `cmd window size 900x1600 -d 7`
+  // 被接受、返回 `Physical size: 0x0`），所以按 ALL_DISPLAY_FLAGS 取凭据。
+  { name: 'cmd-window', pattern: /\bcmd[ \t]+window\b/i, targetFlags: ALL_DISPLAY_FLAGS },
+  // `cmd display <set-brightness|set-user-preferred-display-mode|…>` 同样改真实屏（亮度/显示模式），
+  // 但它的目标屏参数是 `--id DISPLAY_ID`，与既有凭据口径（-d/--display/--display-id）不同、
+  // 也不是 `ScreenTarget` 的两种 id 空间之一 ⇒ 无法自证，按 `dumpsys` 同档恒拒。
+  { name: 'cmd-display', pattern: /\bcmd[ \t]+display\b/i, targetFlags: [] },
   // `uiautomator dump` 没有目标屏参数：dump 的就是**默认屏**的语义树 ⇒ 无法自证，恒拒。
   { name: 'uiautomator', pattern: /\buiautomator\b/i, targetFlags: [] },
-  { name: 'dumpsys', pattern: /\bdumpsys[ \t]+(?:window|display|input)\b/i, targetFlags: [] },
+  // `dumpsys` 系列：这些子命令的输出里都带**真实屏**的 UI 结构或几何。
+  //
+  // `activity` 是 2026-10-28 自查补进来的：`dumpsys activity top` 会打出完整的
+  // `View Hierarchy:` 树（DecorView → LinearLayout → FrameLayout → WebView，逐个带 `0,0-1440,3200`
+  // 这类 bounds）以及 `android.widget.TextView{… 42,0-699,103}` 等控件行 —— 与 `uiautomator dump`
+  // 同级的「读真实屏 UI」，而修前它不匹配 `window|display|input` ⇒ 整条放行。
+  // `battery`/`meminfo` 这类与屏无关的子命令不受影响（见 fixture 里的对照用例）。
+  { name: 'dumpsys', pattern: /\bdumpsys[ \t]+(?:window|display|input|activity)\b/i, targetFlags: [] },
+  // 直接读写 input 设备的命令：`sendevent` 能向 `/dev/input/*` 注入任意事件（含触摸坐标），
+  // `getevent` 能读回用户的触摸/按键事件。两者**都没有目标屏参数** ⇒ 永远自证不了「作用于已注册
+  // 虚拟屏」，与 `uiautomator` 同档（恒拒）。
+  // 小米 14 Pro 实测（2026-10-28 自查）：shell 直写 `/dev/input/eventN` 被拒（Permission denied），
+  // 但设备已 root 时 `su -c 'sendevent /dev/input/event1 0 0 0'` **RC=0**；而 `su -c` 的载荷会被
+  // 本门禁展开重扫，扫到 `sendevent` 却不在任何家族里 ⇒ 整条放行（实测 `allow`）。
+  { name: 'sendevent', pattern: /\bsendevent\b/i, targetFlags: [] },
+  { name: 'getevent', pattern: /\bgetevent\b/i, targetFlags: [] },
   // `am` 的显示参数是 `--display`；`-d` 是 Intent data，**不得**作为目标屏凭据（见上）。
   { name: 'am', pattern: /\bam[ \t]+(?:start|start-activity|force-stop|kill)\b/i, targetFlags: ['--display', '--display-id'] },
   { name: 'monkey', pattern: /\bmonkey\b/i, targetFlags: ['--display', '--display-id'] },
@@ -608,6 +682,8 @@ export function screenCommandVerdict(
   if (unparsed) return 'deny-unparsed'
   for (const segment of segments) {
     const bare = stripQuotedText(segment)
+    // 命令名来自运行时（`$CMD` / `"$(cat /sdcard/x.sh)"` / 反引号）：执行什么静态不可判。
+    if (isRuntimeCommandName(segment)) return 'deny-unparsed'
     // 载荷不可见的解释器调用：静态判不了，fail-closed。
     if (interpreterPayloadUnparsed(bare)) return 'deny-unparsed'
     const options = displayOptionsIn(bare)
