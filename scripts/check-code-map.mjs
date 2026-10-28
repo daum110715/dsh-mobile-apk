@@ -23,6 +23,7 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createHash } from 'node:crypto'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 /**
@@ -46,6 +47,8 @@ const DOC_REL = argOf('doc', 'docs/AGENTS/EXECUTION-MAP.md')
 const LIST_ONLY = argv.includes('--list')
 const SELF_TEST = argv.includes('--self-test')
 const REFRESH_ANCHOR_BASELINE = argv.includes('--refresh-anchor-baseline')
+const DERIVE_ANCHORS = argv.includes('--derive-anchors')
+const DERIVE_DRY_RUN = argv.includes('--derive-dry-run')
 /** CI 等价性检查：apk 仓在被独立检出时没有协调仓父目录，--no-parent 用来本地预演那种情形。 */
 const NO_PARENT = argv.includes('--no-parent')
 const ANCHOR_BASELINE_REL = 'scripts/check-code-map-anchor-baseline.json'
@@ -100,12 +103,17 @@ const PATH_GROUP = '((?:[A-Za-z0-9_.@-]+/)*[A-Za-z0-9_.@-]+[.](?:' + EXT + '))'
 const LINE_GROUP = ':([0-9]+)'
 const RANGE_GROUP = '(?:-[0-9]+)?'
 const EXPECT_GROUP = '(?:#expect=([^`\\n]*))?'
-// 符号锚点：`path#Symbol` 或 `path#Symbol#<行号提示>`。行号只作缓存，不当判据。
+// 符号锚点：`path#Symbol` / `path#Class.method`（或 `Class::method`）/ 带内容哈希 `path#Symbol@<sha8>` /
+// 带行号提示 `path#Symbol#<行号>`。行号只作缓存，不当判据。
 // 排除 `#L1499-L1634` 这类既有的行号范围引用（L 后紧跟数字），以及 CSS 颜色字面量。
-const SYMBOL_GROUP = '#((?!L[0-9])[A-Za-z_][A-Za-z0-9_$]*(?:[.][A-Za-z_$][A-Za-z0-9_$]*)*)(?![A-Za-z0-9_$.-])'
+const SYMBOL_GROUP = '#((?!L[0-9])[A-Za-z_][A-Za-z0-9_$]*(?:(?:[.]|::)[A-Za-z_$][A-Za-z0-9_$]*)*)(?![A-Za-z0-9_$.-])'
+// 内容哈希：@<4..16 位十六进制>。给「从 legacy 推导出来」的符号锚点用——
+// 它把判据锚在推导当时的**那一行内容**的哈希上，而不是整段符号体，
+// 这样同文件其它符号改动不会误伤它。
+const SYMBOL_HASH_GROUP = '(?:@([0-9a-f]{4,16}))?'
 const SYMBOL_HINT_GROUP = '(?:#([0-9]+))?'
 const ANCHOR_RE = new RegExp('(?:^|[^A-Za-z0-9_./:@-])' + PATH_GROUP + LINE_GROUP + RANGE_GROUP + EXPECT_GROUP
-  + '|(?:^|[^A-Za-z0-9_./:@-])' + PATH_GROUP + SYMBOL_GROUP + SYMBOL_HINT_GROUP, 'g')
+  + '|(?:^|[^A-Za-z0-9_./:@-])' + PATH_GROUP + SYMBOL_GROUP + SYMBOL_HASH_GROUP + SYMBOL_HINT_GROUP, 'g')
 const EVIDENCE_RE = new RegExp(PATH_GROUP + LINE_GROUP + RANGE_GROUP + EXPECT_GROUP)
 
 function parseExpectation(raw) {
@@ -131,6 +139,37 @@ function parseExpectation(raw) {
  * 不做完整 AST 解析：本仓三种语言 x 两种布局，成本远大于收益；「定义行 + 配对花括号」
  * 足够稳，且误报方向是判红（保守）。
  */
+/**
+ * 找出文件里 `name` 的**定义位置**（行下标，0-based）。
+ *
+ * 为什么单独做：不同语言的定义形态不同——
+ *   - Kotlin：`fun name(` / `val name`（一定有关键字）
+ *   - TS 顶层：`export function name(` / `const name = `
+ *   - TS 类方法：`name(args) {`（**没有关键字**）
+ * 只用「关键字 + 名字」会把 TS 类方法漏掉，导致同名判定偏少、消歧失效
+ * （实测：两个类各有 parseDoc 方法时数出 0 处定义，锚点被错绑到诱饵上）。
+ *
+ * 判定口径：
+ *   ① 行首（允许修饰符）出现 `fun|class|object|interface|val|var|let|function|type|def|struct|enum|const` + name
+ *   ② 或行首直接是 `name` 紧跟 `( < = :`（TS 类方法 / 注解式声明）
+ * 两种情况都排除后面还接着标识符字符的（`nameExtra` 不算命中）。
+ */
+function definitionSitesOf(lines, name) {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const withKeyword = new RegExp(
+    '^\\s*(?:(?:private|public|internal|protected|export|default|override|suspend|inline|operator|abstract|open|final|static|async|const|data|sealed|enum|lateinit|readonly)\\s+)*'
+    + '(?:fun|class|object|interface|val|var|let|function|type|def|struct|enum)\\s+'
+    + esc + '(?![A-Za-z0-9_$])',
+  )
+  const bareMember = new RegExp('^\\s*(?:(?:public|private|protected|static|async|readonly)\\s+)*' + esc + '\\s*[<(=:]')
+  const sites = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const t = lines[i]
+    if (withKeyword.test(t) || bareMember.test(t)) sites.push(i)
+  }
+  return sites
+}
+
 function symbolAt(lines, symbol) {
   const parts = symbol.split('.')
   const findIn = (fromLine, toLine, name) => {
@@ -146,7 +185,17 @@ function symbolAt(lines, symbol) {
   }
   const start = findIn(0, lines.length, parts[0])
   if (start < 0) return { found: false }
-  if (parts.length === 1) return { found: true, line: start + 1, body: normalizedSymbolBody(lines, start) }
+
+  // 用户决定 2：同名多符号必须消歧（`Class.method`），不得猜。
+  // 用共享的 definitionSitesOf——它同时认「带关键字」和「TS 类方法」两种定义形态。
+  // 只数定义行，不数调用点。
+  if (parts.length === 1) {
+    const defSites = definitionSitesOf(lines, parts[0])
+    if (defSites.length > 1) {
+      return { found: false, ambiguous: true, count: defSites.length, sites: defSites.slice(0, 5).map((i) => i + 1) }
+    }
+    return { found: true, line: start + 1, body: normalizedSymbolBody(lines, start) }
+  }
   let cur = start
   let curEnd = matchingBrace(lines, start)
   if (curEnd < 0) return { found: false }
@@ -190,6 +239,82 @@ function normalizedSymbolBody(lines, startLine) {
 /** 已有符号基线（符号 -> 归一化符号体）。refresh 时在其上逐条更新，不清掉未出现的条目。 */
 function anchorBaselineSymbols() {
   return (ANCHOR_BASELINE && ANCHOR_BASELINE.symbols) || {}
+}
+
+/**
+ * 把一条 legacy 锚点（path:line + 该行内容）**推导**成符号锚点。
+ *
+ * 用户决定 1（2026-10-28）：存量 1113 条 legacy 锚点不能靠手改，要能自动推导成可自愈的形式。
+ *
+ * 推导规则：
+ *  1. 从 line 向上扫，找到最近的**符号定义行**（顶层或类成员级的 fun/class/object/val/...）。
+ *     这就是「包围该行的符号」。
+ *  2. 若该符号在同文件内**唯一** ⇒ 输出 `#Symbol@<内容哈希>`。
+ *  3. 若同名符号有多个（重载 / 不同类里的同名方法）⇒ 必须消歧：
+ *     用 `#Class.method`；推不出类名 ⇒ **判红，不猜**（用户决定 2）。
+ *  4. 若向上扫不到符号（顶层语句 / 配置文件 / YAML / JSON）⇒ 退化为「全文唯一内容匹配」：
+ *     该行内容在文件里唯一出现 ⇒ 输出 `#<内容哈希>` 形式的**内容锚点**；
+ *     不唯一 ⇒ 保持 legacy，并在 dry-run 报告里列出（用户决定 1：不要猜）。
+ *
+ * 返回 { ok: true, symbol, hash, line } 或 { ok: false, reason }。
+ */
+function deriveSymbolAnchor(lines, line, contentHash) {
+  const defRe = /^\s*(?:(?:private|public|internal|protected|export|default|override|suspend|inline|operator|abstract|open|final|static|async|const|data|sealed|enum|lateinit)\s+)*(?:fun|class|object|interface|val|var|let|function|type|def|struct|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)/
+  const classRe = /^\s*(?:(?:private|public|internal|protected|export|default|abstract|open|final|data|sealed|enum|static)\s+)*(?:class|object|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)/
+  const idx = Math.min(Math.max(line - 1, 0), lines.length - 1)
+
+  // 1) 向上找包围符号；同时按**花括号深度**判定宿主类（消歧用）。
+  //
+  // 关键：不能只「向上扫到第一个 class 就算宿主」——目标行可能在一个函数的局部作用域里，
+  // 向上先遇到的 class 可能是更外层的兄弟类。正确做法是跟着花括号深度走：
+  // 从目标行向上扫，depth 累加 '}' 减去 '{'；某个 class 声明行的**结束位置**（配对的 '}'）
+  // 必须覆盖目标行才是真正的宿主。
+  const enclosingClasses = []
+  for (let i = 0; i < idx; i += 1) {
+    const cm = lines[i].match(classRe)
+    if (!cm) continue
+    const close = matchingBrace(lines, i)
+    if (close >= idx) enclosingClasses.push({ name: cm[1], start: i, close })
+  }
+  // 最内层（start 最大）就是宿主类
+  const ownerClass = enclosingClasses.length > 0
+    ? enclosingClasses[enclosingClasses.length - 1].name
+    : null
+
+  let symbol = null
+  let symbolLine = -1
+  for (let i = idx; i >= 0; i -= 1) {
+    const dm = lines[i].match(defRe)
+    if (dm) { symbol = dm[1]; symbolLine = i; break }
+  }
+  if (symbol === null) {
+    // 4) 退化为全文唯一内容匹配
+    const target = lines[idx].trim()
+    if (target === '') return { ok: false, reason: '该行为空行，无法推导' }
+    const hits = []
+    for (let i = 0; i < lines.length; i += 1) if (lines[i].trim() === target) hits.push(i)
+    if (hits.length !== 1) return { ok: false, reason: '内容在全文出现 ' + hits.length + ' 次，不唯一' }
+    return { ok: true, symbol: null, hash: contentHash, line: idx + 1, kind: 'content' }
+  }
+
+  // 2) 同名符号是否唯一
+  const nameRe = new RegExp('(?:^|[^A-Za-z0-9_$])' + symbol.replace(/[.*+?^$\{\}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])')
+  let sameName = 0
+  for (const l of lines) if (defRe.test(l) && nameRe.test(l)) sameName += 1
+
+  if (sameName === 1) {
+    return { ok: true, symbol, hash: contentHash, line: symbolLine + 1, kind: 'symbol' }
+  }
+  // 3) 需要消歧
+  if (ownerClass === null || ownerClass === symbol) {
+    return { ok: false, reason: '同名符号 ' + sameName + ' 处且推导不出宿主类名，需人工消歧' }
+  }
+  return { ok: true, symbol: ownerClass + '.' + symbol, hash: contentHash, line: symbolLine + 1, kind: 'disambiguated' }
+}
+
+/** 行内容的短哈希（sha256 前 8 位），用于 `@hash` 判据。 */
+function contentHashOf(text) {
+  return createHash('sha256').update(text.trim()).digest('hex').slice(0, 8)
 }
 
 function countLegacyReferences(anchors) {
@@ -289,7 +414,13 @@ export function parseDoc(text) {
     if (m[1] !== undefined) {
       anchors.push({ path: norm(m[1]), line: Number(m[2]), ...parseExpectation(m[3]) })
     } else {
-      anchors.push({ path: norm(m[4]), line: m[6] === undefined ? null : Number(m[6]), symbol: m[5], symbolForm: true })
+      anchors.push({
+        path: norm(m[4]),
+        line: m[7] === undefined ? null : Number(m[7]),
+        symbol: m[5].replace(/::/g, '.'),
+        symbolHash: m[6],
+        symbolForm: true,
+      })
     }
   }
   const mermaid = []
@@ -336,7 +467,12 @@ export function checkDoc(text, universe, fsView, anchorBaseline = ANCHOR_BASELIN
   for (const id of new Set(dup)) push('dup-row', '主表重复登记：' + id)
 
   // 符号锚点的判别：符号在不在、符号体变没变。行号完全不参与判定。
-  const checkSymbolReference = (path, symbol, hintLine, label) => {
+  //
+  // 两种判据：
+  //  - 无 @hash：比对**整段符号体**（归一化后）。稳健但对同符号内的无关改动敏感。
+  //  - 有 @hash：比对**该符号体内是否还含这行内容**。这是从 legacy 推导出来的锚点用的形式，
+  //    把判据锚在推导当时的那一行上，同符号其它行改动不误伤。
+  const checkSymbolReference = (path, symbol, symbolHash, hintLine, label) => {
     const src = fsView.sourceLines ? fsView.sourceLines(path) : null
     if (src === null) {
       push('bad-anchor', 'Referenced file does not exist: ' + path + '#' + symbol + ' (' + label + ')')
@@ -344,18 +480,37 @@ export function checkDoc(text, universe, fsView, anchorBaseline = ANCHOR_BASELIN
     }
     const hit = symbolAt(src, symbol)
     if (!hit.found) {
-      push('symbol-missing', 'Symbol not found in ' + path + ': #' + symbol
-        + (hintLine === null ? '' : '（提示行 ' + hintLine + '）') + ' (' + label + ')')
+      if (hit.ambiguous) {
+        push('symbol-ambiguous', 'Symbol #' + symbol + ' in ' + path + ' has ' + hit.count
+          + ' definitions (' + hit.sites.join(', ') + '); use #Class.method to disambiguate (' + label + ')')
+      } else {
+        push('symbol-missing', 'Symbol not found in ' + path + ': #' + symbol
+          + (hintLine === null ? '' : '（提示行 ' + hintLine + '）') + ' (' + label + ')')
+      }
       return
     }
-    const expectedBody = (anchorBaseline.symbols ?? {})[path + '#' + symbol]
+    const key = path + '#' + symbol
+    if (symbolHash !== undefined) {
+      const bodyHashes = new Set(hit.body.split('\n').map((l) => contentHashOf(l)))
+      const expected = (anchorBaseline.symbolHashes ?? {})[key + '@' + symbolHash]
+      if (expected === undefined) {
+        push('symbol-unbaselined', 'Symbol-hash anchor has no baseline entry (run --refresh-anchor-baseline): '
+          + key + '@' + symbolHash)
+        return
+      }
+      if (!bodyHashes.has(symbolHash)) {
+        push('symbol-content-drift', 'Anchored line content vanished from ' + key + '@' + symbolHash
+          + '（定义行 ' + hit.line + '）; rerun --refresh-anchor-baseline after review')
+      }
+      return
+    }
+    const expectedBody = (anchorBaseline.symbols ?? {})[key]
     if (expectedBody === undefined) {
-      push('symbol-unbaselined', 'Symbol anchor has no baseline body (run --refresh-anchor-baseline): '
-        + path + '#' + symbol)
+      push('symbol-unbaselined', 'Symbol anchor has no baseline body (run --refresh-anchor-baseline): ' + key)
       return
     }
     if (expectedBody !== hit.body) {
-      push('symbol-body-drift', 'Symbol body changed at ' + path + '#' + symbol
+      push('symbol-body-drift', 'Symbol body changed at ' + key
         + '（定义行 ' + hit.line + '）; rerun --refresh-anchor-baseline after review')
     }
     // 行号变了不判红：这正是本方案要消灭的假红。
@@ -432,7 +587,7 @@ export function checkDoc(text, universe, fsView, anchorBaseline = ANCHOR_BASELIN
   for (const a of doc.anchors) {
     if (a.symbolForm) {
       seen.add(a.path + '#' + a.symbol)
-      checkSymbolReference(a.path, a.symbol, a.line, 'anchor')
+      checkSymbolReference(a.path, a.symbol, a.symbolHash, a.line, 'anchor')
       continue
     }
     const key = a.path + ':' + a.line
@@ -530,14 +685,24 @@ function makeFsView(repo, parent) {
     }
     rec(repo)
   }
+  /**
+   * 取整份源码行数组（符号锚点用）。
+   *
+   * 裸文件名（`index.ts` 这种）可能对应多份文件。这里**只在唯一时**返回，
+   * 多候选一律返回 null —— 否则符号会在错误的文件里解析（实测会让 27 条锚点
+   * 因「行号越界」推导失败，或者更糟：把锚点绑到错的同名符号上）。
+   * 用户决定 2：推导不出就判红/保持 legacy，不猜。
+   */
   const sourceLinesOf = (rel) => {
     const abs = locate(rel)
     if (abs) return linesOf(abs)
     if (!rel.includes('/')) {
       if (index === null) buildIndex()
       const cands = index.get(rel) ?? []
-      if (cands.length === 0) return null
-      weak.add(rel)
+      if (cands.length !== 1) {
+        if (cands.length > 1) weak.add(rel)
+        return null
+      }
       return linesOf(cands[0])
     }
     return null
@@ -685,6 +850,61 @@ if (isMain) {
   const text = readFileSync(docAbs, 'utf8')
   const universe = collectUniverse(REPO)
   const fsView = makeFsView(REPO, NO_PARENT ? null : PARENT)
+  // ── 推导迁移 / dry-run（用户决定 1）──────────────────────────────────────
+  // 把 legacy 锚点（path:line + 该行内容）推导成可自愈的符号锚点：
+  //   能唯一推导出符号 -> `path#Symbol@<内容哈希>`
+  //   内容在全文不唯一 / 同名多符号且推不出宿主类 -> 保持 legacy 并列出，不猜
+  if (DERIVE_ANCHORS || DERIVE_DRY_RUN) {
+    const parsed = parseDoc(text)
+    const report = { symbol: [], disambiguated: [], content: [], failed: [] }
+    const rewrites = new Map()
+    for (const a of parsed.anchors) {
+      if (a.symbolForm) continue
+      const src = fsView.sourceLines(a.path)
+      if (src === null) { report.failed.push({ key: a.path + ':' + a.line, reason: '文件不存在' }); continue }
+      const lineText = src[a.line - 1]
+      if (lineText === undefined) { report.failed.push({ key: a.path + ':' + a.line, reason: '行号越界' }); continue }
+      const hash = contentHashOf(lineText)
+      const d = deriveSymbolAnchor(src, a.line, hash)
+      if (!d.ok) { report.failed.push({ key: a.path + ':' + a.line, reason: d.reason, text: lineText.trim().slice(0, 60) }); continue }
+      const target = d.symbol === null
+        ? a.path + '@' + d.hash
+        : a.path + '#' + d.symbol + '@' + d.hash
+      report[d.kind].push({ key: a.path + ':' + a.line, target, text: lineText.trim().slice(0, 60) })
+      rewrites.set(a.path + ':' + a.line, target)
+    }
+    const total = report.symbol.length + report.disambiguated.length + report.content.length
+    console.log('锚点推导' + (DERIVE_DRY_RUN ? '（dry-run，不写盘）' : '') + '：')
+    console.log('  可推导 ' + total + ' 条（唯一符号 ' + report.symbol.length
+      + ' / 消歧后 ' + report.disambiguated.length + ' / 全文内容唯一 ' + report.content.length + '）')
+    console.log('  推导不出 ' + report.failed.length + ' 条（保持 legacy，需人工）')
+    const byReason = {}
+    for (const f of report.failed) byReason[f.reason] = (byReason[f.reason] ?? 0) + 1
+    for (const [k, v] of Object.entries(byReason).sort((x, y) => y[1] - x[1])) console.log('    ' + v + '  ' + k)
+    if (DERIVE_DRY_RUN) {
+      const outPath = process.env.DERIVE_REPORT ?? 'derive-report.json'
+      writeFileSync(outPath, JSON.stringify({ total, ...report }, null, 2) + '\n')
+      console.log('  明细已写入 ' + outPath)
+      if (report.failed.length > 0) {
+        console.log('  --- 推导不出（前 20）---')
+        for (const f of report.failed.slice(0, 20)) console.log('    ' + f.key + '  ' + f.reason + (f.text ? '  | ' + f.text : ''))
+      }
+      process.exit(0)
+    }
+    // 真正改写文档：把 `path:line` 文本替换成推导出的符号锚点
+    let out = text
+    let replaced = 0
+    for (const [key, target] of rewrites) {
+      const esc = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const re = new RegExp(esc + '(?!#expect=)', 'g')
+      out = out.replace(re, () => { replaced += 1; return target })
+    }
+    writeFileSync(docAbs, out)
+    console.log('  已改写 ' + replaced + ' 处引用 -> ' + DOC_REL)
+    console.log('  下一步：node scripts/check-code-map.mjs --refresh-anchor-baseline')
+    process.exit(0)
+  }
+
   if (REFRESH_ANCHOR_BASELINE) {
     const parsed = parseDoc(text)
     const sourceLineBaseline = ANCHOR_BASELINE.sourceLines ?? ANCHOR_BASELINE
