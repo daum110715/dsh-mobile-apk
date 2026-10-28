@@ -3085,7 +3085,7 @@
       "if (rel.endsWith('.map') || rel.endsWith('/')) continue   // 目录条目（lib/、lib/types/）不是成员"
     ],
     "check-patch-mirror.mjs:109": [
-      "const regSet = new Set(regIds)"
+      "if (regIds.length > 0 && implIds.length > 0) {"
     ],
     "check-patch-mounts.mjs:28": [
       "const TOP_ITEM = /^-(?:\\s|$)/"
@@ -3421,6 +3421,7 @@
       "* @returns compact facts and child-local failures; complete child event arrays are released after extraction.",
       "* Collect each related child's own descriptor through existing historical codecs.",
       "const incidental = new Set([",
+      "foreground: '',",
       "function signature(pattern) {",
       "let total = 0;",
       "return true;",
@@ -3428,28 +3429,27 @@
       "};"
     ],
     "index.ts:1038": [
-      "description:",
-      "writeAudit({ action: 'privileged-internal', call: internal, op, command: command ?? '', result: ok ? 'ok' : 'denied-internal-shape' })"
+      "writeAudit({ action: 'privileged-internal', call: internal, op, command: command ?? '', result: ok ? 'ok' : 'denied-internal-shape' })",
+      "}"
     ],
     "index.ts:1052": [
-      "text: { type: 'string', description: 'text 要输入的文本（≤200 可见字符）' },",
       "}"
     ],
     "index.ts:1063": [
       "* 0.13.5 W4：把一个壳桥操作交给壳侧执行。",
-      "denied: { type: 'boolean' },"
+      "}"
     ],
     "index.ts:1074": [
-      "if (!cap.ok) return { ok: false, denied: true, text: cap.text }",
-      "if (!this.#controlQueue) return { ok: false, error: '控制队列未装配（插件未挂载 webServer？）' }"
+      "if (!this.#controlQueue) return { ok: false, error: '控制队列未装配（插件未挂载 webServer？）' }",
+      "}"
     ],
     "index.ts:112": [
       "* @returns 状态载荷。",
       "*/",
       ".dsh-vdisplay-shutdown{margin-left:auto;border-color:var(--dsw-alias-border-l4);color:var(--dsw-alias-label-secondary)}",
       "/** Host session service minimum: a blank session is created without calling prompt or append. */",
-      "// 块G F4b（0.14.1）：`web_dump` 同型移出——它读的是**壳自有 WebView**（DSH 自己的 Web UI，",
       "export type { ScreenAccessDecision, ScreenId, UserScreenScope } from './screen-scope.js'",
+      "function tools(ctx: Context, priv: PrivilegeFace) {",
       "import { createIncomingDraftRuntime } from './mobile/incoming-runtime.ts'",
       "private readonly termuxVersion: string",
       "try {"
@@ -3457,7 +3457,7 @@
     "index.ts:125": [
       "* @param req - 请求事实（method/headers）。",
       "* 手动关机（0.14.0）：销毁本机全部虚拟屏，与设置页「强制销毁」同口径。",
-      "* 缺陷形态（用户两轮阻碍之一）：各调用点传的是**手搓的子集**，例如",
+      "/**",
       "/** Required services: composition, copy/theme faces, the runtime sessions, and the frame's panel actions. */",
       "const missing: string[] = missingBinaries.includes('bash')",
       "export interface AdbStatus {",
@@ -3466,17 +3466,17 @@
       "}"
     ],
     "index.ts:1255": [
-      "* 「界面未变」快路径（P0-4）：指纹一致直接回紧凑摘要，模型可复用上次引用。",
-      "* 原始设备行执行（manage 等消费：screencap+pull 组合、uiautomator dump+pull）。"
+      "* 原始设备行执行（manage 等消费：screencap+pull 组合、uiautomator dump+pull）。",
+      "/** 公开 id → 原始路径 id（无障碍动作按路径回指壳侧节点）。 */"
     ],
     "index.ts:1416": [
-      "export function a11yStatusText(source: A11ySource, heartbeatAgeMs: number | null): string {",
-      "}"
+      "const warn = mismatch",
+      "export function a11yStatusText(source: A11ySource, heartbeatAgeMs: number | null): string {"
     ],
     "index.ts:142": [
       "",
       "* permission presets read. Enforcement is the Android app domain, not a",
-      "// **必须用异步面**：`virtual-N` → displayId 要经壳侧 vdInfo 注册表解析，同步面做不到，",
+      "// 为什么在这里绑：本插件的私有面调用点有 40+ 处（分散在各 helper 里，多数拿不到 exec），",
       "additionalProperties: false,",
       "const candidate = bridge[method]",
       "id: string",
@@ -3485,29 +3485,28 @@
     ],
     "index.ts:1438": [
       "",
-      "+ '界面未变时返回「未变」摘要（传 fresh:true 强制重抓）。'"
+      "detailHandle: detail.handle,"
     ],
     "index.ts:1444": [
       "+ '提供 dump/click/input/scroll 语义操作）；特权 shell 通道由 Shizuku 承载（设置页「手机控制」安装、启动并授权后：'",
-      "},"
+      "+ warn + webHint + detail.hint,"
     ],
     "index.ts:1463": [
       "const polling = gates?.polling",
-      "return {"
+      "x: { type: 'number', description: '绝对 X 像素（虚拟屏坐标模式用；需配 screenId）' },"
     ],
     "index.ts:1558": [
-      "nodes: pruned.nodes as unknown as JsonValue[],",
+      "const webRef = ref!.trim()",
       "writeAudit({ action: 'termux-channel', args: { command }, result: 'ok' })"
     ],
     "index.ts:1612": [
-      "],",
       "}"
     ],
     "index.ts:165": [
       "",
+      "*",
       "* ADS 授权持久面（0.13.0 F1.7 设置页闭环，2026-08-23；Shizuku 对照收紧）：",
       "* 所以 `ResizeObserver` 与 `window.resize` 都不触发；旧实现唯一的兜底是 1s 轮询，",
-      "* 随后整轮都在错误前提下排查。**对模型不可发现的参数等于不存在的参数。**",
       "//",
       "TERMUX_VERSION: this.termuxVersion,",
       "sessionId: string",
@@ -3515,19 +3514,18 @@
     ],
     "index.ts:1664": [
       "const sandboxPolicy = (ctx as unknown as {",
-      "return {"
+      "return { ok: false, denied: false, text: '没有可用的控件清单（缓存已失效）——请先执行 android_ui_dump 拿新 ref' }"
     ],
     "index.ts:1669": [
-      "text: data.guidance ?? ('已在 ' + screenId + ' 注入坐标点击 (' + Math.round(x!) + ',' + Math.round(y!) + ')'),",
+      "if (!node.clickable && !node.editable && !node.scrollable) {",
       "}).shell"
     ],
     "index.ts:1899": [
-      "// 未配对 ADB 的部署下根本不需要 adb（此前挡在前面 → 语义滚动被误判成「ADB 执行通道未接通」）。",
+      "const r = await a11yExec('setText', payload)",
       "ctx.logger?.('dsh-android-bridge')?.warn?.('task-done marker listener failed: ' + String((e as Error).message))"
     ],
     "index.ts:251": [
       "",
-      "? '——本机未给出整屏尺寸，本次按**当前窗口**换算，多窗口下可能偏左'",
       "? snap.screens.find((s) => s.kind === 'virtual')?.alias",
       "additionalProperties: false,",
       "const bashVersion = await this.readBashVersion()",
@@ -3541,9 +3539,9 @@
       "/** First line of `bash --version`, or undefined when bash cannot report it. */",
       "// text-overflow: ellipsis，而 banner 里的状态胶囊与复制按钮不可收缩，把命令挤进窄",
       "browserWebViewAvailable: { type: 'boolean', required: true },",
-      "const d = (data ?? {}) as { basis?: unknown; basisWidth?: unknown; basisHeight?: unknown }",
       "if (typeof data.displayId === 'number') out.displayId = data.displayId",
       "ts: new Date().toISOString(),",
+      "type: 'object',",
       "window.addEventListener('resize', publishBounds)",
       "},"
     ],
@@ -3552,7 +3550,7 @@
       "// its 100% height (the layout viewport does not shrink on Android 16",
       "// 无线调试」的实时事实）；旧壳无该键 → 回落 paired（旧的间接证明语义）。",
       "displayId: { type: 'integer' },",
-      "output: {",
+      "if (info !== undefined && info.ok) {",
       "}",
       "} catch { /* 审计目录不可建：落审计失败不改变删除结果 */ }",
       "},"
@@ -3561,9 +3559,9 @@
       "* 扫描计划 → UI 载荷。**绝不下发绝对路径**：只给稳定 id、类别、`$DSH_HOME`/`$DSH_FILES_DIR`",
       "? writeMode === 'danger-full-access'",
       "const bridge = new ThemeBridge()",
-      "const realInScope = scope === 'real-only' || scope === 'all'",
       "let ctxRef: Context | undefined",
       "name: 'android_vdisplay_create',",
+      "reason: realInScope ? '可在完全访问会话中使用无障碍或已授权 transport 操作。' : '当前用户范围不允许读取或操作真实屏幕。',",
       "return undefined",
       "}"
     ],
@@ -3574,7 +3572,7 @@
       "+ '「虚拟屏」查看器，真实屏不受影响。失败时返回结构化 code/guidance（能力缺项、通道未就绪等），'",
       "// watchStageVisibility 事件通道负责，不再依赖这一拍。",
       ": undefined",
-      "const virtuals: Array<{ screenId: string; displayId?: number }> = []",
+      "for (const virtual of virtuals) {",
       "}, 'ui-responsive: theme bridge')"
     ],
     "index.ts:31": [
@@ -3584,7 +3582,7 @@
       "const DEFAULT_ENGINE_PORT = 4145",
       "function isEnglish(): boolean {",
       "import { ExportResultDialog } from './ExportResultDialog.tsx'",
-      "import { detailRecord, pageRows, writeDetailStore } from './detail-store.js'",
+      "import { nodeListLines } from './node-list.js'",
       "type UserScreenScope,",
       "} from './route-auth.js'"
     ],
@@ -3593,13 +3591,12 @@
       "* @returns 条目 id；注册面缺失或失败时 undefined（调用方省略 workspaceId，会话仍能建但未分组）。",
       "const authOptions = (): AuthOptions => ({",
       "export const A11Y_FRESH_MS = 20_000",
-      "{",
       "}",
       "}))",
       "}, DevSection))"
     ],
     "index.ts:368": [
-      "*",
+      "): Promise<ShotValue> {",
       "/\\bchmod\\s+-R\\s+\\d{3,4}\\s+\\//,",
       "ctx.effect(() => installAboutEntry(), 'ui-responsive: about entry')",
       "for (const t of tools(ctx, svc)) ctx.tools.register(t)",
@@ -3608,53 +3605,52 @@
       "}, tr('关闭全部', 'Close all'))),"
     ],
     "index.ts:380": [
-      "",
       "'shutdown', 'reboot', 'poweroff', 'halt',",
       "* 随 fiber 释放回收）。sidebarRightTabs 缺席时只告警不抛错（fail-closed，不阻断客户端启动）。",
       "// 市场插件据此打开它的浮层；该浮层由 market-J-fullpage 补丁做成整页（满屏 + 返回页头）。",
       "auth: authOptions,",
       "const next = ensureChain.then(run, run)",
-      "if (!Number.isInteger(d) || d < 0 || d > 20_000) return rejectInput('swipe 的 duration 需为 0-20000 毫秒') as never"
+      "if (!Number.isInteger(d) || d < 0 || d > 20_000) return rejectInput('swipe 的 duration 需为 0-20000 毫秒') as never",
+      "text: `截图已保存：${filePath}（${channelNote}${why}）`,"
     ],
     "index.ts:393": [
       "",
-      ": {}",
       "const sidebar = ctx.get('sidebarRight') as SidebarRightController | undefined",
       "const workspaceId = await incomingWorkspaceId()",
       "if (raw.length === 0 || raw.length > 500) return rejectInput('text 长度需为 1-500 字符') as never",
-      "sendMobileRouteRejection(res, rejection)"
+      "sendMobileRouteRejection(res, rejection)",
+      "}"
     ],
     "index.ts:394": [
       "/** ADB 通道附加黑名单（shell uid=2000 执行面比 app uid 更危险：系统级配置/权限写面一律拒绝）。 */",
       "// ── Frame-wide entries ──────────────────────────────────────────────────",
       "const controller = sessionControllerOf()",
-      "const sizeNote = sizeFields.width === undefined ? '?' : String(sizeFields.width)",
       "if (sidebar === undefined) return () => {}",
       "payload.text = raw",
-      "return"
+      "return",
+      "try {"
     ],
     "index.ts:42": [
       "* documented default; a present but non-decimal or out-of-range value is invalid. This is read per",
+      "adbKeyboardAuth,",
       "const MAX_CONTENT_BYTES = 256 * 1024 * 1024",
       "export const PROBE_BINARIES = ['bash', 'ls', 'cat', 'grep', 'find', 'sed', 'cp', 'mv', 'rm', 'mkdir', 'rg'] as const",
       "import { TrajectoryPanelsObserver } from './trajectory-panels-observer.ts'",
       "interface SandboxPolicyFace {",
       "method?: string",
       "}",
-      "} from './control-queue.js'",
-      "} from './ime-broadcast.js'"
+      "} from './control-queue.js'"
     ],
     "index.ts:428": [
       "//",
       "ctx.effect(() => injectStyle('tap-highlight', TAP_HIGHLIGHT_CSS), 'ui-responsive: clear WebView tap highlight')",
       "if (collapsedNow()) { pending = true; return }",
       "res.end(JSON.stringify({ ok: false, error: 'GET only' }))",
-      "rmSync(filePath, { force: true })",
       "wsvc.register({",
       "}"
     ],
     "index.ts:432": [
-      "...sizeFields,",
+      "* 点击生效校验（issue #129）：点后短暂等待，读壳侧便宜状态（快照代次 + 失效标记，不建树）。",
       "/** apply 注入的宿主面（命令面/工作区面按调用实时经 ctx.get 读取）。 */",
       "ctx.effect(() => injectStyle('sidebar-reorder', SIDEBAR_REORDER_CSS), 'ui-responsive: sidebar reorder feedback')",
       "export interface ControlAuth {",
@@ -3664,50 +3660,50 @@
     ],
     "index.ts:444": [
       "*  - `vdInfo`/`vdCreate`/`vdDestroy`/`state`/`snapshot`/`nodeText`/`screenshot`/`web*`：读面或",
-      "+ '图像就在本结果里，无需再调用 read_image；像素坐标换算用归一化 nx/ny。',",
       "// background thread and reports through window.__dshExportResult. The bridge",
+      "// 旧文案「界面已变化（已生效）」会把「打偏到背景应用」也说成生效（issue 实测两次均如此）。",
       "function safeResolveInside(ws: string, path: string): string | null {",
       "return () => {}",
       "sendJson(res, 200, await readVdToolSnapshot(faceOf()))",
       "}"
     ],
     "index.ts:453": [
-      "* 代次变化或 invalidated=true 即判定界面确实变了；否则明确回报「未观察到变化」，",
       "/** 动画三开关（manage 的 android_env_prepare 读写面）。 */",
+      "// 真因：本函数比对的 `beforeGen` 传的是 `uiCache.gen`（那是**配置代次**，如 fp0c052e71，恒定），",
       "id: 'open',",
       "name: 'shell.overlay',",
       "wsReal = wsLex"
     ],
     "index.ts:472": [
       "// ── Native \"open with\" wiring ───────────────────────────────────────────",
-      "// 但紧接着的 `android_ui_dump` 明确显示 Switch 从 `[已选中]` 变为未选中——**点击其实成功了**。",
       "// 侧边栏终端的屏上九键条（0.14.2 T4）。",
       "const INTERNAL_PRIVILEGED: Record<string, { why: string; allows: (command: string) => boolean }> = {",
-      "output: {"
+      "output: {",
+      "return out"
     ],
     "index.ts:477": [
       "'animation-scales': {",
       "// ok/error 是本工具的**错误出口**：队列目录不可读/不可建时（EACCES 等）必须返回",
       "// registration is gone and no other site re-adds it. The component file stays",
-      "// 「校验本身不可靠」与「点击落空」是两件事，模型据此决定「重试」还是「放弃」，不能混。",
-      "// 从而让「终端底边 <= 键条顶边」成为布局不变量而非调数值的结果。"
+      "// 从而让「终端底边 <= 键条顶边」成为布局不变量而非调数值的结果。",
+      "async function setAnimScales(v: string): Promise<void> {"
     ],
     "index.ts:517": [
       "*",
-      ".map((f) => ({ f, t: statSync(join(dir, f)).mtimeMs }))",
       "return () => { marker.detach() }",
-      "try { purgeStaleUnclaimed('boot') } catch { /* 清理失败不阻断装配 */ }"
+      "try { purgeStaleUnclaimed('boot') } catch { /* 清理失败不阻断装配 */ }",
+      "},"
     ],
     "index.ts:584": [
       "bytes,",
-      "if (!r.ok) {",
+      "const shotH = typeof data.height === 'number' && Number.isFinite(data.height) ? data.height : undefined",
       "name: 'sidebar.right.pane.tab', key, locale: namespace, store,",
       "readonly #shellFace?: { resolve?(spec: Record<string, unknown>): Record<string, unknown>; run(spec: Record<string, unknown>): Promise<Record<string, unknown>> }"
     ],
     "index.ts:69": [
       "*/",
       "/** 只信任实际监听端口对应的回环 authority；env 非法时返回空表（调用方一律拒绝）。 */",
-      "bindSession?(session: unknown): void",
+      "controlDecision?(op: string, session?: unknown, forceBackend?: 'a11y' | 'adb'): { backend: 'a11y' | 'adb' | 'deny'; reason: string; guidance?: string }",
       "export interface IncomingRes {",
       "export {",
       "extraPath?: string[]",
@@ -3717,16 +3713,16 @@
     ],
     "index.ts:909": [
       "a11yFacts(): A11yAvailabilityFacts {",
-      "n.scrollable ? '可滚动' : '',",
+      "androidVersion: { type: 'string' },",
       "}"
     ],
     "index.ts:949": [
       "/** 0.13.5 W4：结构化授权事实（两条通道各自的门）。 */",
-      "const treeOutput = () => ({"
+      "devices,"
     ],
     "index.ts:991": [
-      "}",
-      "},"
+      "{ type: 'text', text: pickText(v, 'text') || '(no output)' },",
+      "}"
     ],
     "inject-all.py:174": [
       "added_files = 0"
@@ -4026,79 +4022,79 @@
       "export function adbKeyboardBroadcast(action: string, msg: string | null | undefined, auth: string): string {"
     ],
     "plugins/dsh-android-manage/src/index.ts:1071": [
-      "const a = await guard('act_input', args as Record<string, unknown>, exec as { agent?: { session?: unknown } })"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:114": [
-      "// 留在本集合里的后果是确定的过度拦截：guard 的 requested 恒为 undefined → decideScreenAccess"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:1268": [
-      "...(typeof gen === 'number' ? { gen } : {}),"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:1300": [
-      "ok: false,"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:133": [
-      "* 修法不是逐个补字段（下次加字段还会漏），而是**唯一入口收完整实参**。"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:1341": [
-      "if (typeof d.displayId === 'number') out.displayId = d.displayId"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:137": [
-      "// 为什么在这里绑：本插件的私有面调用点有 40+ 处（分散在各 helper 里，多数拿不到 exec），"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:138": [
-      "// 逐个改签名噪声大且必漏；而 guard 是每个工具入口的唯一必经点，语义正是「这次调用属于谁」。"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:1494": [
-      "v2 = dec.value"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:1507": [
-      "uiCache.ts = Date.now()"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:1519": [
-      ": (Number.isFinite(rawW) && rawW > 0 ? { w: rawW, h: Number.isFinite(rawH) ? rawH : 0 } : { w: 0, h: 0 })"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:152": [
       "}"
     ],
+    "plugins/dsh-android-manage/src/index.ts:114": [
+      "// before it chooses a11y/ADB. That prevents the legacy ADB fallback from bypassing virtual-only."
+    ],
+    "plugins/dsh-android-manage/src/index.ts:1268": [
+      "if (handle === undefined || handle === '') return false"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:1300": [
+      "if (!priv.execAdbLine) return { w: 0, h: 0 }"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:133": [
+      "* 于是 `screenId` 在到达 `screenAccess()` 之前就被丢掉了——**无论模型传 virtual-1 还是别的，"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:1341": [
+      "// 原样带出，让模型在同一轮改用坐标路径，而不是停在「取树失败」。"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:137": [
+      "* 这也解释了为什么同一族工具有的能路由、有的不能：差别只在调用点是否碰巧把 screenId 抄进去了。"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:138": [
+      "* 修法不是逐个补字段（下次加字段还会漏），而是**唯一入口收完整实参**。"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:1494": [
+      "const { ref, nx, ny, longClick, x, y, screenId } = args ?? {}"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:1507": [
+      "// **归一化坐标在虚拟屏上是歧义的，必须拒绝**（0.14.0 模拟器实锤的新缺陷）。"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:1519": [
+      "text: '在 ' + screenId + ' 上不能用 nx/ny：归一化按哪块屏换算存在歧义（壳侧会按真实屏算，实际点到真屏上）。'"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:152": [
+      ": priv.screenAccess!(requested)"
+    ],
     "plugins/dsh-android-manage/src/index.ts:1537": [
-      "const warn = mismatch"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:1899": [
-      "// 未配对 ADB 的部署下根本不需要 adb（此前挡在前面 → 语义滚动被误判成「ADB 执行通道未接通」）。"
-    ],
-    "plugins/dsh-android-manage/src/index.ts:1999": [
       "return {"
     ],
+    "plugins/dsh-android-manage/src/index.ts:1899": [
+      "const r = await a11yExec('setText', payload)"
+    ],
+    "plugins/dsh-android-manage/src/index.ts:1999": [
+      "// 还原用户原 IME（广播已被接收器入队提交，留 0.4s 提交窗口防切换竞态）。"
+    ],
     "plugins/dsh-android-manage/src/index.ts:2031": [
-      "const needSwitch = prev.length > 0 && prev !== IME_ID"
+      "const src = n as unknown as Record<string, unknown>"
     ],
     "plugins/dsh-android-manage/src/index.ts:2283": [
-      "if (!priv.execAdbShell) return { ok: false, denied: false, text: 'ADB 执行通道未接通（本工具需要 adb shell；无障碍通道无法改系统设置）' }"
+      "text: data.guidance ?? ('已在 ' + screenId + ' 上拉起 ' + pkg),"
     ],
     "plugins/dsh-android-manage/src/index.ts:2286": [
-      "const notDone: string[] = []"
+      "const cap = adbChannelOnly('app_launch', exec as { agent?: { session?: unknown } })"
     ],
     "plugins/dsh-android-manage/src/index.ts:394": [
-      "const sizeNote = sizeFields.width === undefined ? '?' : String(sizeFields.width)"
+      "try {"
     ],
     "plugins/dsh-android-manage/src/index.ts:517": [
-      ".map((f) => ({ f, t: statSync(join(dir, f)).mtimeMs }))"
+      "},"
     ],
     "plugins/dsh-android-manage/src/index.ts:571": [
-      "if (image !== undefined) blocks.push({ type: 'image', attachment: image })"
+      "imagePath: '', denied: false,"
     ],
     "plugins/dsh-android-manage/src/index.ts:580": [
-      "// 0.13.5 W4：无障碍截屏优先（API 30+ 的 AccessibilityService.takeScreenshot——不需要 ADB）"
+      "adbNote = '（无障碍截屏未返回文件路径——已回落 ADB 通道）'"
     ],
     "plugins/dsh-android-manage/src/index.ts:7": [
       "* 工具集（全部经 ctx.androidPrivilege 前置校验 + 审计）："
     ],
     "plugins/dsh-android-manage/src/index.ts:728": [
-      "if (!uiCache || Date.now() - uiCache.ts > UI_CACHE_TTL) {"
+      "ok: true, denied: false, handle, path, total: rows.length,"
     ],
     "plugins/dsh-android-manage/src/index.ts:901": [
-      "}"
+      "'设备与屏幕信息 + 当前前台应用（只读；dumpsys —— 系统属性读取在部分厂商 ROM 受限时如实降级）。',"
     ],
     "plugins/dsh-android-manage/src/protocol-v2.ts:114": [
       "}"
@@ -4311,19 +4307,19 @@
       "const args = [':app:testDebugUnitTest', '--no-daemon', '--console=plain']"
     ],
     "scripts/check-patch-mirror.mjs:109": [
-      "const regSet = new Set(regIds)"
+      "if (regIds.length > 0 && implIds.length > 0) {"
     ],
     "scripts/check-patch-mirror.mjs:170": [
-      "const onlyMine = mineData.filter((r) => !peerData.includes(r))"
+      "const peerData = walkFiles(join(peer, 'scripts', 'patches', 'data'))"
     ],
     "scripts/check-patch-mirror.mjs:231": [
-      "'LICENSES/Shizuku-API-MIT.txt',"
+      "'scripts/third-party-licenses.json',"
     ],
     "scripts/check-patch-mirror.mjs:339": [
-      "'plugins/dsh-android-linux-env',"
+      "'dsh-shell-termux',"
     ],
     "scripts/check-patch-mirror.mjs:347": [
-      "'scripts/check-api-route-auth.mjs',"
+      "'scripts/check-bounded-io.mjs',"
     ],
     "scripts/check-plugin-tests.mjs:33": [
       "* 钉在唯一入口（`runCommand` 里合并），而不是逐个调用点补：调用点显式传的 `env` 也覆盖不掉它，"
