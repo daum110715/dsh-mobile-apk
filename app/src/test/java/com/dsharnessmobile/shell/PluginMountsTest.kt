@@ -804,4 +804,40 @@ class PluginMountsTest {
       afterChild,
     )
   }
+
+  // ---- 2026-10-28 自查：name 命中收窄到条目键层（config 子树里的同名 name 不得误删） ----
+
+  @Test
+  fun configSubtreeNameDoesNotDeleteAProductEntry() {
+    // 场景：要移除插件 evil；但某个**产品**条目的 config 里恰好有 `name: evil`
+    // （插件自己的显示名字段）。全深度匹配会把这个产品条目连带删掉。
+    val patch = listOf(
+      "- insert:",
+      "    - id: prod-one",
+      "      name: '@dsh-android/prod-one'",
+      "      config:",
+      "        name: evil",
+      "    - id: evil",
+      "      name: evil",
+    ).joinToString("\n") + "\n"
+    val out = PluginMounts.removeEntry(patch, "evil", null)
+    assertNotNull("真第三方条目仍应被摘除", out)
+    assertTrue("产品条目必须保留：" + out, out!!.contains("- id: prod-one"))
+    assertTrue("产品的 config 子树必须逐字保留：" + out, out.contains("name: evil"))
+    assertFalse("真第三方条目应被摘除", out.contains("id: evil"))
+  }
+
+  @Test
+  fun nameAsTheItemFirstKeyStillMatches() {
+    // 条目首键本身就是 name（没有 `- id:`）时，键层判据必须仍然命中。
+    val patch = listOf(
+      "- insert:",
+      "    - name: evil-pkg",
+      "      config:",
+      "        x: 1",
+    ).joinToString("\n") + "\n"
+    val out = PluginMounts.removeEntry(patch, "evil-pkg", null)
+    assertNotNull("首键为 name 的条目仍要能按 name 移除", out)
+    assertFalse("该条目应被摘除：" + out, out!!.contains("evil-pkg"))
+  }
 }
