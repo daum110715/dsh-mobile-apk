@@ -2150,3 +2150,19 @@ JVM 边界测试在 `EngineBootInstrumentationTest`（取值与 clamp 边界、�
     - `fix/issue-batch3-…`：**降到 8 例**，且这 8 例全是 `echo 'x' # screencap …` —— **`#` 后面 shell 本来就不执行，放行是对的**（batch3 加了词首注释剥离）。⇒ **batch3 这 160 例实际 0 真洞**。
     ⇒ **纪律**：①`eval` / `trap` 的展开修复**只在 #717（batch3）里**；`#719`（batch4）与 `#733`（self-audit）都基于 main，**这两个合并了也不会带上它** —— 如果作者先合 #719/#733 再合 #717，中间窗口里 `eval "screencap …"` 是放行的。真要拆成两个不重叠的批次，得把 `EVAL_PAYLOAD`/`TRAP_PAYLOAD` 那两段单独摘出来。
     ②写这类 fuzz 时**注释形态要单独分类**（我的不变量一开始把 `echo 'x' # cmd` 也算泄漏，属假阳）——判断"该不该拦"要看**shell 会不会执行**，而不是"命令词有没有出现"。
+
+    ⑱ **`screen-scope.ts` 的引擎侧判据：`#717`（batch3）比 main 多 4 个，其中 3 个在 main/batch4/#733 上仍缺**（2026-10-28 用 diff + 探针逐条坐实）：
+    batch3 相对 main 新增的四条判据（`git diff origin/main fix/issue-batch3 -- plugins/dsh-android-bridge/src/screen-scope.ts`）：
+    ① `MALFORMED_DISPLAY_OPTION`（`-d=7` / `-dx` 形态）—— **其根因已由 #733 的 `2bbb5049` 修掉**（`displayOptionsIn` 短选项不再吃 `=`），所以 main 上这条路已经堵住，batch3 那条成了第二层保险。
+    ② `EVAL_PAYLOAD`（`eval "<cmd>"` 载荷展开）
+    ③ `TRAP_PAYLOAD`（`trap '<cmd>' EXIT` 载荷展开）
+    ④ `interpreterPayloadUnparsed`（含 `SHELL_C_PAYLOAD` 与**裸解释器段** `BARE_SHELL_SEGMENT`）
+    ⇒ **②③④ 在 main / batch4 / #733 上仍然缺**。探针实测（`isOwnedTarget` 恒 false，即空注册表最严）：
+    ```
+    "echo 'screencap -p /x.png' | sh"   → main: allow   batch3: deny-unparsed
+    "eval "screencap -p /x.png""       → main: allow   batch3: deny-unparsed
+    "trap 'screencap -p /x.png' EXIT"   → main: allow   batch3: deny-unparsed
+    "sh" / "/system/bin/sh" / "busybox sh" → main: allow   batch3: deny-unparsed
+    ```
+    **为什么 `| sh` 那类特别危险**：`echo '<真实屏命令>' | sh` 里，喂入段被 `stripQuotedText` 抹成空、接收段是裸 `sh`（同样无命令词）⇒ 引擎侧两条都不进屏幕命令词面 ⇒ **allow**，而执行时 `sh` 从 stdin 读到命令照跑。**壳侧 `ShellOps.decideScreenCommand` 的 `BARE_SHELL_SEGMENT` 会 DENY_UNPARSED 兜住**（所以执行点安全），但引擎侧先告诉模型"可以做" ⇒ **误导性错误**（模型收到允许、到壳侧才被拒）。
+    ⇒ **纪律**：①这 3 条判据的修复归属是 `#717`，**不要**在 #733/#719 里重复写（会与 batch3 冲突且重复）；②若作者按 #719 → #733 → #717 的顺序合，中间窗口里这三个形态在引擎侧是放行的（执行点仍安全）；③`ShellOps.kt` 里 `BARE_SHELL_SEGMENT` 的注释声称「与引擎侧 `screen-scope.ts` 的同构判据同批演进」—— **这句话在 main/batch4/#733 上不成立**，只在 batch3 成立；④查这类漂移最快的办法是**同一批探针在两侧各跑一次**（跨语言 fixture 只覆盖已登记的用例，覆盖不到就看不出来）。
