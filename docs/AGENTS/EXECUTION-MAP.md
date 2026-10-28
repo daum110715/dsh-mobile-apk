@@ -7,7 +7,29 @@
 > 3. 想**先通读一遍** → §1 全局运行顺序（阶段 0-4 + 时序图）→ §2 主表 → §4 耦合矩阵。
 >
 > **当前源码登记**：v0.14.5基线 + 0.14.5-fx-1本地实施（详见下方实施补充）；上游官方639ed015（0.2.0-rc.2），新模块/fixtures与当前锚点见§6/§7；旧cc0c921/coord1f9852d审查条目仅历史溯源，非本轮运行证据。
-> Anchor syntax is `path:line#expect=<URI-encoded-substring>` with paths relative to the APK repository. Existing unannotated coordinates and their occurrence counts are pinned by `scripts/check-code-map-anchor-baseline.json`; a new or moved coordinate needs an explicit expected substring. The refresh command rejects new unannotated occurrences, including moves to an already-known coordinate. Review intentional source-line changes before running `node scripts/check-code-map.mjs --refresh-anchor-baseline`.
+> **锚点语法（两种，推荐符号形式）**
+>
+> ```
+> path#Symbol@<8位内容哈希>   行级锚点：钉住符号范围内的「某一行内容」
+> path#Class.method@<hash>    消歧形式（同名多定义时必须用）
+> path#Symbol                 整符号锚点：钉住整个符号体
+> path:line#expect=<片段>     旧的行号形式（仍可用，但会随行号漂移）
+> ```
+>
+> 路径相对 APK 仓。
+>
+> **判定口径（2026-10-29 定）**：符号锚点的判据是「**符号范围 + 行内容唯一匹配**」，不是「整符号体 hash」。
+>
+> - 解析：锚点归到**最近的「非局部」包围符号**。局部函数（`fun` 套在另一个 `fun` 里，如 `ShellOps.kt` 的 `viaSu`）不是稳定契约单元，跳过它、归到外层的 `exec`。
+> - 校验：把锚点记录的该行归一化内容（sha256 前 8 位）在包围符号的花括号范围内找，**找到且唯一** -> 绿；**找不到** -> `symbol-content-drift` 红；**出现多次** -> `symbol-content-ambiguous` 红（要求人工改指更具体的符号）。
+> - 三个方向都要对：上方插 50 行 -> 绿；符号内别处改动 -> 不影响；目标行真被改 -> 红。用「整符号体 hash」会把第二条误判成红——假红比漏报更消耗人。
+> - 空行不能做锚点（空串 sha256 恒为 `e3b0c442`，任何空行都会匹配，判据失效）。
+>
+> **仍然会红的情形**：符号消失（`symbol-missing`）、同名多定义未消歧（`symbol-ambiguous`）、锚点未登记基线（`symbol-unbaselined`）。
+>
+> **迁移**：`node scripts/migrate-anchors.mjs --dry-run` 先出报告；确认后用 `--write` 落盘（默认 dry-run，必须显式 `--write`）。迁完自动 `--refresh-anchor-baseline` 并跑全仓门禁，任一步失败即回滚文档。存量 legacy 锚点与符号锚点可长期共存。
+>
+> 旧的 `path:line` 坐标及其出现次数由 `scripts/check-code-map-anchor-baseline.json` 钉住；新增或移动的旧式坐标需要显式 `#expect` 片段。`--refresh-anchor-baseline` 会拒绝新的未标注坐标（包括移动到已知坐标）。
 >
 > **Anchor drift:** run `node scripts/check-code-map.mjs` after source edits. It checks coverage, source-line expectations, IDs, and coupling evidence (see §7).
 > **维护**：新增/删除块、调用顺序或耦合关系变化 → 改本文对应查点（`AGENTS.md` §5.1 已登记）。
