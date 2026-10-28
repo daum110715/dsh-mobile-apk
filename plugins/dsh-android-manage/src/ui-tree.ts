@@ -403,3 +403,26 @@ export function scopePoolV2(v: { rows: UiNode[]; subtreeEnd: Int32Array }, scope
   const end = v.subtreeEnd[i]
   return v.rows.slice(i, end > i ? end : i + 1)
 }
+
+/**
+ * 0.13.8 P0-4：树结构指纹（FNV-1a）——「界面未变」快路径的判定依据。
+ * 覆盖定位所需字段（文本/描述/类型/几何/交互性）；任一变化 → 指纹翻转 → 完整重抓。
+ * 纯追加语义：指纹相同只回一行「未变」摘要，绝不改写历史结果（L1）。
+ */
+export function treeFingerprint(nodes: UiNode[]): string {
+  let h = 0x811c9dc5
+  for (const n of nodes) {
+    // **分隔符必须是文本里不可能出现的字符**：这段串是「界面未变」快路径的判据，
+    // 用 `|` 分隔时，同一节点（同 id / 同几何）的文本若恰好从 `("a|b","c")` 变成
+    // `("a","b|c")`，两串逐字节相同 ⇒ 指纹不翻转 ⇒ 回「未变」摘要、模型复用旧引用 ⇒ 点错目标。
+    // 统一用 `\u0000`（与 `pruneNodes` / `protocol-v2` 同口径）。
+    const s = `${n.id}\u0000${n.parentId}\u0000${n.text}\u0000${n.desc}\u0000${n.rid}\u0000${n.type}\u0000${n.cx},${n.cy},${n.w},${n.h}\u0000${n.clickable ? 1 : 0}${n.editable ? 1 : 0}${n.scrollable ? 1 : 0}${n.checked ? 1 : 0}${n.visible ? 1 : 0}`
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i)
+      h = Math.imul(h, 0x01000193) >>> 0
+    }
+    h ^= 0xff
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return 'fp' + h.toString(16).padStart(8, '0')
+}

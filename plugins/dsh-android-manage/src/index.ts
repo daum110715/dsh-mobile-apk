@@ -26,7 +26,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 import { join } from 'node:path'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
-import { parseUiTreeXml, pruneNodes, resolveRef, findActionableAncestor, checkUiTreeParse, type UiNode, actionableAncestorV2, scopePoolV2 } from './ui-tree.js'
+import { parseUiTreeXml, pruneNodes, resolveRef, findActionableAncestor, checkUiTreeParse, type UiNode, actionableAncestorV2, scopePoolV2, treeFingerprint } from './ui-tree.js'
 import { cacheFromV2, decodeV2, isV2Payload, type V2Decoded } from './protocol-v2.js'
 import { detailRecord, pageRows, writeDetailStore } from './detail-store.js'
 import { resolveVirtualDisplayToken, vdTokenMissingText } from './vd-shot.js'
@@ -103,6 +103,7 @@ function pickText(v: Record<string, unknown>, ...keys: string[]): string {
     .filter((s) => s.length > 0)
     .join('\n')
 }
+
 
 function tools(ctx: Context, priv: PrivilegeFace) {
   // Every route that can observe or manipulate an Android display goes through this one scope gate
@@ -893,7 +894,10 @@ properties: {
     const desc = String(n.desc || '').trim()
     const box = `${String(n.x ?? 0)},${String(n.y ?? 0)} ${String(n.w)}x${String(n.h)}`
     const depth = typeof n.depth === 'number' ? n.depth : 0
-    const key = `${text}|${desc}`
+    // 分隔符必须是文本里不可能出现的字符：UI 文本里 `|` 很常见（「标题 | 副标题」），
+    // 用 `|` 会让 `text="a|b",desc="c"` 与 `text="a",desc="b|c"` 撞成同一个 key，
+    // 重复序号错乱（模型按 `#1/#2` 认目标时会指错）。与 `pruneNodes` / `protocol-v2` 统一用 `\u0000`。
+    const key = `${text}\u0000${desc}`
     let occ = ''
     if (key !== '|' && (dupCount.get(key) ?? 0) > 1) {
       const k = (seenSoFar.get(key) ?? 0) + 1
@@ -1208,24 +1212,6 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
   let detailHandle = ''
   let detailPath = ''
 
-  /**
-   * 0.13.8 P0-4：树结构指纹（FNV-1a）——「界面未变」快路径的判定依据。
-   * 覆盖定位所需字段（文本/描述/类型/几何/交互性）；任一变化 → 指纹翻转 → 完整重抓。
-   * 纯追加语义：指纹相同只回一行「未变」摘要，绝不改写历史结果（L1）。
-   */
-  const treeFingerprint = (nodes: UiNode[]): string => {
-    let h = 0x811c9dc5
-    for (const n of nodes) {
-      const s = `${n.id}|${n.parentId}|${n.text}|${n.desc}|${n.rid}|${n.type}|${n.cx},${n.cy},${n.w},${n.h}|${n.clickable ? 1 : 0}${n.editable ? 1 : 0}${n.scrollable ? 1 : 0}${n.checked ? 1 : 0}${n.visible ? 1 : 0}`
-      for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i)
-        h = Math.imul(h, 0x01000193) >>> 0
-      }
-      h ^= 0xff
-      h = Math.imul(h, 0x01000193) >>> 0
-    }
-    return 'fp' + h.toString(16).padStart(8, '0')
-  }
 
   /**
    * 「界面未变」快路径（P0-4）：指纹一致直接回紧凑摘要，模型可复用上次引用。

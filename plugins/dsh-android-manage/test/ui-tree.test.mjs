@@ -3,7 +3,7 @@
 // 不可点击目标的「可点击祖先」回退静默失效。本测试锁死该边界。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseUiTreeXml, pruneNodes, resolveRef, findActionableAncestor, checkUiTreeParse, decodeEntities } from '../lib/ui-tree.js'
+import { parseUiTreeXml, pruneNodes, treeFingerprint, resolveRef, findActionableAncestor, checkUiTreeParse, decodeEntities } from '../lib/ui-tree.js'
 
 const ATTRS = 'checkable="false" checked="false" enabled="true" focusable="false" focused="false" ' +
   'long-clickable="false" password="false" selected="false" package="com.android.settings"'
@@ -269,4 +269,24 @@ test('pruneNodes：去重键不得因文本含分隔符而碰撞，真重复仍�
   // 不能被带走的形态：真正重复的节点仍要去重
   const dup = pruneNodes([mk('x', 'y', '0.0'), mk('x', 'y', '0.1')])
   assert.equal(dup.nodes.length, 1, '真重复没有被去重')
+})
+
+// treeFingerprint 是「界面未变」快路径的判据：同一节点（同 id / 同几何）的文本若恰好从
+// ("a|b","c") 变成 ("a","b|c")，旧实现用 '|' 拼接时两串逐字节相同 ⇒ 指纹不翻转 ⇒ 回「未变」
+// 摘要、模型复用旧引用 ⇒ 点错目标。2026-10-28 统一改用 '\u0000' 分隔。
+test('treeFingerprint：文本含分隔符不得让「界面未变」误判', () => {
+  const mk = (t, d) => ({
+    id: 'n0', parentId: '', text: t, desc: d, rid: '', type: 'V',
+    x: 0, y: 0, cx: 5, cy: 5, w: 10, h: 10,
+    clickable: false, editable: false, scrollable: false, checked: false, visible: true,
+  })
+  assert.notEqual(
+    treeFingerprint([mk('a|b', 'c')]),
+    treeFingerprint([mk('a', 'b|c')]),
+    '两个不同节点得到同一指纹 ⇒ 「界面未变」会被误判',
+  )
+  // 不能被带走的形态：同样的树必须得到同样的指纹（否则每次都判「变了」、快路径失效）
+  assert.equal(treeFingerprint([mk('x', 'y')]), treeFingerprint([mk('x', 'y')]))
+  // 文本变化必须翻转
+  assert.notEqual(treeFingerprint([mk('x', 'y')]), treeFingerprint([mk('x', 'z')]))
 })
