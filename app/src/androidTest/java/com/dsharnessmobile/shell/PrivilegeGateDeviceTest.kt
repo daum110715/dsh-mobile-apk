@@ -80,6 +80,57 @@ class PrivilegeGateDeviceTest {
     }
   }
 
+// ── 文案渲染（真视图树断言，不是纯函数搬运）─────────────────────────
+
+  /**
+   * 递归收集 `decorView` 下所有 TextView 的可见文本。
+   *
+   * 为什么不用 `findViewById`：本应用 UI 由代码构建，**没有 `res/layout`**，
+   * `GuidePageRenderer` 的 view 是私有字段，测试拿不到句柄。
+   * 遍历视图树是唯一能证明「这段文案真的被贴到界面上了」的方式。
+   */
+  private fun visibleTexts(scenario: androidx.test.core.app.ActivityScenario<MainActivity>): List<String> {
+    val out = mutableListOf<String>()
+    scenario.onActivity { activity ->
+      fun walk(v: android.view.View) {
+        if (v is android.widget.TextView) {
+          val t = v.text?.toString()?.trim()
+          if (!t.isNullOrEmpty() && v.visibility == android.view.View.VISIBLE) out.add(t)
+        }
+        if (v is android.view.ViewGroup) {
+          for (i in 0 until v.childCount) walk(v.getChildAt(i))
+        }
+      }
+      walk(activity.window.decorView)
+    }
+    return out
+  }
+
+  @Test
+  fun repairGuideCopyIsActuallyRenderedOnMainActivity() {
+    val prefs = ctx.getSharedPreferences("native-repair", android.content.Context.MODE_PRIVATE)
+    val before = prefs.getBoolean("required", false)
+    try {
+      // 置位持久修复闸门 -> 主界面 onCreate 走 BLOCKED_FOR_REPAIR -> applyRepairRequiredGuide()
+      prefs.edit().putBoolean("required", true).commit()
+      assertTrue("前提：闸门必须真的置位成功", RepairState.required(ctx))
+
+      androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+        val texts = visibleTexts(scenario)
+        assertTrue(
+          "主界面必须真的渲染出修复引导标题；实得可见文本=" + texts,
+          texts.any { it.contains("引擎仍无法启动") },
+        )
+        assertTrue(
+          "主界面必须真的渲染出修复引导正文；实得可见文本=" + texts,
+          texts.any { it.contains("自动重试已用完") },
+        )
+      }
+    } finally {
+      prefs.edit().putBoolean("required", before).commit()
+    }
+  }
+
   @Test
   fun explicitUserRetryIsTheOnlyWayPastTheGate() {
     val required = RepairState.required(ctx)
