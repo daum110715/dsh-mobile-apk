@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
-import { buildVerifyArgs, buildApksignerCommand, evaluateVerification, readSchemes, readCertificateDigests } from './check-apk-signatures.mjs'
+import { buildVerifyArgs, buildApksignerCommand, buildCertificateExportArgs, evaluateVerification, readSchemes, readCertificateDigests, resolveKeystoreCredentials } from './check-apk-signatures.mjs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -80,6 +80,34 @@ test('normalizes certificate fingerprints across build-tools output formats', ()
   assert.equal(evaluateVerification({ exitCode: 0, output, expectedCertificateSha256: 'invalid' }).ok, false)
 })
 
+test('release keystore credentials are selected by exact path and keep the password out of argv', () => {
+  const keystore = path.resolve('runner-temp/release.keystore')
+  const env = {
+    DSH_RELEASE_KEYSTORE: keystore,
+    DSH_RELEASE_KEY_ALIAS: 'release-upload',
+    DSH_RELEASE_KEYSTORE_PASSWORD: 'private-store-password',
+  }
+  const credentials = resolveKeystoreCredentials(keystore, env)
+  assert.deepEqual(credentials, { alias: 'release-upload', storePasswordEnv: 'DSH_RELEASE_KEYSTORE_PASSWORD' })
+  const args = buildCertificateExportArgs(keystore, credentials)
+  assert.ok(args.includes('release-upload'))
+  assert.ok(args.includes('-storepass:env'))
+  assert.ok(args.includes('DSH_RELEASE_KEYSTORE_PASSWORD'))
+  assert.ok(!args.includes('private-store-password'))
+  assert.deepEqual(resolveKeystoreCredentials('keystore/debug.keystore', env), {
+    alias: 'androiddebugkey', storePassword: 'android',
+  })
+})
+
+test('release keystore identity verification fails closed when its credentials are incomplete', () => {
+  const keystore = path.resolve('runner-temp/release.keystore')
+  assert.throws(() => resolveKeystoreCredentials(keystore, { DSH_RELEASE_KEYSTORE: keystore }), /alias is not configured/)
+  assert.throws(() => resolveKeystoreCredentials(keystore, {
+    DSH_RELEASE_KEYSTORE: keystore,
+    DSH_RELEASE_KEY_ALIAS: 'release-upload',
+  }), /store password is not configured/)
+})
+
 test('an explicit keystore option cannot silently disable identity verification when its value is missing', () => {
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('./check-apk-signatures.mjs', import.meta.url)), '--apk', 'final.apk', '--keystore'], { encoding: 'utf8' })
   assert.equal(result.status, 1)
@@ -97,4 +125,20 @@ test('Gradle debug and release variants explicitly use the all-schemes signing c
   // 没有则显式回落 repoDebug；两条路都必须是显式写法，不允许静默默认签名。
   assert.match(gradle, /release\s*\{\s*isMinifyEnabled\s*=\s*false[\s\S]*?signingConfig\s*=\s*signingConfigs\.findByName\("release"\)\s*\?\:\s*signingConfigs\.getByName\("repoDebug"\)/)
   assert.match(gradle, /debug\s*\{\s*signingConfig\s*=\s*signingConfigs\.getByName\("repoDebug"\)/)
+})
+
+test('official release workflow requires a protected keystore and verifies the produced APK against it', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')
+  for (const name of [
+    'DSH_RELEASE_KEYSTORE_BASE64',
+    'DSH_RELEASE_KEYSTORE_PASSWORD',
+    'DSH_RELEASE_KEY_ALIAS',
+    'DSH_RELEASE_KEY_PASSWORD',
+  ]) assert.match(workflow, new RegExp(`${name}: \\$\\{\\{ secrets\\.${name} \\}\\}`))
+  assert.match(workflow, /base64 --decode > "\$keystore_path"/)
+  assert.match(workflow, /:app:assembleRelease/)
+  assert.match(workflow, /cp "\$release_apk" "\$out\/dsh-mobile-apk-v\$\{ver\}-\$\{abi\}\.apk"/)
+  assert.match(workflow, /--keystore "\$DSH_RELEASE_KEYSTORE"/)
+  assert.doesNotMatch(workflow, /cp keystore\/debug\.keystore/)
+  assert.doesNotMatch(workflow, /--keystore keystore\/debug\.keystore/)
 })

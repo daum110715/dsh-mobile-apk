@@ -55,11 +55,28 @@ export function evaluateVerification({ exitCode, output, expectedCertificateSha2
   return { ok: exitCode === 0 && missing.length === 0 && certificateMatches, exitCode, schemes, missing, certificates, certificateMatches }
 }
 
+export function resolveKeystoreCredentials(keystore, env = process.env) {
+  const configuredReleaseKeystore = env.DSH_RELEASE_KEYSTORE
+  if (!configuredReleaseKeystore || path.resolve(configuredReleaseKeystore) !== path.resolve(keystore)) {
+    return { alias: 'androiddebugkey', storePassword: 'android' }
+  }
+  if (!env.DSH_RELEASE_KEY_ALIAS) throw new Error('release keystore alias is not configured')
+  if (!env.DSH_RELEASE_KEYSTORE_PASSWORD) throw new Error('release keystore store password is not configured')
+  return { alias: env.DSH_RELEASE_KEY_ALIAS, storePasswordEnv: 'DSH_RELEASE_KEYSTORE_PASSWORD' }
+}
+
+export function buildCertificateExportArgs(keystore, credentials = resolveKeystoreCredentials(keystore)) {
+  const args = ['-exportcert', '-rfc', '-keystore', path.resolve(keystore), '-alias', credentials.alias]
+  if (credentials.storePasswordEnv) args.push('-storepass:env', credentials.storePasswordEnv)
+  else args.push('-storepass', credentials.storePassword)
+  return args
+}
+
 export function readKeystoreCertificate(keystore) {
   const keytool = javaTool('keytool')
-  const result = spawnSync(keytool, ['-exportcert', '-rfc', '-keystore', path.resolve(keystore),
-    '-alias', 'androiddebugkey', '-storepass', 'android'], { encoding: 'utf8', windowsHide: true })
-  if (result.error || result.status !== 0) throw new Error('cannot export the repository signing certificate from ' + keystore)
+  const credentials = resolveKeystoreCredentials(keystore)
+  const result = spawnSync(keytool, buildCertificateExportArgs(keystore, credentials), { encoding: 'utf8', windowsHide: true })
+  if (result.error || result.status !== 0) throw new Error('cannot export the signing certificate from ' + keystore)
   const pem = result.stdout.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/)?.[0]
   if (!pem) throw new Error('keytool did not return a certificate')
   return new X509Certificate(pem).fingerprint256.replaceAll(':', '').toLowerCase()
@@ -197,7 +214,7 @@ function main() {
     if (result.error || !status.ok) {
       if (result.error) console.error(`spawn error: ${result.error.message}`)
       console.error(`FAIL ${apk}: required schemes missing/false: ${status.missing.join(', ') || 'none'}; exit=${result.status ?? 'null'}`)
-      if (!status.certificateMatches) console.error(`FAIL ${apk}: signing certificate differs from the repository keystore or is absent`)
+      if (!status.certificateMatches) console.error(`FAIL ${apk}: signing certificate differs from the expected keystore or is absent`)
       failures += 1
     } else console.log(`PASS ${apk}`)
   }
