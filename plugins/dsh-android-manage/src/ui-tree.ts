@@ -219,7 +219,12 @@ export function pruneNodes(
     const editable = at.editable === 'true'
     // 0.13.5：不再按「可交互或带标签」剪枝——完整暴露（容器/无标签节点同样给模型，
     // 复杂界面靠结构定位；去重仍保留，避免同一位置同内容的重复行）。
-    const dedupeKey = [text, desc, at.class ?? '', bounds.cx, bounds.cy].join('|')
+    // **分隔符必须是文本里不可能出现的字符**（2026-10-28 自查）：旧实现用 `'|'`，而 UI 文本里
+    // `|` 非常常见（「标题 | 副标题」这类），于是 `text="a|b", desc="c"` 与 `text="a", desc="b|c"`
+    // 拼出同一个 key ⇒ 两个真实节点被当成重复、丢掉一个（模型看到的清单少一项、目标点不到）。
+    // 与 `protocol-v2.ts` 的叶子去重 key 统一用 `\u0000`（那边一直是这么写的 —— 同仓同类判据
+    // 必须共用一份口径）。
+    const dedupeKey = [text, desc, at.class ?? '', bounds.cx, bounds.cy].join('\u0000')
     if (seen.has(dedupeKey)) continue
     seen.add(dedupeKey)
     nodes.push({

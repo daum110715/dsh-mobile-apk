@@ -257,3 +257,16 @@ test('decodeEntities：&amp; 只解一次，数字实体不得二次解码', () 
   assert.equal(decodeEntities('a &amp; b'), 'a & b')
   assert.equal(decodeEntities('&lt;b&gt;'), '<b>')
 })
+
+// pruneNodes 的去重键旧实现用 '|' 当分隔符，而 UI 文本里 '|' 很常见（「标题 | 副标题」），
+// 于是 text="a|b"+desc="c" 与 text="a"+desc="b|c" 拼出同一个 key ⇒ 两个真实节点被误去重、
+// 丢掉一个（模型看到的清单少一项、目标点不到）。2026-10-28 改为 '\u0000'，与 protocol-v2 统一。
+test('pruneNodes：去重键不得因文本含分隔符而碰撞，真重复仍去重', () => {
+  const mk = (t, d, i) => ({ attrs: { bounds: '[0,0][10,10]', text: t, 'content-desc': d, class: 'V' }, id: i, parentId: '' })
+  // 修的形态：不同节点（同坐标）必须都保留
+  const distinct = pruneNodes([mk('a|b', 'c', '0.0'), mk('a', 'b|c', '0.1')])
+  assert.equal(distinct.nodes.length, 2, '两个不同节点被误判成重复：' + JSON.stringify(distinct.nodes.map((n) => [n.text, n.desc])))
+  // 不能被带走的形态：真正重复的节点仍要去重
+  const dup = pruneNodes([mk('x', 'y', '0.0'), mk('x', 'y', '0.1')])
+  assert.equal(dup.nodes.length, 1, '真重复没有被去重')
+})
