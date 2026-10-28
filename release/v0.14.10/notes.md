@@ -3,7 +3,7 @@
 > 版本：versionCode 54 / versionName 0.14.10（覆盖安装 0.14.9 的 versionCode 53）。
 > 本文件面向用户：先写本版解决的问题，再写安装与升级、已知限制。
 > 本版内容严格对应提交范围 `v0.14.9..33f1fd0b`（共 322 个提交）。33f1fd0b 之后合入主干的改动不在本版范围内，进 0.14.11。
-> 双 ABI 产物的体积与 SHA-256 见本 Release 的 MANIFEST.txt。
+> 双 ABI 产物的体积与 SHA-256 见本文件「产物」一节，或本 Release 的 MANIFEST.txt。
 
 ## 新增功能
 
@@ -256,9 +256,10 @@
 
 本版为发版候选，按 `docs/AGENTS/emulator-test-protocol.md` 跑满三层。
 
-**代码层：绿。** 双 ABI 全链 `build-apk-013.ps1 -Suffix ""` exit 0，产物齐备；Kotlin 单测
-BUILD SUCCESSFUL，源测试类 178 / 有用例 1916（基线 1912）且 SKIP=0；发布门禁 `--run --require`
-全量 34 项在双 ABI 上各跑一遍全部通过。
+**代码层：绿。** 双 ABI 全链 `build-apk-013.ps1 -Suffix ""` exit 0，产出 ABI [arm64, x86_64]、
+被拒 ABI 为空；全链日志 57 处 PASSED、0 处 FAILED。Kotlin 单测数量门禁通过（逐类不低于基线、
+无缺席、结果新鲜、无失败用例，SKIP=0）。发布门禁 `--run --require` 声明的 38 项在双 ABI 上
+各跑一遍全部通过。
 
 **CDP 层：绿。** `verify-browser-host`、`verify-browser-panel`、`verify-state-sync`
 （10/10）、`verify-webview-015`（46 项）全部通过。本层曾判红一次，成因是本版 tier-2 执行位
@@ -273,7 +274,23 @@ BUILD SUCCESSFUL，源测试类 178 / 有用例 1916（基线 1912）且 SKIP=0�
 操作序列由模型现场规划与试错，共四个任务：改设置并回滚（含重开验证不回弹）、插件页钻取与返回
 （返回后与原页 SHA-256 逐字节相同）、应用更新联网核对（得到确定版本结论）、横竖屏一致性
 （竖屏自适应单栏、旋转不崩、控件均可命中）。四项目标全部达成，证据为设备截图与 uiautomator 文本树。
+本层跑在**正式候选包** `dsh-mobile-apk-v0.14.10-x86_64.apk` 上（不是开发包）。
 
-> 引用内容需要保留原始出处：验收证据目录 `.deploy-tmp/acceptance-01410/`，
-> 其中 `ACCEPTANCE-VERDICT.md`、`CDP-ROUND2-RESULT.md`、`ADB-LAYER-RESULT.md` 为三层结论，
-> `BLOCKER-FOUND-AND-FIXED.md` 为发版阻塞缺陷的定位与负控实测。
+> 验收证据目录 `.deploy-tmp/acceptance-01410/`：`ACCEPTANCE-VERDICT.md`、`CDP-ROUND2-RESULT.md`、
+> `ADB-LAYER-RESULT.md` 为三层结论；`BLOCKER-FOUND-AND-FIXED.md` 为发版阻塞缺陷的定位与负控实测。
+
+## 产物
+
+| 资产 | 适用设备 | 大小（字节） | SHA-256 |
+|---|---|---|---|
+| `dsh-mobile-apk-v0.14.10-arm64.apk` | arm64 真机 | 163,574,883 | `e993bc211ba2359abeaf870fc9594ba7f1b27afa2f7951be707524409454807b` |
+| `dsh-mobile-apk-v0.14.10-x86_64.apk` | x86_64 模拟器 / 设备 | 159,050,772 | `8a22157bc443d6bd92b46cc5a1357807df8480f27f7928ca07bc7b8edf88a49e` |
+| `snapshot-arm64.tar.xz`（+.sha256） | 与 arm64 APK 内嵌同源 | 158,121,756 | `144afcbd830530fe3a2b3d653298b1e36dfc720877748c5e1f2de42c7fdb5ad5` |
+| `snapshot-x86_64.tar.xz`（+.sha256） | 与 x86_64 APK 内嵌同源 | 153,597,648 | `7d5a39fc20b785ea4a5e8315fecab7af59137b3d54bdaf6440232cdc10526f48` |
+| `MANIFEST.txt` | 官网取包时核对 | - | - |
+
+两个 APK 均为 versionCode 54 / versionName 0.14.10，v1 + v2 + v3 三种签名方案齐备，
+构建汇总为「已产出 ABI: [arm64, x86_64] / 被拒 ABI: []」。
+
+**ABI 必须与设备匹配**：装错会导致引擎启动即崩（node 的 ELF 架构不同）。真机选 arm64，
+模拟器选 x86_64。双 ABI 构建链同时产出了两份快照，与各自 APK 内嵌内容一致。
