@@ -710,15 +710,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
   /** The fingerprint is the transaction commit point, so it is written atomically. */
   private fun writeFingerprint(fingerprint: String) {
     val target = fingerprintFile()
-    val tmp = File(target.parentFile, target.name + ".tmp")
-    tmp.writeText(fingerprint)
-    // #685：注释承诺 atomic，旧实现却「先删 target 再 rename」——删除与改名之间被杀，
-    // 指纹文件消失，下次启动按指纹缺失走重装配。AtomicFileReplace 的替换期间目标路径
-    // 始终存在（ATOMIC_MOVE，不支持时退单次 REPLACE_EXISTING move，同样不先删）。
-    if (!AtomicFileReplace.publish(tmp, target)) {
-      target.writeText(fingerprint)
-      SnapshotFs.deletePath(tmp)
-    }
+    SnapshotFingerprintPublication.write(target, fingerprint)
   }
 
   private fun writeOnlineSnapshotIdentity(base: String, archive: String) {
@@ -3077,3 +3069,24 @@ internal fun observeBootContinuation(
   startupInProgress: () -> Boolean,
   processAlive: () -> Boolean,
 ): Boolean = startupInProgress() || processAlive() || startupInProgress() || processAlive()
+
+internal object SnapshotFingerprintPublication {
+  fun write(
+    target: File,
+    fingerprint: String,
+    publish: (File, File) -> Boolean = AtomicFileReplace::publish,
+  ) {
+    val tmp = File(target.parentFile, target.name + ".tmp")
+    try {
+      tmp.writeText(fingerprint)
+      if (!publish(tmp, target)) throw java.io.IOException("Snapshot fingerprint publication failed")
+    } catch (failure: Throwable) {
+      try {
+        Files.deleteIfExists(tmp.toPath())
+      } catch (cleanupFailure: Throwable) {
+        failure.addSuppressed(cleanupFailure)
+      }
+      throw failure
+    }
+  }
+}
