@@ -741,6 +741,9 @@ internal class ApkUpdateController(private val activity: Activity) {
       if (UpdateChecker.invokeInstaller(activity, dest)) {
         readyToInstall = null
         currentResult = null
+        // issue #676：安装器已拉起，这次的校验依据用完即弃——留着只会让下一轮误以为
+        // "手里还有个已校验的包"（真正的依据必须来自本轮的 downloadAndInstall）。
+        verifiedArtifact = null
         state.onInstalling(reused)
         settle()
       } else {

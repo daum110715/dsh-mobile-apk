@@ -71,6 +71,16 @@ class UpdateArtifactRecheckTest {
   }
 
   @Test
+  fun `安装器拉起后必须丢掉校验依据，避免下一轮误判`() {
+    val action = src("ApkUpdateAction.kt")
+    val start = action.indexOf("if (UpdateChecker.invokeInstaller(activity, dest)) {")
+    assertTrue("找不到安装器成功分支", start > 0)
+    val branch = action.substring(start, start + 420)
+    assertTrue("成功后要清 verifiedArtifact", branch.contains("verifiedArtifact = null"))
+    assertTrue("成功后仍要清续继载荷", branch.contains("readyToInstall = null"))
+  }
+
+  @Test
   fun `下载收尾要把依据绑到产物上`() {
     val action = src("ApkUpdateAction.kt")
     assertTrue(
