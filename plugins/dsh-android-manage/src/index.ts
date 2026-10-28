@@ -105,6 +105,34 @@ function pickText(v: Record<string, unknown>, ...keys: string[]): string {
     .join('\n')
 }
 
+/**
+ * `screenId` 归一化（纯函数，导出以便**真执行**单测，而不是源码 grep）。
+ *
+ * `real` 与"未指定"是同一块物理屏：`SCREEN_PARAM` 文案把 `real|virtual-N` 都列为合法取值。
+ * 不折叠时 `screenIdOf({screenId:'real'}) === 'real'` 而动作调用（不带 screenId）是 `''` ⇒
+ * `usableUiCache` 判成两块屏 ⇒ dump 明明 3ms 前刚成功，第二次调用却回「没有可用的控件清单
+ * （缓存已失效）」⇒ 模型以为真过期、每次动作前全量重 dump（正是 TTL 注释要消除的循环）。
+ * 只折叠大小写与首尾空白，其它取值原样（壳侧按字符串比对 `virtual-N`）。
+ */
+export function normalizeScreenId(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  const normalized = raw.trim().toLowerCase()
+  return normalized === 'real' ? '' : normalized
+}
+
+/**
+ * 「界面未变」回包里那句续作提示的引用片段（纯函数，导出以便真执行单测）。
+ *
+ * 回包说「引用仍有效，直接继续」而判据要求 `screenId` 与清单一致 —— 不带 screenId 必然被拒，
+ * 同一条回包里两句话自相矛盾，形成 dump→照做→被拒→dump 循环。虚拟屏（DSH 自己的 UI 就在
+ * virtual-1）是主路径，所以提示必须把目标屏写出来。
+ */
+export function continueRefHintOf(screenId: string): string {
+  return screenId === ''
+    ? 'android_ui_click/id:nN 等引用'
+    : `android_ui_click/id:nN 等引用（要带上 screenId:"${screenId}"）`
+}
+
 function tools(ctx: Context, priv: PrivilegeFace) {
   // Every route that can observe or manipulate an Android display goes through this one scope gate
   // before it chooses a11y/ADB. That prevents the legacy ADB fallback from bypassing virtual-only.
@@ -784,7 +812,7 @@ function tools(ctx: Context, priv: PrivilegeFace) {
       // 0.13.8 P0-4：同 a11y 分支——「界面未变」快路径
       if (!forceFresh && uiCacheNow()! && uiCacheNow()!.fingerprint === fp && Date.now() - uiCacheNow()!.ts <= UI_CACHE_TTL) {
         uiCacheNow()!.ts = Date.now()   // FX-206.3：同 a11y 分支，快路径必须推进时间戳（ADB 载荷不带代次）
-        return unchangedResponse(fp, uiCacheNow()!.gen)
+        return unchangedResponse(fp, uiCacheNow()!.gen, args)
       }
       const size = /Physical size:\s*(\d+)x(\d+)/.exec(r.stdout)
       const screen = size ? { w: Number(size[1]), h: Number(size[2]) } : { w: 0, h: 0 }
@@ -1217,11 +1245,18 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
     return '__anonymous__'
   }
 
-  /** `screenId` 参数归一化（与 `screenArgs` 同口径：缺省＝未指定）。 */
-  const screenIdOf = (args: unknown): string => {
-    const screenId = (args as { screenId?: unknown } | undefined)?.screenId
-    return typeof screenId === 'string' && screenId !== '' ? screenId : ''
-  }
+  /**
+   * `screenId` 参数归一化（缺省与显式 `real` **同义**）。
+   *
+   * `real` 是 `SCREEN_PARAM` 文案里明示的合法取值，和"未指定"指同一块物理屏；不折叠的话
+   * `screenIdOf({screenId:'real'}) === 'real'` 而动作调用（不带 screenId）是 `''` ⇒
+   * `usableUiCache` 判成两块屏 ⇒ dump 明明 3ms 前刚成功，第二次调用却回
+   * 「没有可用的控件清单（缓存已失效）」⇒ 模型以为真过期、每次动作前全量重 dump
+   * （正是 TTL 注释要消除的那个 dump/过期循环）。2026-10-28 自查，误拒方向。
+   * 只折叠大小写与空白：`REAL`/` real ` 同样是"未指定"。
+   */
+  const screenIdOf = (args: unknown): string =>
+    normalizeScreenId((args as { screenId?: unknown } | undefined)?.screenId)
 
   /**
    * 本次调用能不能用这份清单：TTL 内 **且** 会话一致 **且** 目标屏一致。
@@ -1311,7 +1346,16 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
    * D3：`gen` 只有在**确实是 number** 时才发键——`{type:'number'}` 收 null/undefined 都会整值拒绝，
    * 而含 undefined 成员的对象更不是 lossless JSON（引擎直接抛错）。
    */
-  const unchangedResponse = (fp: string, gen?: number) => ({
+  /**
+   * 续作提示里的 `android_ui_click/id:nN` 片段：**必须带上目标屏**。
+   *
+   * 回包说「引用仍有效，直接继续」而判据要求 `screenId` 与清单一致 —— 模型照字面做（不带
+   * screenId）必然被拒，同一条回包里两句话自相矛盾，形成 dump→照做→被拒→dump 的循环。
+   * 虚拟屏（DSH 自己的 UI 就在 virtual-1）是主路径，所以这不是边角。
+   */
+  const continueRefHint = (args: unknown): string => continueRefHintOf(screenIdOf(args))
+
+  const unchangedResponse = (fp: string, gen?: number, args?: unknown) => ({
     ok: true,
     denied: false,
     unchanged: true,
@@ -1322,7 +1366,7 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
     nodes: [] as JsonValue[],
     ...(typeof gen === 'number' ? { gen } : {}),
     note: '界面未变（结构指纹一致）：上次 dump 的引用（n0..nN）与坐标仍然有效，可直接复用；需完整清单请带 fresh:true 重新 dump',
-    text: `界面未变（gen=${gen ?? '未知'}，结构指纹 ${fp}）：上次 dump 的 ${uiCacheNow()!.nodes.length} 个节点引用仍有效——直接用 android_ui_click/id:nN 等引用继续，无需重新阅读清单（fresh:true 可强制完整重抓）`,
+    text: `界面未变（gen=${gen ?? '未知'}，结构指纹 ${fp}）：上次 dump 的 ${uiCacheNow()!.nodes.length} 个节点引用仍有效——直接用 ${continueRefHint(args)}继续，无需重新阅读清单（fresh:true 可强制完整重抓）`,
   })
 
   /** 0.13.5 W4：控制通道决策。策略面缺席（旧版 bridge）→ 按 ADB 通道处理，保持旧行为。 */
@@ -1562,7 +1606,7 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
           uiCacheNow()!.ts = Date.now()
           if (typeof gen === 'number') uiCacheNow()!.gen = gen
           if (v2) uiCacheNow()!.v2 = v2
-          return unchangedResponse(fp, gen)
+          return unchangedResponse(fp, gen, args)
         }
         // 0.14 D11：显式重建 screen——老壳 V1 载荷的 data.screen 可能多带键，按引用返回会让整条
         // dump 被 additionalProperties:false 拒绝（构造法可测；无老壳包可实测，见报告「需实测」）。

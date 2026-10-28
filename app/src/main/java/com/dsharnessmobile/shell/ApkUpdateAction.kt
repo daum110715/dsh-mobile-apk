@@ -398,7 +398,7 @@ internal class ApkUpdateController(private val activity: Activity) {
    * 否则按钮点下去只是再失败一次。这是 [readyToInstall] 的只读面——渲染层不可能靠
    * kind 之类旁证推断出它（那是假判据）。
    */
-  fun hasReadyArtifact(): Boolean = readyToInstall != null
+  fun hasReadyArtifact(): Boolean = readyToInstall?.isFile == true
 
   /**
    * 快照的统一出口：state 的那份对外事实 + 控制器私有载荷派生出的 `hasReadyArtifact`。
@@ -601,7 +601,18 @@ internal class ApkUpdateController(private val activity: Activity) {
 
   /** 下载 → 校验 → 安装（复用既有下载链与 [verifyApkArtifact]，判定强度与旧引导页路径完全一致）。 */
   private fun downloadAndInstall(r: UpdateChecker.CheckResult.Available, e: Int) {
-    val dest = File(UpdateChecker.updatesDir(activity), r.name)
+    // 名字来自发布元数据 ⇒ 必须过形态白名单与 canonical 父目录判据（见 resolveUpdateTarget）。
+    // 直接 File(updatesDir, r.name) 会让带分隔符的 tag 落到任意可写目录，而下面的
+    // pruneUpdatesDir(dest.parentFile) 会跟着在那个目录里删 `*.apk`/`*.tmp`。
+    val dir = UpdateChecker.updatesDir(activity)
+    val dest = UpdateChecker.resolveUpdateTarget(dir, r.name)
+      ?: run {
+        fail(
+          "更新产物的文件名不合法（发布元数据可疑）——请稍后重试或到 GitHub Releases 手动下载",
+          ApkUpdateState.KIND_ARTIFACT_REJECTED,
+        )
+        return
+      }
     // issue #676：动手前先清一次目录（留本次目标包），否则每换一版就多一个 169MB 的旧包，
     // 中断下载留下的 .tmp 也永远没人收拾。
     runCatching { UpdateChecker.pruneUpdatesDir(dest.parentFile ?: return, r.name) }
@@ -693,6 +704,12 @@ internal class ApkUpdateController(private val activity: Activity) {
         return
       }
       if (!dest.exists()) {
+        // 成组清载荷：这个分支是"作者已经预见到会被清理"的那一支，与下面另两个失败分支一样，
+        // 必须把续继链的载荷一起清掉。否则 `readyToInstall` 恒指向一个不存在的文件 ⇒
+        // `start()` 永远把请求交给续继链、`hasReadyArtifact()` 恒 true（页面一直摆着「重试安装」），
+        // 而真正的新版**永远下不下来**（点「下载并安装」被 redirect 到续继链 → 又落回这支）。
+        readyToInstall = null
+        currentResult = null
         verifiedArtifact = null
         fail("安装包已不存在（可能被清理）——请重新检查更新", ApkUpdateState.KIND_ARTIFACT_REJECTED)
         return

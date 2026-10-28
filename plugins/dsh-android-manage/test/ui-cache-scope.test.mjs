@@ -43,3 +43,29 @@ test('两处 dump（无障碍 / uiautomator）都要打归属标记，不能只�
   const screenMarks = source.match(/screenId: screenIdOf\(args\)/g) ?? []
   assert.ok(screenMarks.length >= 2, '两处 dump 都要记目标屏')
 })
+
+// ── 2026-10-28 自查：归属键归一化 + 续作提示必须可执行 ──────────────────────
+
+import { normalizeScreenId, continueRefHintOf } from '../lib/index.js'
+
+test('real 与「未指定」折叠成同一个归属键（否则 dump 带 real、动作不带就误拒）', () => {
+  assert.equal(normalizeScreenId('real'), '')
+  assert.equal(normalizeScreenId('REAL'), '')
+  assert.equal(normalizeScreenId(' real '), '')
+  assert.equal(normalizeScreenId(undefined), '')
+  assert.equal(normalizeScreenId(''), '')
+  assert.equal(normalizeScreenId(123), '')
+  // 反向：真正的目标屏必须原样保留 —— 折叠 real 不能顺手把 virtual-N 也折叠掉，
+  // 否则「按屏绑定」这条安全判据会整体失效（两块虚拟屏会互相串用清单）。
+  assert.equal(normalizeScreenId('virtual-1'), 'virtual-1')
+  assert.equal(normalizeScreenId('Virtual-1'), 'virtual-1')
+  assert.notEqual(normalizeScreenId('virtual-1'), normalizeScreenId('virtual-2'))
+})
+
+test('续作提示在有目标屏时必须把 screenId 写出来（否则照做必被拒）', () => {
+  assert.equal(continueRefHintOf(''), 'android_ui_click/id:nN 等引用')
+  const hinted = continueRefHintOf('virtual-1')
+  assert.match(hinted, /screenId:"virtual-1"/, '提示里必须出现可执行的目标屏：' + hinted)
+  // 反向：无屏时不要凭空加一句「要带上 screenId:""」
+  assert.equal(/screenId:""/.test(continueRefHintOf('')), false)
+})

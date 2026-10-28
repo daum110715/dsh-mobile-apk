@@ -172,6 +172,38 @@ object UpdateChecker {
    * `.github/workflows/release.yml`（唯一线上发布入口）与 `scripts/build-apk-013.ps1` 的
    * `--artifact-name` 形态并逐字比对——**发布链改名即判红**，不靠人记得同步。
    */
+  /**
+   * 产物文件名的形态白名单（**安全边界**，2026-10-28 自查）。
+   *
+   * 名字最上游来自发布元数据（Pages `releases.json` 的 tag/asset 名、API 的 tag_name/asset），
+   * `assetNameCandidates` 只是把 tag 原样插值进 `dsh-mobile-apk-v<tag>-<abi>.apk`。带分隔符的
+   * tag（`v9../../../Documents/x`）会让 `File(updatesDir, name)` 落到**任意可写目录**，
+   * 而 batch4 起 `pruneUpdatesDir(dest.parentFile)` 的作用域也跟着被元数据决定 ⇒ 能删/写别的目录里
+   * 的 `*.apk`/`*.tmp`。修法两层：名字形态白名单 + canonical 父目录必须等于 updatesDir。
+   */
+  internal val ARTIFACT_NAME = Regex("""^[A-Za-z0-9][A-Za-z0-9._+\-]{0,127}\.apk$""")
+
+  internal fun isSafeArtifactName(name: String): Boolean =
+    ARTIFACT_NAME.matches(name) && File(name).name == name && File(name).parentFile == null
+
+  /**
+   * 把元数据给的文件名解析成 updatesDir 里的安全路径；不安全返回 null（调用方按"产物不可用"拒绝）。
+   * 两道判据都要：形态白名单挡住 `../`、绝对路径、尾随空格与大小写变体；canonical 比对挡住
+   * 符号链接/`..` 归一化之后仍然逃出目录的情形（形态合法但落点在外面的构造）。
+   */
+  internal fun resolveUpdateTarget(dir: File, name: String): File? {
+    if (!isSafeArtifactName(name)) return null
+    val raw = File(dir, name)
+    // 名字本身是符号链接就直接拒：`canonicalFile` 对**指向不存在目标**的链接不解引用，
+    // 此时 parent 仍等于 dir、判据会放行，而写入会跟着链接落到目录外。
+    if (runCatching { java.nio.file.Files.isSymbolicLink(raw.toPath()) }.getOrDefault(true)) return null
+    return runCatching {
+      val dirReal = dir.canonicalFile
+      val fileReal = raw.canonicalFile
+      if (fileReal.parentFile == dirReal) fileReal else null
+    }.getOrNull()
+  }
+
   fun assetNameCandidates(tag: String, abi: String): List<String> {
     val v = tag.removePrefix("v")
     val releaseAbis = if (abi == "arm64") listOf("arm64", "arm64-v8a") else listOf(abi)
@@ -792,7 +824,12 @@ object UpdateChecker {
    *  tag 形如 v0.13.8 / 0.13.8 / v0.13.7fx-2 / v0.13.7-rc.1（rc 段不参与比较）。
    *  FX-209.2：两侧同口径剥后缀（BuildConfig.VERSION_NAME 亦可能是 0.14.0-preview）。 */
   fun isNewer(tag: String, current: String): Boolean {
-    fun parts(v: String) = Regex("\\d+").findAll(stripPrereleaseSuffix(v)).map { it.value.toLongOrNull() ?: 0L }.toList()
+    // SemVer 的 build metadata（`+build.7`）**不参与优先级**：不切掉的话 `v0.14.5+build.7`
+    // 会比 `0.14.5` 多出一个数字组 [.., 7] > [.., 0] ⇒ 每轮检查都报"发现新版"，
+    // 随后去要 `…-v0.14.5+build.7-arm64.apk` 必然不存在，最终把"版本号写法"错报成
+    // "没有适配本机架构的包"（与 0.14.6 修掉的那类错误归类同源）。
+    fun parts(v: String) =
+      Regex("\\d+").findAll(stripPrereleaseSuffix(v.substringBefore('+'))).map { it.value.toLongOrNull() ?: 0L }.toList()
     val a = parts(tag); val b = parts(current)
     for (i in 0 until maxOf(a.size, b.size)) {
       val x = a.getOrElse(i) { 0L }; val y = b.getOrElse(i) { 0L }
