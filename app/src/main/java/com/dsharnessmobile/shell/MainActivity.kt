@@ -72,22 +72,6 @@ class MainActivity : ComponentActivity() {
   /** True only after WebView reported a load error for the local engine origin. */
   @Volatile
   internal var enginePageFailed = false
-  /**
-   * #686：顶层帧 URL 的**主线程镜像**，供 JavaBridge 线程上的桥面来源门禁判读。
-   *
-   * 为什么不直接读 `webView.url`：`@JavascriptInterface` 入口跑在 **JavaBridge 线程**，
-   * 而 `WebView.getUrl()` 是 WebView 方法——仓内四处约定（`BackGate.kt` 类注释、
-   * `docs/AGENTS/gotchas.md` 坑 226、`docs/AGENTS/ANDROID-API-USAGE.md` 的
-   * 「@JavascriptInterface 跑在 JavaBridge 线程」一行、`docs/AGENTS/BRIDGE-API.md` 开头）
-   * 都要求 WebView 方法切回主线程。桥面每个入口都要过这道门禁，把一个不确定性乘 77 次
-   * 不值得；改成一个字段读，语义不变且不存在线程争议。
-   *
-   * 写入方只有主线程回调：`onPageStarted` / `onPageFinished` / `shouldOverrideUrlLoading`
-   * （同源放行那一支）。与 [enginePageFailed] / `webFrameCommitted` 同形（都是 `@Volatile` 镜像）。
-   * 初值空串 = 还没开始导航 ⇒ 门禁按 fail-closed 拒（首帧前一律拒是 #686 的既定姿态）。
-   */
-  @Volatile
-  internal var trustedTopFrameUrl: String = ""
   /** 返回策略：页面层栈信号缓存（JS 经 dshBackBridge 主动推送；onPageStarted 复位、
    *  onPageFinished 拉平）。返回回调只读它，绝不 evaluateJavascript 现问页面。 */
   internal val backGateState = BackGateState()
@@ -1180,6 +1164,26 @@ class MainActivity : ComponentActivity() {
       Log.w(TAG, "locale bootstrap could not be installed: " + t.message)
     }
   }
+
+  /**
+   * #686：顶层帧 URL 的**主线程镜像**，供 JavaBridge 线程上的桥面来源门禁判读。
+   *
+   * 为什么不直接读 `webView.url`：`@JavascriptInterface` 入口跑在 **JavaBridge 线程**，
+   * 而 `WebView.getUrl()` 是 WebView 方法——仓内四处约定（`BackGate.kt` 类注释、
+   * `docs/AGENTS/gotchas.md` 坑 226、`docs/AGENTS/ANDROID-API-USAGE.md` 的
+   * 「@JavascriptInterface 跑在 JavaBridge 线程」一行、`docs/AGENTS/BRIDGE-API.md` 开头）
+   * 都要求 WebView 方法切回主线程。桥面每个入口都要过这道门禁，把一个不确定性乘 77 次
+   * 不值得；改成一个字段读，语义不变且不存在线程争议。
+   *
+   * 写入方只有主线程回调：`onPageStarted` / `onPageFinished` / `shouldOverrideUrlLoading`
+   * （同源放行那一支）。与 [enginePageFailed] / `webFrameCommitted` 同形（都是 `@Volatile` 镜像）。
+   * 初值空串 = 还没开始导航 ⇒ 门禁按 fail-closed 拒（首帧前一律拒是 #686 的既定姿态）。
+   *
+   * 刻意声明在本类**靠后的位置**（在所有被 `EXECUTION-MAP.md` 引用的行号之后）：
+   * 这个文件的锚点密集（54 个），往前插字段会整体平移行号、把全部锚点判漂移。
+   */
+  @Volatile
+  internal var trustedTopFrameUrl: String = ""
 
   private fun configureWebView() {
     // WebView 远程调试（debug 构建）：真机/模拟器 CDP 自动化验证 UI 行为。

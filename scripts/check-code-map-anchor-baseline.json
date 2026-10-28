@@ -1176,19 +1176,19 @@
       "background = android.graphics.drawable.ColorDrawable(0xFFF2F2F2.toInt())"
     ],
     "AndroidBridge.kt:319": [
-      "/**"
+      "fun cancelClipboardText(requestId: String) = trusted { onCancelClipboardText(requestId) }"
     ],
     "AndroidBridge.kt:325": [
       "@JavascriptInterface"
     ],
     "AndroidBridge.kt:375": [
-      "fun setOverlayEnabled(enable: Boolean): Boolean = onSetOverlayEnabled(enable)"
+      "fun reloadWebUI() {"
     ],
     "AndroidBridge.kt:423": [
-      "fun browserHostViewport(viewport: String): String = onBrowserHostViewport(viewport)"
+      "/** Persist one normalized screen scope selected from the DSH settings surface. */"
     ],
     "AndroidBridge.kt:611": [
-      "* 立即返回 `{ok, code:repair-started|repair-running, running, startedAt, ...}`；"
+      "@JavascriptInterface"
     ],
     "ApkUpdateAction.kt:261": [
       ""
@@ -1527,19 +1527,19 @@
       "\"unreadable\""
     ],
     "MainActivity.kt:1030": [
-      "pageRecovery.pause()"
+      "outState.putBoolean(\"dsh.renderer-recreation-attempted\", pageRecovery.rendererRecreationAttempted)"
     ],
     "MainActivity.kt:1054": [
-      "webView.destroy()"
+      "screenWakeLock?.release()"
     ],
     "MainActivity.kt:1057": [
-      "// EngineService owns the child lifecycle. An Activity can be recreated by"
+      "} catch (_: Exception) {"
     ],
     "MainActivity.kt:1076": [
-      "* ③ 都没有 → 关掉本回调后重新 dispatch，落回 Activity 默认 finish。"
+      "override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {"
     ],
     "MainActivity.kt:1164": [
-      "// agree on the language from the first frame."
+      "Log.w(TAG, \"locale bootstrap could not be installed: \" + t.message)"
     ],
     "MainActivity.kt:1167": [
       "override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {"
@@ -1551,16 +1551,16 @@
       "/** 崩溃标记：记录未捕获异常摘要，下次启动测试界面提示（不吞异常）。 */"
     ],
     "MainActivity.kt:296": [
-      "internal fun startEngineFlow(splash: Boolean = false) {"
+      "@Volatile private var webRevealPending = false"
     ],
     "MainActivity.kt:306": [
-      "// 否则刚被 latch 挡下的 showWeb 会让这一次显式启动看不到任何结果。"
+      "if (startupEntryDecision(RepairState.required(this), explicitUserRetry = RepairState.coldStartAutoAttemptAvailable(this)) =="
     ],
     "MainActivity.kt:354": [
-      "guideRenderer.applyGuidePhase(phase, title, hint).also {"
+      "val pending = pendingSelfRetry"
     ],
     "MainActivity.kt:422": [
-      "loadConfirmedEnginePage()"
+      "// 位置：放在既有早退之后、展示之前——不改变任何既有早退的判据。"
     ],
     "MainActivity.kt:475": [
       "android.webkit.CookieManager.getInstance().setCookie(EngineProbe.ENGINE_URL, authCookie)"
@@ -1569,28 +1569,28 @@
       "enginePageFailed = false"
     ],
     "MainActivity.kt:514": [
-      "true // onResume must not access the dead WebView after exposing the native recovery outlet."
+      "if (!userClosedEngine && webViewReady) {"
     ],
     "MainActivity.kt:544": [
-      "pageRecovery.restoreRecreationBudget(savedInstanceState?.getBoolean(\"dsh.renderer-recreation-attempted\", false) ?: false)"
+      "super.onCreate(savedInstanceState)"
     ],
     "MainActivity.kt:565": [
-      "LogCollector.start(this)"
+      "// 提示），随后交回默认 handler——只记录，不吞异常、不阻止崩溃。"
     ],
     "MainActivity.kt:569": [
-      "WindowCompat.setDecorFitsSystemWindows(window, false)"
+      "// S1-11：**冷启动不再弹通知权限**。旧实现在 onCreate 里直接 launch：应用刚打开、用户还"
     ],
     "MainActivity.kt:605": [
-      "}"
+      "} catch (t: Throwable) {"
     ],
     "MainActivity.kt:642": [
-      "webSystemLeftInset = pxToCssPx(maxOf(bars.left, cutout.left), density)"
+      "vdisplayFloat = VdisplayFloat(this)"
     ],
     "MainActivity.kt:719": [
       "private fun consumeNotifyRoute(intent: Intent?) {"
     ],
     "MainActivity.kt:769": [
-      "} catch (_: Throwable) {"
+      "Log.w(\"dsh-notify\", \"notify route failed: \" + t.message)"
     ],
     "MainActivity.kt:772": [
       "}"
@@ -1599,37 +1599,37 @@
       "/** System insets in CSS px, cached until the engine page is ready to receive them. */"
     ],
     "MainActivity.kt:782": [
-      "if (!RepairState.active && RepairState.required(this)) {"
+      ").show()"
     ],
     "MainActivity.kt:784": [
       "// Resume passive observation of the one already authorized attempt. Do not spawn or reset retries."
     ],
     "MainActivity.kt:788": [
-      "showGuide()"
+      "/** 任务移除清理见 EngineService.onTaskRemoved（生命周期礼仪 F5.3：让位+尽力清理，不反弹）。 */"
     ],
     "MainActivity.kt:793": [
-      "if (!userClosedEngine) engineFlow.startEngineService() // Native fallback/recreation does not disable task protection."
+      "override fun onResume() {"
     ],
     "MainActivity.kt:803": [
-      "showGuide()"
+      "applyRepairRequiredGuide()"
     ],
     "MainActivity.kt:812": [
-      "pendingAuthRejectedUrl = null"
+      "// latch 仍为真才呈现——若期间用户已显式重试/进了安全模式（latch 已清），这里就不该再"
     ],
     "MainActivity.kt:815": [
-      "if (initialAuthRecoveryPending) startInitialEngineAuthRecovery()"
+      "pendingClientPluginFailurePresentation = false"
     ],
     "MainActivity.kt:822": [
-      "// 0.14.1 批 3（P3-2）：渠道**展示名**随用词更新同步（幂等；未变则零写入）。"
+      ")"
     ],
     "MainActivity.kt:850": [
-      "}"
+      "// 2026-08-24 修复（真机实锤：通知链路不消费的根因）：startEngineService（foreground service"
     ],
     "MainActivity.kt:880": [
-      "deliverRecoveryNotice()"
+      "provisionPublicRepoAndRefreshChip(PublicRepoProvision.TRIGGER_ON_RESUME)"
     ],
     "MainActivity.kt:923": [
-      "} catch (t: Throwable) {"
+      ").start()"
     ],
     "MobileChrome.tsx:35": [
       "?? null"
@@ -2190,22 +2190,22 @@
       "* 实例——即使某天平台把隐式广播重新投递给 manifest 接收器，也不会提交两遍。"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/AdbKeyboardService.kt:166": [
-      "var instance: AdbKeyboardService? = null"
-    ],
-    "app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:319": [
       "/**"
     ],
+    "app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:319": [
+      "fun cancelClipboardText(requestId: String) = trusted { onCancelClipboardText(requestId) }"
+    ],
     "app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:333": [
-      ""
+      "/** True when the app holds All Files Access (external workspace requirement). */"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:375": [
-      "fun setOverlayEnabled(enable: Boolean): Boolean = onSetOverlayEnabled(enable)"
+      "fun reloadWebUI() {"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:423": [
-      "fun browserHostViewport(viewport: String): String = onBrowserHostViewport(viewport)"
+      "/** Persist one normalized screen scope selected from the DSH settings surface. */"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:425": [
-      "/** Close (destroy) the BrowserHost page; the workbench can be opened fresh afterwards. */"
+      "fun setScreenScope(scope: String): String = trusted { onSetScreenScope(scope) }"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/ApkUpdateAction.kt:228": [
       "const val STATE_UP_TO_DATE = \"up-to-date\""
@@ -2400,10 +2400,10 @@
       "/**"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:1030": [
-      "pageRecovery.pause()"
+      "outState.putBoolean(\"dsh.renderer-recreation-attempted\", pageRecovery.rendererRecreationAttempted)"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:1113": [
-      "onBackPressedDispatcher.onBackPressed()"
+      "val decision = BackGate.decide(canGoBack, pageStack)"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:137": [
       "/** 覆盖层所在的根视图；超时兜底的 post/removeCallbacks 都挂在它上面。 */"
@@ -2424,19 +2424,19 @@
       "* §2.4：ES2022 类静态块（`static{}`）需要 Chromium 94+；低于此值的产物会在**解析期**整体"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:266": [
-      "const val ACTION_UPDATE = \"com.dsharnessmobile.shell.action.UPDATE\""
+      "/**"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:296": [
-      "internal fun startEngineFlow(splash: Boolean = false) {"
+      "@Volatile private var webRevealPending = false"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:391": [
       ""
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:605": [
-      "}"
+      "} catch (t: Throwable) {"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:667": [
-      "configureWebView()"
+      "// 布局视口真的变短，浏览器就没有可平移的余地，机制① 从根上消失；只推 CSS 变量做不到这点。"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:719": [
       "private fun consumeNotifyRoute(intent: Intent?) {"
@@ -2445,16 +2445,16 @@
       "}"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:812": [
-      "pendingAuthRejectedUrl = null"
+      "// latch 仍为真才呈现——若期间用户已显式重试/进了安全模式（latch 已清），这里就不该再"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:815": [
-      "if (initialAuthRecoveryPending) startInitialEngineAuthRecovery()"
+      "pendingClientPluginFailurePresentation = false"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:89": [
       "private val pickToken: String = EngineManager.ensurePickToken()"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:923": [
-      "} catch (t: Throwable) {"
+      ").start()"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/MuxClient.kt:172": [
       "sendFrame(out, 0x1, streamOpen.toByteArray(Charsets.UTF_8))"
@@ -4034,7 +4034,7 @@
       "*"
     ],
     "plugins/dsh-android-manage/src/ime-broadcast.ts:61": [
-      "export function adbKeyboardBroadcast(action: string, msg: string | null | undefined, auth: string): string {"
+      "*"
     ],
     "plugins/dsh-android-manage/src/index.ts:1071": [
       "const a = await guard('act_input', args as Record<string, unknown>, exec as { agent?: { session?: unknown } })"
