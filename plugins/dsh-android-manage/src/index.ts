@@ -1519,7 +1519,11 @@ properties: {
         return {
           ok: true, denied: false,
           ref: '', id: 'abs(' + Math.round(x!) + ',' + Math.round(y!) + ')', label: '虚拟屏坐标',
-          x: typeof data.displayId === 'number' ? data.displayId : 0, y: 0,
+          // 回显**本次点击的坐标**（模型据此自证落点），屏身份由 screenOut 提供。
+          // 2026-10-28 自查：旧实现写成 `x: typeof data.displayId === 'number' ? data.displayId : 0`——
+          // 语义错位（x 里装的是 displayId，真实坐标 180/524 凭空消失），且壳侧回 `displayId: NaN` 时
+          // `typeof NaN === 'number'` 恒真 ⇒ NaN 进返回体（JSON 序列化成 null）。两条都用探针实测过。
+          x: Math.round(x!), y: Math.round(y!),
           ...screenOut(data),
           text: data.guidance ?? ('已在 ' + screenId + ' 注入坐标点击 (' + Math.round(x!) + ',' + Math.round(y!) + ')'),
         }
@@ -2216,8 +2220,12 @@ properties: {
         if (vd.ok !== true || data.ok === false) {
           return {
             ok: false, denied: false, pkg,
+            // 屏身份（含 displayId）只由 screenOut 提供：它带 Number.isFinite 守卫。
+            // 2026-10-28 自查：这里原本**紧跟**一行手写
+            // `...(typeof data.displayId === 'number' ? { displayId: data.displayId } : {})`，
+            // 展开顺序在 screenOut 之后 ⇒ 把带守卫的值**覆盖**掉 ⇒ NaN/Infinity 照样透出
+            // （而 schema 声明 displayId:{type:'integer'}，非整数会让引擎整值拒绝）。删掉那一行即可。
             ...screenOut(data),
-            ...(typeof data.displayId === 'number' ? { displayId: data.displayId } : {}),
             ...(data.landedDisplayIds === undefined ? {} : { landedDisplayIds: data.landedDisplayIds }),
             ...(typeof data.code === 'string' ? { code: data.code } : {}),
             text: '跨屏拉起未确认落在目标屏：' + (data.guidance ?? (vd.ok ? '壳侧拒绝' : vd.error))
@@ -2228,8 +2236,8 @@ properties: {
         return {
           ok: true, denied: false, pkg,
           foreground: '',
+          // 同上：displayId 只从 screenOut 来，不要在这里手写覆盖（会绕过 finite 守卫）。
           ...screenOut(data),
-          ...(typeof data.displayId === 'number' ? { displayId: data.displayId } : {}),
           ...(data.landedDisplayIds === undefined ? {} : { landedDisplayIds: data.landedDisplayIds }),
           ...(typeof data.code === 'string' ? { code: data.code } : {}),
           text: data.guidance ?? ('已在 ' + screenId + ' 上拉起 ' + pkg),
