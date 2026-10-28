@@ -309,3 +309,26 @@ test('parseUiTreeXml：属性值里的字面 > 不得让属性区提前闭合；
   const b = checkUiTreeParse(broken, parseUiTreeXml(broken).raw)
   assert.equal(b.ok, false, '缺 bounds 的节点没有被自检抓住')
 })
+
+// resolveRef 的序号后缀是 **1 基**。旧实现用 `occurrence = 0` 当「未指定」哨兵，于是 `text:foo#0`
+// 被静默当成「没写序号」—— 单候选时直接返回第 1 个、多候选时报「匹配 N 个」，用户看到的都不是
+// 「#0 非法」，与本函数「绝不静默挑一个」的契约矛盾。2026-10-28 改为 null 哨兵 + #0 报错。
+test('resolveRef：#0 必须报错（1 基），#N 正常，#00 也算非法', () => {
+  const raw = [
+    { attrs: { bounds: '[0,0][10,10]', text: '设置', class: 'V' }, id: '0', parentId: '' },
+    { attrs: { bounds: '[5,5][15,15]', text: '设置', class: 'V' }, id: '0.0', parentId: '0' },
+  ]
+  const p = pruneNodes(raw)
+  for (const bad of ['text:设置#0', 'text:设置#00']) {
+    const r = resolveRef(p.byId, p.nodes, bad)
+    assert.equal(r.ok, false, bad + ' 被静默接受了：' + JSON.stringify(r.ok ? r.node.id : ''))
+    assert.match(r.error, /序号从 1 开始/, '错误信息没说明 1 基：' + r.error)
+  }
+  // 不能被带走的形态：合法序号仍工作
+  assert.equal(resolveRef(p.byId, p.nodes, 'text:设置#1').node.id, 'n0')
+  assert.equal(resolveRef(p.byId, p.nodes, 'text:设置#2').node.id, 'n1')
+  // 多候选仍「不猜」
+  const multi = resolveRef(p.byId, p.nodes, 'text:设置')
+  assert.equal(multi.ok, false, '多候选被静默挑了一个')
+  assert.ok(Array.isArray(multi.matches) && multi.matches.length === 2)
+})

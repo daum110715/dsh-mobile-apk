@@ -324,11 +324,18 @@ export function resolveRef(
     return { ok: true, node: hit.n }
   }
   // 消歧后缀：#N（第 N 个匹配）/ @nX（限定在 nX 子树内）
-  let occurrence = 0
+  // `null` = **未指定序号**（区别于 `#0`）。旧实现用 0 当哨兵，于是 `text:foo#0` 被静默当成
+  // 「没写序号」⇒ 单候选时直接返回第 1 个、多候选时报「匹配 N 个」，用户看到的都不是
+  // 「#0 非法」——与本函数「绝不静默挑一个」的契约矛盾（2026-10-28 自查）。
+  let occurrence: number | null = null
   let scopeId = ''
   const occMatch = /#(\d+)\s*$/.exec(value)
   if (occMatch) {
-    occurrence = Number(occMatch[1])
+    const n = Number(occMatch[1])
+    if (!Number.isInteger(n) || n < 1) {
+      return { ok: false, error: `${kind} 的序号后缀 #${occMatch[1]} 非法：序号从 1 开始（例：${kind}:${value.slice(0, occMatch.index).slice(0, 20)}#2）` }
+    }
+    occurrence = n
     value = value.slice(0, occMatch.index)
   }
   const scopeMatch = /@(n\d+)\s*$/.exec(value)
@@ -358,7 +365,7 @@ export function resolveRef(
   if (cands.length === 0) {
     return { ok: false, error: `没有 ${kind} 为 "${t.slice(0, 30)}" 的节点${scopeId ? `（作用域 ${scopeId}）` : ''}——请重新取树（android_ui_dump 或 android_ui_tree）确认当前页面` }
   }
-  if (occurrence > 0) {
+  if (occurrence !== null) {
     if (occurrence > cands.length) {
       return { ok: false, error: `${kind} "${t.slice(0, 30)}" 只有 ${cands.length} 个匹配，请求的是第 ${occurrence} 个`, matches: cands.slice(0, 8) }
     }
