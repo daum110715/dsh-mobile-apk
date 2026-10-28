@@ -6,6 +6,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -44,6 +45,27 @@ class RepairToolsTest {
   @After
   fun tearDown() {
     base.deleteRecursively()
+  }
+
+  @Test
+  fun restartOutcomeKeepsDeferralDistinctFromSuccessAndFailure() {
+    assertNull(repairRestartOutcomeResult(EngineStartOutcome.STARTED, null))
+
+    val deferred = repairRestartOutcomeResult(EngineStartOutcome.DEFERRED_REFRESHING, null)!!
+    assertFalse(deferred.getBoolean("ok"))
+    assertFalse(deferred.getBoolean("restarted"))
+    assertTrue(deferred.getBoolean("deferred"))
+    assertEquals("snapshot-refreshing", deferred.getString("reason"))
+    assertTrue(deferred.getString("message").contains("刷新结束后可以重试"))
+
+    val refusal = try {
+      repairRestartOutcomeResult(EngineStartOutcome.REFUSED, "runtime refused")
+      null
+    } catch (failure: RepairFailure) {
+      failure
+    }
+    assertEquals("restart-failed", refusal?.code)
+    assertEquals("runtime refused", refusal?.message)
   }
 
   @Test

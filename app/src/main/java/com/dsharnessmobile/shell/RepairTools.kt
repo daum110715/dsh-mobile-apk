@@ -204,16 +204,7 @@ internal class RepairTools(
       // issue #684：让行（快照刷新中）不是拒启，文案必须如实区分——用户点「重启引擎」
       // 却得到「引擎启动被拒」会被误导去找一个不存在的故障。
       val restartOutcome = engine.startEngine(force = true)
-      if (restartOutcome != EngineStartOutcome.STARTED) {
-        throw RepairFailure(
-          "restart-failed",
-          if (restartOutcome == EngineStartOutcome.DEFERRED_REFRESHING) {
-            "快照刷新进行中，本次重启已让行（非失败）：刷新完成后由启动流拉起引擎"
-          } else {
-            engine.lastStartRefusal ?: "EngineManager.startEngine(force=true) 被拒"
-          },
-        )
-      }
+      repairRestartOutcomeResult(restartOutcome, engine.lastStartRefusal)?.let { return it }
       val deadline = System.currentTimeMillis() + RESTART_HTTP_WAIT_MS
       var http = EngineProbe.check(HTTP_TIMEOUT_MS)
       while (!http.optBoolean("running", false) && System.currentTimeMillis() < deadline &&
@@ -747,3 +738,20 @@ internal object RepairToolSchemas {
 }
 
 internal class RepairFailure(val code: String, message: String) : Exception(message)
+
+internal fun repairRestartOutcomeResult(
+  outcome: EngineStartOutcome,
+  refusal: String?,
+): JSONObject? = when (outcome) {
+  EngineStartOutcome.STARTED -> null
+  EngineStartOutcome.DEFERRED_REFRESHING -> JSONObject()
+    .put("ok", false)
+    .put("restarted", false)
+    .put("deferred", true)
+    .put("reason", "snapshot-refreshing")
+    .put("message", "快照刷新进行中，本次重启请求已让行；刷新结束后可以重试。")
+  EngineStartOutcome.REFUSED -> throw RepairFailure(
+    "restart-failed",
+    refusal ?: "EngineManager.startEngine(force=true) 被拒",
+  )
+}

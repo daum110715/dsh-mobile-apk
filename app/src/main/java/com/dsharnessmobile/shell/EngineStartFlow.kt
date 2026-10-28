@@ -865,7 +865,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         val refusalCode = activity.engineManager.lastStartRefusalCode
         LogCollector.writeBootFail(
           activity, if (refusal != null) "engine-start-refused" else "engine-start-false",
-          "EngineManager.startEngine() 返回 false（未能拉起引擎进程）"
+          "EngineManager.startEngine() 返回 REFUSED（未能拉起引擎进程）"
             + (refusalCode?.let { "；refusalCode=" + it } ?: "")
             // issue #309：把**判别性事实**（确诊项有几个）也写进 boot-fail，而不是只写进
             // LogCollector.log——后者只有采集器在跑时才落盘（独立评审 C6 指出的可诊断性缺口）。

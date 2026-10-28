@@ -357,10 +357,12 @@ class Issue309StartRecoveryTest {
     val entry = between(manager, "fun startEngine(", "snapshotFingerprintProblem()")
     assertTrue("入口必须先清原因码", entry.contains("lastStartRefusalCode = null"))
     assertTrue("入口必须同时清确诊项", entry.contains("lastStartRefusalConfirmed = emptyList()"))
-    val beforeFirstReturn = manager.substringAfter("fun startEngine(").substringBefore("return false")
+    val start = manager.indexOf("fun startEngine(")
+    val resetCode = manager.indexOf("lastStartRefusalCode = null", start)
+    val firstGate = manager.indexOf("snapshotFingerprintProblem()", start)
     assertTrue(
-      "清码必须早于第一条 return false（否则残留码仍会被当成本次结论）",
-      beforeFirstReturn.contains("lastStartRefusalCode = null"),
+      "清码必须早于第一条拒启门（否则残留码仍会被当成本次结论）",
+      resetCode >= start && resetCode < firstGate,
     )
   }
 

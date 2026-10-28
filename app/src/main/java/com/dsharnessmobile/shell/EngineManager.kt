@@ -233,7 +233,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
     if (!beginSnapshotTransaction()) {
       // P1（定位报告 §2.5）：**口径纠正**。旧实现把「别人正在做」记成自己的失败
       // （挂 IllegalStateException 到 lastRefreshFailure），而同一堵墙上的另两处早已是对的：
-      // startEngine(:1304-1307) 返回 true 让行、invalidateSnapshotFreshness(:443-446) 返回 false 让行。
+      // startEngine(:1304-1307) 返回 DEFERRED_REFRESHING 让行、invalidateSnapshotFreshness(:443-446) 返回 false 让行。
       // 全仓只有这一处把事务在飞记成失败，这是口径不一致而非设计取舍。
       //
       // 返回值仍是 false（本次**确实没有**刷新，调用方据此不得宣称已安排），但事实必须如实：
@@ -1403,7 +1403,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
       return refuse(REFUSAL_RUNTIME_UNAVAILABLE, problem.failureCode + ": " + problem.detail)
     }
     // 快照刷新进行中禁止拉起（看门狗旁路闸门）：主流程刷新完成后自会启动；期间拉起只会
-    // 起在半新半旧的运行时上。返回 true = 「无需再启动」（与冷却窗语义一致，5s 后看门狗复检）。
+    // 起在半新半旧的运行时上。返回 DEFERRED_REFRESHING 表示让行，不进入存活判据或重试预算。
     if (EngineManager.snapshotRefreshing.get()) {
       // issue #684：这里**没有** spawn，所以不能回「已发起」。旧实现返回 true，调用方的存活
       // 判据立刻为假（STARTING 未置位 + 无子进程），把 8-12 分钟的正常刷新误判成
