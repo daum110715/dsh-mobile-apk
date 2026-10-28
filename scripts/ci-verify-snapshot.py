@@ -2,7 +2,7 @@
 """ci-verify-snapshot.py — CI snapshot gate: ELF arch + secrets scan + plugin consistency + profile patch consistency.
 Usage:
   python3 ci-verify-snapshot.py <snapshot.tar.xz> <expect-arch> <plugins-dir>...
-  expect-arch: aarch64 | x86_64
+  expect-arch: aarch64 | arm64 | x86_64（arm64 是 aarch64 的别名：两条构建链的 ABI 名是 arm64）
 Checks:
   1. usr/bin/node ELF machine matches expect-arch (streamed from tar).
   2. Sensitive paths absent: .credentials / sessions/ / storages/ / anon-id / settings.yaml / .npmrc / private sourcemaps.
@@ -139,8 +139,15 @@ def scan(snapshot: str, expect: str, plugin_dirs):
     # 输入缺失时必须给出「一眼能分清是环境问题还是真判红」的信息，不能抛 Python traceback
     # ——构建者看到 FileNotFoundError 栈看不出「我忘了先跑 build-snapshot-013.mjs」。
     # 约定：exit 2 = 环境/用法错误（区别于 exit 1 = 判据不通过）。两仓逐字节同源。
+    # ABI 名双口径（2026-10-29 实锤，release/0.14.10 本地全链）：本门禁只认 ELF 读数的
+    # 'aarch64'，而 build-apk-013.ps1 与 build-apk.mjs 的 $abi/ABI 取值是 'arm64' 与
+    # 'x86_64'（Gradle abiFilters 口径）。门禁被接进两条链之后，arm64 那一轮恒以
+    # SNAPSHOT_GATE_ERROR exit 2 被 Deny-Abi 拒掉——错误文案还是「包名与 applicationId 不一致」，
+    # 指向完全无关的原因。它是**输入校验**不是判据，故在此归一别名：arm64 -> aarch64。
+    if expect == 'arm64':
+        expect = 'aarch64'
     if expect not in ('aarch64', 'x86_64'):
-        print('SNAPSHOT_GATE_ERROR: 未知 ABI "' + str(expect) + '"（只接受 aarch64 | x86_64）')
+        print('SNAPSHOT_GATE_ERROR: 未知 ABI "' + str(expect) + '"（只接受 aarch64 | arm64 | x86_64）')
         sys.exit(2)
     if not os.path.isfile(snapshot):
         print('SNAPSHOT_GATE_ERROR: 快照文件不存在: ' + str(snapshot))
