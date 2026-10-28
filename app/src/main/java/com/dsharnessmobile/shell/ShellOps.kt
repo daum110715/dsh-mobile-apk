@@ -66,7 +66,17 @@ internal object ShellOps {
       ),
       ALL_DISPLAY_FLAGS,
     ),
-    ScreenFamily("wm", Regex("""\bwm[ \t]+(?:size|density|overscan)\b""", RegexOption.IGNORE_CASE), ALL_DISPLAY_FLAGS),
+    // `wm` 的改屏子命令（`user-rotation` 在本机 MIUI 上未生效，但命令语义同样是改真实屏）。
+    ScreenFamily(
+      "wm",
+      Regex("""\bwm[ \t]+(?:size|density|overscan|user-rotation|fixed-to-user-rotation)\b""", RegexOption.IGNORE_CASE),
+      ALL_DISPLAY_FLAGS,
+    ),
+    // `cmd window …` 是 `wm` 的等价拼写（实测 `cmd window size 900x1600` 真改真实屏）；
+    // 目标屏参数是**子命令内**的 `[-d DISPLAY_ID]`（实测 `cmd window size 900x1600 -d 7` 被接受）。
+    ScreenFamily("cmd-window", Regex("""\bcmd[ \t]+window\b""", RegexOption.IGNORE_CASE), ALL_DISPLAY_FLAGS),
+    // `cmd display …` 用 `--id DISPLAY_ID`（不是 ScreenTarget 的两种 id 空间）⇒ 无法自证，恒拒。
+    ScreenFamily("cmd-display", Regex("""\bcmd[ \t]+display\b""", RegexOption.IGNORE_CASE), emptyList()),
     // `uiautomator dump` 没有目标屏参数：dump 的是**默认屏**的语义树 ⇒ 无法自证，恒拒。
     ScreenFamily("uiautomator", Regex("""\buiautomator\b""", RegexOption.IGNORE_CASE), emptyList()),
     ScreenFamily("dumpsys", Regex("""\bdumpsys[ \t]+(?:window|display|input)\b""", RegexOption.IGNORE_CASE), emptyList()),
@@ -334,7 +344,8 @@ internal object ShellOps {
     if (screenVerdictWithRegistry(context, command) == ScreenCommandVerdict.ALLOW) return null
     return JSONObject()
       .put("__error", "用户当前开放屏幕范围为 virtual-only，不允许经特权 shell 读取或操作真实屏幕"
-        + "（screencap / screenrecord / uiautomator / input / wm / dumpsys window|display|input / am / monkey）。"
+        + "（screencap / screenrecord / uiautomator / input / wm / cmd window / cmd display /"
+        + " dumpsys window|display|input / am / monkey）。"
         + "命令里显式指定的目标屏若确为**已注册虚拟屏**（DisplayManager displayId 或该屏的 SurfaceFlinger token）即可放行；"
         + "本条命令的目标屏未能与壳侧注册表核对上，故拒绝。请确认虚拟屏仍在活跃状态"
         + "（android_vdisplay_create / vdInfo），或由用户在设置中修改范围后重试。")

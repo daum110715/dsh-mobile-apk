@@ -448,6 +448,41 @@
       "ownedTargets": ["7", "11529215046816944610"],
       "expect": "allow",
       "why": "与 S-14a 成对且更严格：展开后自带已注册 `-d 7` ⇒ 必须放行，防「见到 -o 就拒」。"
+    },
+    {
+      "name": "S-16a cmd window 是 wm 的等价拼写（改真实屏分辨率）",
+      "command": "cmd window size 900x1600",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "deny-uncertified-target",
+      "why": "小米 14 Pro（SDK 37）实测 `cmd window size 900x1600` 真的把真实屏改成 `Override size: 900x1600`（`wm size reset` 才恢复）；而 `wm size` 早就在家族里 ⇒ 只认 `wm` 会把这条等价拼写整类放行（与 `am` / `cmd activity` 同型）。"
+    },
+    {
+      "name": "S-16b cmd window 的目标屏参数在子命令内（-d 可自证）",
+      "command": "cmd window size 900x1600 -d 7",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "allow",
+      "why": "小米 14 Pro（SDK 37）实测 `cmd window size … -d 7` 实测被接受（返回 `Physical size: 0x0`，因为 7 号屏不存在）。它的 `-d` 出现在**子命令之后**，不是全局选项 —— 门禁按全文扫 options，所以带已注册虚拟屏 id 时应放行。"
+    },
+    {
+      "name": "S-16c cmd display 用 --id 而非 -d，无法自证 ⇒ 恒拒",
+      "command": "cmd display set-brightness 100",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "deny-uncertified-target",
+      "why": "`cmd display set-brightness|set-user-preferred-display-mode|…` 同样改真实屏（亮度/显示模式），但目标屏参数是 `--id DISPLAY_ID`，既不在 ALL_DISPLAY_FLAGS 里、也不是 ScreenTarget 的两种 id 空间之一 ⇒ 与 `dumpsys` 同档恒拒。"
+    },
+    {
+      "name": "S-16d wm user-rotation 同属改屏子命令",
+      "command": "wm user-rotation lock 1",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "deny-uncertified-target",
+      "why": "小米 14 Pro（SDK 37）实测本机 MIUI 上 `wm user-rotation lock 1` 返回 0 但 `mRotation` 恒定不变（与 `settings put system user_rotation` 一样被 ROM 忽略）；判据看的是「命令能否操作真实屏」而不是这一台有没有生效 —— 别的 ROM 会真的转屏。"
+    },
+    {
+      "name": "对照 wm size 带虚拟屏 id 仍放行（细化后不得误伤虚拟屏）",
+      "command": "wm size 900x1600 -d 7",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "allow",
+      "why": "把 `wm` 子命令表扩大后，带已注册虚拟屏 id 的用例必须仍然放行：`wm size … -d 7` 的 `-d` 是它的目标屏参数（原就支持）⇒ 不得因新增 `user-rotation` 而改变这一路径的行为。"
     }
   ]
 }

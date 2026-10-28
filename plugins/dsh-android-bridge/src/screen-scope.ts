@@ -551,7 +551,24 @@ const SCREEN_COMMAND_FAMILIES: readonly ScreenCommandFamily[] = [
       /\binput[ \t]+(?:(?:touchscreen|keyboard|mouse|joystick|touchnavigation|trackball|stylus|dpad|gamepad|rotaryencoder)[ \t]+)?(?:tap|swipe|roll|draganddrop|motionevent|text|keyevent|keycombination|press)\b/i,
     targetFlags: ALL_DISPLAY_FLAGS,
   },
-  { name: 'wm', pattern: /\bwm[ \t]+(?:size|density|overscan)\b/i, targetFlags: ALL_DISPLAY_FLAGS },
+  // `wm` 的改屏子命令。`user-rotation` / `fixed-to-user-rotation` 语义同样是「改真实屏显示参数」
+  // （本机 MIUI 上实测 `wm user-rotation lock 1` 返回 0 但 mRotation 不变，但别的 ROM 会生效 ——
+  // 判据看的是命令能不能操作真实屏，不是这一台有没有生效）。
+  {
+    name: 'wm',
+    pattern: /\bwm[ \t]+(?:size|density|overscan|user-rotation|fixed-to-user-rotation)\b/i,
+    targetFlags: ALL_DISPLAY_FLAGS,
+  },
+  // `cmd window <size|density|scaling|user-rotation|dismiss-keyguard>` 是 `wm` 的等价拼写：
+  // 小米 14 Pro 实测 `cmd window size 900x1600` 真的把真实屏改成 `Override size: 900x1600`
+  // （`wm size reset` 才恢复），而修前它不在任何家族里 ⇒ 放行（2026-10-28 自查）。
+  // 它的目标屏参数是**子命令内**的 `[-d DISPLAY_ID]`（实测 `cmd window size 900x1600 -d 7`
+  // 被接受、返回 `Physical size: 0x0`），所以按 ALL_DISPLAY_FLAGS 取凭据。
+  { name: 'cmd-window', pattern: /\bcmd[ \t]+window\b/i, targetFlags: ALL_DISPLAY_FLAGS },
+  // `cmd display <set-brightness|set-user-preferred-display-mode|…>` 同样改真实屏（亮度/显示模式），
+  // 但它的目标屏参数是 `--id DISPLAY_ID`，与既有凭据口径（-d/--display/--display-id）不同、
+  // 也不是 `ScreenTarget` 的两种 id 空间之一 ⇒ 无法自证，按 `dumpsys` 同档恒拒。
+  { name: 'cmd-display', pattern: /\bcmd[ \t]+display\b/i, targetFlags: [] },
   // `uiautomator dump` 没有目标屏参数：dump 的就是**默认屏**的语义树 ⇒ 无法自证，恒拒。
   { name: 'uiautomator', pattern: /\buiautomator\b/i, targetFlags: [] },
   { name: 'dumpsys', pattern: /\bdumpsys[ \t]+(?:window|display|input)\b/i, targetFlags: [] },
