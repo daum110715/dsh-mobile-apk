@@ -27,6 +27,7 @@ import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 import { join } from 'node:path'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { coordBasisNote, basisFields, COMPAT_NOTE } from './coord-basis.js'
+import { screenArgs, screenOut, coordinateMode } from './screen-fields.js'
 import { parseUiTreeXml, pruneNodes, resolveRef, findActionableAncestor, checkUiTreeParse, type UiNode, actionableAncestorV2, scopePoolV2, treeFingerprint } from './ui-tree.js'
 import { cacheFromV2, decodeV2, isV2Payload, type V2Decoded } from './protocol-v2.js'
 import { detailRecord, pageRows, writeDetailStore } from './detail-store.js'
@@ -200,10 +201,6 @@ function tools(ctx: Context, priv: PrivilegeFace) {
    * **投递到壳侧执行**。只做前者的后果（0.14.0 真机实锤）：门按 virtual-N 放行了，
    * 执行却仍落在真实屏——模型看到「参数生效了但画面没变」，比直接拒绝更难排查。
    */
-  const screenArgs = (args: unknown): Record<string, unknown> => {
-    const screenId = (args as { screenId?: unknown } | undefined)?.screenId
-    return typeof screenId === 'string' && screenId !== '' ? { screenId } : {}
-  }
 
   /**
    * 动作模式（SPEC §4.2）：壳侧对每个真实屏 op 回填 `actionMode`。
@@ -1276,15 +1273,6 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
    * 缺省策略：壳侧未回填 actionMode 时**不编造**（不发键），让模型按「未知」处理；
    * 编一个 a11y 会让模型以为语义树可用而实际不可用（错误引导比缺失更糟）。
    */
-  const screenOut = (data: unknown): Record<string, unknown> => {
-    const d = (data ?? {}) as { screenId?: unknown; displayId?: unknown; scope?: unknown; actionMode?: unknown }
-    const out: Record<string, unknown> = {}
-    if (typeof d.screenId === 'string' && d.screenId !== '') out.screenId = d.screenId
-    if (typeof d.displayId === 'number') out.displayId = d.displayId
-    if (typeof d.scope === 'string' && d.scope !== '') out.scope = d.scope
-    if (typeof d.actionMode === 'string' && d.actionMode !== '') out.actionMode = d.actionMode
-    return out
-  }
 
   /**
    * 纯 Shizuku（无障碍关）下虚拟屏的**坐标模式**结构化响应（SPEC §4.2）。
@@ -1293,13 +1281,6 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
    * 而应给出 actionMode=coordinate + 可直接照做的引导（改用坐标操作），
    * 让模型在**同一轮**里继续推进任务，而不是停下来问用户。
    */
-  const coordinateMode = (screenId: string, reason: string, guidance: string): Record<string, unknown> => ({
-    ok: false,
-    actionMode: 'coordinate',
-    screenId,
-    reason,
-    guidance,
-  })
 
   /** 0.13.5 W4：无障碍通道往返封装（统一错误文案，超时 8s）。 */
   const a11yExec = async (op: string, args: Record<string, unknown>, timeoutMs = 8000) => {

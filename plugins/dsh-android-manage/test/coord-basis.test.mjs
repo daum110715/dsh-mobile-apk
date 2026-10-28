@@ -40,3 +40,10 @@ test('basisFields：只带壳侧真回显的键', () => {
   // 非 number 的宽高不得透传
   assert.deepEqual(basisFields({ basis: 'full-screen', basisWidth: 'x', basisHeight: null }), { basis: 'full-screen' })
 })
+
+test('basisFields：NaN / Infinity 宽高不得透传（同 screenOut 的 #204 同族约束）', () => {
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    assert.deepEqual(basisFields({ basis: 'full-screen', basisWidth: bad, basisHeight: bad }),
+      { basis: 'full-screen' }, '透传了非有限数：' + String(bad))
+  }
+})

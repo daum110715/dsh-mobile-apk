@@ -40,7 +40,9 @@ export function basisFields(data: unknown): Record<string, unknown> {
   if (typeof d.basis !== 'string' || d.basis === '') return {}
   return {
     basis: d.basis,
-    ...(typeof d.basisWidth === 'number' ? { basisWidth: d.basisWidth } : {}),
-    ...(typeof d.basisHeight === 'number' ? { basisHeight: d.basisHeight } : {}),
+    // 同 `screenOut` 的自查结论：只查 `typeof === 'number'` 会让 NaN/Infinity 透传，
+    // 而它们不是合法 JSON，引擎在 `{type:'number'}` 下整值拒绝（0.13.8 #204 同族）。
+    ...(typeof d.basisWidth === 'number' && Number.isFinite(d.basisWidth) ? { basisWidth: d.basisWidth } : {}),
+    ...(typeof d.basisHeight === 'number' && Number.isFinite(d.basisHeight) ? { basisHeight: d.basisHeight } : {}),
   }
 }
