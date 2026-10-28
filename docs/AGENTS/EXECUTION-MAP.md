@@ -2113,6 +2113,7 @@ app/src/androidTest/java/com/dsharnessmobile/shell/UpdateSignerContinuityDeviceT
 app/src/androidTest/java/com/dsharnessmobile/shell/AdbKeyboardContractDeviceTest.kt
 app/src/androidTest/java/com/dsharnessmobile/shell/PrivilegeGateDeviceTest.kt
 app/src/androidTest/java/com/dsharnessmobile/shell/NotifySmokeDeviceTest.kt
+app/src/androidTest/java/com/dsharnessmobile/shell/VdisplaySmokeDeviceTest.kt
 app/src/androidTest/java/com/dsharnessmobile/shell/FactoryRetirementSafetyTest.kt
 scripts/verify-webview-settings.test.mjs
 app/src/test/java/com/dsharnessmobile/shell/NotifyCenterPoisonEventTest.kt
