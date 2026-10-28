@@ -97,7 +97,14 @@ internal object ShotCachePolicy {
       return false
     }
     prune(dir, nowMs, ttlMs, maxFiles, maxBytes, preserve = capture)
-    return capture.isFile
+    val remaining = try {
+      dir.listFiles()?.filter { it.isFile && isManagedShot(it) }.orEmpty()
+    } catch (_: Exception) {
+      return false
+    }
+    val withinLimits = remaining.size <= maxFiles && remaining.sumOf { sizeOf(it) } <= maxBytes
+    if (!withinLimits) delete(capture)
+    return withinLimits && capture.isFile
   }
 
   private fun isManagedShot(file: File): Boolean =
