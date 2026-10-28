@@ -198,11 +198,36 @@ jobs:
           [ "$VER" = "${{ inputs.version }}" ] || { echo "::error::versionName($VER) != 输入——先改 build.gradle.kts 并走 PR"; exit 1; }
           echo "ver=$VER" >> "$GITHUB_ENV"
           echo "code=$CODE" >> "$GITHUB_ENV"
-      - name: 准备固定签名 keystore（与历史发布同一把）
+      - name: Load the protected release signing key
+        shell: bash
+        env:
+          DSH_RELEASE_KEYSTORE_BASE64: ${{ secrets.DSH_RELEASE_KEYSTORE_BASE64 }}
+          DSH_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.DSH_RELEASE_KEYSTORE_PASSWORD }}
+          DSH_RELEASE_KEY_ALIAS: ${{ secrets.DSH_RELEASE_KEY_ALIAS }}
+          DSH_RELEASE_KEY_PASSWORD: ${{ secrets.DSH_RELEASE_KEY_PASSWORD }}
         run: |
-          mkdir -p "$ANDROID_USER_HOME/.android"
-          cp keystore/debug.keystore "$ANDROID_USER_HOME/.android/debug.keystore"
-          ls -l "$ANDROID_USER_HOME/.android/debug.keystore"
+          set -euo pipefail
+          for name in DSH_RELEASE_KEYSTORE_BASE64 DSH_RELEASE_KEYSTORE_PASSWORD DSH_RELEASE_KEY_ALIAS DSH_RELEASE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is required to build a release APK"
+              exit 1
+            fi
+            case "${!name}" in
+              *$'\n'*|*$'\r'*) echo "::error::$name must be a single-line secret"; exit 1 ;;
+            esac
+          done
+          keystore_path="$RUNNER_TEMP/dsh-mobile-release.keystore"
+          printf '%s' "$DSH_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          chmod 600 "$keystore_path"
+          test -s "$keystore_path"
+          keytool -list -keystore "$keystore_path" -storepass:env DSH_RELEASE_KEYSTORE_PASSWORD \
+            -alias "$DSH_RELEASE_KEY_ALIAS" >/dev/null
+          {
+            printf 'DSH_RELEASE_KEYSTORE=%s\n' "$keystore_path"
+            printf 'DSH_RELEASE_KEYSTORE_PASSWORD=%s\n' "$DSH_RELEASE_KEYSTORE_PASSWORD"
+            printf 'DSH_RELEASE_KEY_ALIAS=%s\n' "$DSH_RELEASE_KEY_ALIAS"
+            printf 'DSH_RELEASE_KEY_PASSWORD=%s\n' "$DSH_RELEASE_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
       - name: 准备 Android SDK build-tools（apksigner 供产出侧签名断言）
         run: |
           yes | sudo "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1 || true
@@ -279,6 +304,26 @@ jobs:
           set -e
           chmod +x gradlew
           pwsh -NoProfile -File scripts/build-apk-013.ps1 -Suffix "" -ExportSnapshots
+      - name: Assemble release variants with the protected signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="out/v${ver}"
+          assets="app/src/main/assets"
+          for abi in arm64 x86_64; do
+            snapshot="$out/snapshot-${abi}.tar.xz"
+            test -s "$snapshot"
+            cp "$snapshot" "$assets/snapshot.tar.xz"
+            snapshot_sha=$(sha256sum "$snapshot" | awk '{print $1}')
+            printf '%s' "$snapshot_sha" > "$assets/snapshot.sha256"
+            node scripts/build-hard-manifest.mjs --snapshot "$snapshot" --out "$assets/plugin-hard-manifest.json"
+            node scripts/check-snapshot-fingerprint.mjs --require
+            release_apk="app/build/outputs/apk/release/app-release.apk"
+            rm -f "$release_apk"
+            ./gradlew :app:assembleRelease --no-daemon "-PversionNameSuffix="
+            test -s "$release_apk"
+            cp "$release_apk" "$out/dsh-mobile-apk-v${ver}-${abi}.apk"
+          done
       - name: 子仓打包（复用正式入口已构建产物）
         shell: bash
         run: |
@@ -309,7 +354,7 @@ jobs:
           apk_count=$(find "$OUT/apk" -name '*.apk' | wc -l)
           [ "$apk_count" -ge 2 ] || { echo "::error::APK 少于 2 件（双 ABI 缺件）"; exit 1; }
           node scripts/check-apk-signatures.mjs --self-test
-          node scripts/check-apk-signatures.mjs --dir "$OUT/apk" --keystore keystore/debug.keystore
+          node scripts/check-apk-signatures.mjs --dir "$OUT/apk" --keystore "$DSH_RELEASE_KEYSTORE"
           snap_count=$(find "$OUT/snapshot" -name 'snapshot-*.tar.xz' | wc -l)
           [ "$snap_count" -ge 2 ] || { echo "::error::注入后快照少于 2 件"; exit 1; }
       - name: MANIFEST.txt + notes.md
