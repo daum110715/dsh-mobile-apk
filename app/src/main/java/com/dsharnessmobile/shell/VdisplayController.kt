@@ -817,6 +817,19 @@ object VdisplayController {
   }
 
   /** 当前选中（或第一块）虚拟屏的分辨率；无屏返回 null（浮窗按此保持宽高比）。 */
+  /**
+   * 该 viewer 是否**仍然**持有一块屏的 Surface（0.14.11，D5）。
+   *
+   * 宿主只在 releaseViewerSurface / surfaceDestroyed 时复位自己的 attached；屏被
+   * destroy / 空闲回收 / 强制销毁时 records 会被清掉，宿主的 attached 却留成 true ⇒
+   * applyStageBounds 的 if (!attached) 永远不成立，新建的屏再也挂不上（侧栏永久旧帧）。
+   * 宿主据此每帧自查真源，把「屏不在了」变成已知事实，而不是等轮询间接发现。
+   */
+  internal fun holdsViewerSurface(viewerId: String): Boolean {
+    val id = viewerId.trim().ifBlank { "files-sidebar" }
+    synchronized(lock) { return records.values.any { it.viewerId == id && it.viewerSurface != null } }
+  }
+
   internal fun activeSize(): Pair<Int, Int>? {
     // 锁内只做 record 选择，活值查询放锁外（与 contentSizeForAlias 同一纪律）。
     val record = synchronized(lock) { records[selectedAlias] ?: records.values.firstOrNull() }
