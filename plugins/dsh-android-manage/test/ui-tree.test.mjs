@@ -290,3 +290,22 @@ test('treeFingerprint：文本含分隔符不得让「界面未变」误判', ()
   // 文本变化必须翻转
   assert.notEqual(treeFingerprint([mk('x', 'y')]), treeFingerprint([mk('x', 'z')]))
 })
+
+// XML 规范只强制转义 &、< 与定界引号，**字面 `>` 在属性值里合法**（text="a>b"）。旧解析器用
+// `[^>]*?` 收属性区，会在那个 `>` 处截断 ⇒ 该节点属性全丢 ⇒ 下游 parseBounds 失败 ⇒ 节点被整个
+// 丢弃，而 checkUiTreeParse 只比节点数、照样报 OK（「绝不静默产出错树」的承诺在这一路失效）。
+// 现状实测：uiautomator dump 走 XmlSerializer 会把 > 转成 &gt;，故当前不可达 —— 属纵深防御。
+test('parseUiTreeXml：属性值里的字面 > 不得让属性区提前闭合；属性丢光时自检必须拒绝', () => {
+  const xml = '<hierarchy rotation="0"><node text="a>b" bounds="[0,0][1,1]" class="V"></node></hierarchy>'
+  const r = parseUiTreeXml(xml)
+  assert.equal(r.raw[0].attrs.text, 'a>b', '字面 > 被当成属性区结束：' + JSON.stringify(r.raw[0].attrs))
+  assert.equal(r.raw[0].attrs.bounds, '[0,0][1,1]')
+  assert.equal(checkUiTreeParse(xml, r.raw).ok, true)
+  // 不能被带走的形态：转义 &gt; 仍按原样保留（由 decodeEntities 负责解码，解析器不参与）
+  const esc = parseUiTreeXml('<hierarchy><node text="a&gt;b" bounds="[0,0][1,1]"></node></hierarchy>')
+  assert.equal(esc.raw[0].attrs.text, 'a&gt;b')
+  // 自检必须抓住「属性丢光」：只有文本没有 bounds 的节点 → REJECT
+  const broken = '<hierarchy><node text="x" class="V"></node></hierarchy>'
+  const b = checkUiTreeParse(broken, parseUiTreeXml(broken).raw)
+  assert.equal(b.ok, false, '缺 bounds 的节点没有被自检抓住')
+})

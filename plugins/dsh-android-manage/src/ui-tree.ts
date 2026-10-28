@@ -125,7 +125,12 @@ export function parseUiTreeXml(xml: string): { raw: RawNode[]; rotation: number 
   // 栈帧：index = 本节点在同父下的序号；next = 下一个子节点槽位。
   // 虚拟根永远在栈底，其 index 不参与路径。
   const stack: Array<{ index: number; next: number }> = [{ index: -1, next: 0 }]
-  const re = /<node\s([^>]*?)(\/?)>|<\/node>/g
+  // 属性区必须允许引号内的 `>`：XML 规范只强制转义 `&`、`<` 和定界引号，**字面 `>` 在属性值里合法**
+  // （`text="a>b"`）。旧写法 `[^>]*?` 会在那个 `>` 处截断 ⇒ 该节点**属性全丢** ⇒ 下游 `parseBounds`
+  // 失败 ⇒ 节点被整个丢弃，而 `checkUiTreeParse` 只比节点数、照样报 OK（2026-10-28 自查）。
+  // 实测现状：Android `uiautomator dump` 走 XmlSerializer 会把 `>` 转成 `&gt;`，故当前不可达 ——
+  // 但解析器按语法接受它、自检也要能抓住属性丢光，属纵深防御。
+  const re = /<node\s((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>|<\/node>/g
   let m: RegExpExecArray | null
   while ((m = re.exec(xml)) !== null) {
     if (m[0] === '</node>') {
@@ -161,6 +166,12 @@ export function checkUiTreeParse(xml: string, raw: RawNode[]): { ok: true } | { 
   const tagCount = (xml.match(/<node[\s>]/g) ?? []).length
   if (raw.length !== tagCount) {
     return { ok: false, reason: `节点数不一致：XML 含 ${tagCount} 个 <node> 标签，解析产出 ${raw.length} 条（源 XML 畸形或版本不兼容）` }
+  }
+  // 属性丢光时节点仍在 `raw` 里（只是没有 bounds）⇒ 只比标签数会漏。uiautomator 的每个 `<node>`
+  // 都带 bounds；缺了就是解析断了（例如属性值里有未被转义的 `>` 让属性区提前闭合）。
+  const noBounds = raw.findIndex((r) => typeof r.attrs.bounds !== 'string' || r.attrs.bounds === '')
+  if (noBounds >= 0) {
+    return { ok: false, reason: `第 ${noBounds} 个节点（id "${raw[noBounds].id}"）没有 bounds 属性——属性区解析失败（XML 含未转义的 > 或属性写法异常），解析结果不可信` }
   }
   if (raw.length > 0 && raw[0].id !== '0') {
     return { ok: false, reason: `根节点 id 应为 "0"，实得 "${raw[0].id}"（栈机归位错误）` }
