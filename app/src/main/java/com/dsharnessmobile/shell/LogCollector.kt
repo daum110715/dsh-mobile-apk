@@ -462,7 +462,7 @@ object LogCollector {
    * 因此本函数可从任意线程调用且不引入 HTTP。
    *
    * @param source 诊断来源（`shell-stall` / `page-console` / …），进同一行便于分流
-   * @param detail 已序列化的诊断载荷（JSON 或 k=v）；调用方保证不含凭据
+   * @param detail 已序列化的诊断载荷（JSON 或 k=v）；最终诊断行仍会统一过 [EngineAuth.redact]
    * @param pageSideRuntime 页面侧运行时状态（页面自报时给真值；壳侧取不到时用
    *   [PAGE_RUNTIME_UNAVAILABLE]）。默认 unavailable —— **绝不留空数组**（块L L-2：空数组
    *   正是「诊断看起来正常」误导的根源；「真值是空数组」与「取不到」必须可区分）。
@@ -479,6 +479,7 @@ object LogCollector {
       " " + bootSegmentsSnapshot() +
       " pageSideRuntime=" + runtime +
       " detail=" + detail.replace('\n', ' ').replace('\r', ' ')
+    val safeLine = EngineAuth.redact(line).replace('\n', ' ').replace('\r', ' ')
     try {
       val f = File(ctx.filesDir, BOOT_DIAG_FILE)
       if (f.length() > BOOT_DIAG_MAX_BYTES) {
@@ -486,7 +487,7 @@ object LogCollector {
         try { prev.delete() } catch (_: Throwable) { /* 旧代删不掉不影响本轮 */ }
         try { f.renameTo(prev) } catch (_: Throwable) { /* 轮转失败则继续追加 */ }
       }
-      f.appendText(line + "\n")
+      f.appendText(safeLine + "\n")
     } catch (t: Throwable) {
       Log.w(TAG, "boot diag write failed: " + (t.message ?: t.javaClass.simpleName))
     }

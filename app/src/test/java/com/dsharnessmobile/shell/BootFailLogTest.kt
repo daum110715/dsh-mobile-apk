@@ -1,5 +1,7 @@
 package com.dsharnessmobile.shell
 
+import android.content.Context
+import android.content.ContextWrapper
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -33,6 +35,26 @@ class BootFailLogTest {
   private val files: File get() = tmp.root
   private fun failFile(): File = File(files, "boot-fail.log")
   private fun diagFile(): File = File(files, "boot-diag.log")
+  private fun testContext(): Context = object : ContextWrapper(null) {
+    override fun getApplicationContext(): Context = this
+    override fun getFilesDir(): File = files
+  }
+
+  @Test
+  fun bootDiagRedactsLaunchTokensFromDetailsAndRuntime() {
+    LogCollector.writeBootDiag(
+      testContext(),
+      source = "page-console",
+      detail = "url=http://127.0.0.1:3080/?token=DETAILTOKEN1234567890",
+      pageSideRuntime = "url=http://127.0.0.1:3080/?mode=web&token=RUNTIMETOKEN1234567890",
+    )
+
+    val line = diagFile().readText().trim()
+    assertFalse("detail token must not reach boot-diag.log", line.contains("DETAILTOKEN1234567890"))
+    assertFalse("runtime token must not reach boot-diag.log", line.contains("RUNTIMETOKEN1234567890"))
+    assertTrue(line.contains("?token=***"))
+    assertTrue(line.contains("&token=***"))
+  }
 
   // ── ① 失败终态必须有内容 ─────────────────────────────────────────────────────
 
