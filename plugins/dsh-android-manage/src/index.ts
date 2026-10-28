@@ -29,6 +29,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { coordBasisNote, basisFields, COMPAT_NOTE } from './coord-basis.js'
 import { screenArgs, screenOut, coordinateMode } from './screen-fields.js'
 import { nodeListLines } from './node-list.js'
+import { semanticFail } from './semantic-fail.js'
 import { parseUiTreeXml, pruneNodes, resolveRef, findActionableAncestor, checkUiTreeParse, type UiNode, actionableAncestorV2, scopePoolV2, treeFingerprint } from './ui-tree.js'
 import { cacheFromV2, decodeV2, isV2Payload, type V2Decoded } from './protocol-v2.js'
 import { detailRecord, pageRows, writeDetailStore } from './detail-store.js'
@@ -1193,17 +1194,6 @@ properties: {
    * 为什么必须把 guidance 单独带出：模型按字段决定下一步。塞进 text 里它可能只当描述读过去，
    * 单独成字段 + schema 声明后，它在结构上就是「可执行的下一步」。
    */
-  const semanticFail = (
-    r: { error?: string; actionMode?: unknown; screenId?: unknown; guidance?: unknown },
-    prefix: string,
-  ): { ok: boolean; denied: boolean; text: string; actionMode?: string; screenId?: string; guidance?: string } => {
-    const actionMode = typeof r.actionMode === 'string' ? r.actionMode : undefined
-    const out: Record<string, unknown> = { ok: false, denied: false, text: prefix + (r.error ?? '未知失败') }
-    if (actionMode !== undefined) out.actionMode = actionMode
-    if (typeof r.screenId === 'string' && r.screenId !== '') out.screenId = r.screenId
-    if (typeof r.guidance === 'string' && r.guidance !== '') out.guidance = r.guidance
-    return out as { ok: boolean; denied: boolean; text: string; actionMode?: string; screenId?: string; guidance?: string }
-  }
 
   /**
    * 从壳侧返回里取出屏幕三件套 + actionMode，**原样**附到工具返回值上（SPEC §4.2）。
