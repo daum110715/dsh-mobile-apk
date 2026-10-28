@@ -94,14 +94,14 @@ object UpdateChecker {
     /**
      * 发现新版：tag + 双 ABI 资产 URL（按设备 ABI 已选好）。
      *
-     * [sha256] 是**摘要本身**（64 位十六进制小写），不是摘要文件的 URL；null = 本次发布的数据源里
-     * 没有提供摘要，调用方下载后只能靠系统安装器的签名校验兜底，界面必须如实说明而不是沉默跳过。
+     * [sha256] 是**摘要本身**（64 位十六进制小写），不是摘要文件的 URL。没有有效摘要的 APK
+     * 不会生成可安装更新，避免把完整性校验降级成仅比较文件大小。
      */
     data class Available(
       val tag: String,
       val name: String,
       val apkUrl: String,
-      val sha256: String?,
+      val sha256: String,
       val sizeBytes: Long,
     ) : CheckResult()
 
@@ -220,7 +220,7 @@ object UpdateChecker {
   fun assetName(tag: String, abi: String): String = assetNameCandidates(tag, abi).first()
 
   /** 一件发布资产（只取判定所需字段；不引入 JSON 对象到判定层，便于 JVM 单测）。 */
-  internal data class ReleaseAssetRef(val name: String, val url: String, val sizeBytes: Long)
+  internal data class ReleaseAssetRef(val name: String, val url: String, val sizeBytes: Long, val sha256: String?)
 
   /** 解析后的 latest release：tag + 资产清单。 */
   internal data class LatestRelease(val tag: String, val assets: List<ReleaseAssetRef>)
@@ -241,7 +241,8 @@ object UpdateChecker {
       val a = arr.optJSONObject(i) ?: continue
       val name = a.optString("name", "").trim()
       if (name.isEmpty()) continue
-      assets += ReleaseAssetRef(name, a.optString("browser_download_url", "").trim(), a.optLong("size", 0L))
+      val sha256 = if (APK_NAME_TAG.matches(name)) parseReleaseAssetSha256(a.opt("digest")) else null
+      assets += ReleaseAssetRef(name, a.optString("browser_download_url", "").trim(), a.optLong("size", 0L), sha256)
     }
     return LatestRelease(tag, assets)
   }
@@ -359,6 +360,12 @@ object UpdateChecker {
     val sha256: Map<String, String>,
   )
 
+  private fun factsFromRelease(release: LatestRelease): LatestFacts = LatestFacts(
+    release.tag,
+    release.assets.associate { it.name to it.sizeBytes },
+    release.assets.mapNotNull { asset -> asset.sha256?.let { asset.name to it } }.toMap(),
+  )
+
   /** 发布链产物名里的版本号与架构。为什么从文件名取：MANIFEST.txt 实测 12 行只有三列，没有 tag 字段。 */
   private val APK_NAME_TAG = Regex("^dsh-mobile-apk-v(.+)-(arm64-v8a|arm64|x86_64)\\.apk$")
 
@@ -366,6 +373,15 @@ object UpdateChecker {
   private val MANIFEST_LINE = Regex("^(\\S+)\\s+(\\S+)\\s+(\\S+)$")
 
   private val SHA256_HEX = Regex("^[0-9a-fA-F]{64}$")
+  private val RELEASE_ASSET_SHA256 = Regex("^sha256:([0-9a-fA-F]{64})$", RegexOption.IGNORE_CASE)
+
+  private fun parseReleaseAssetSha256(value: Any?): String? {
+    if (value == null || value == JSONObject.NULL) return null
+    require(value is String) { "latest release APK digest 不是字符串" }
+    val match = RELEASE_ASSET_SHA256.matchEntire(value.trim())
+      ?: throw IllegalArgumentException("latest release APK digest 不是有效的 SHA-256")
+    return match.groupValues[1].lowercase()
+  }
 
   /**
    * 解析 MANIFEST.txt（三列：sha256 相对路径 字节数）。失败**抛异常**，由调用方归类 PARSE。
@@ -447,8 +463,8 @@ object UpdateChecker {
    * **顺序是契约的一部分**：先确认"有本机可用的包"，再比版本——反过来会让"发布侧漏了本机架构的包"
    * 被"已是最新"掩盖，用户永远等不到适配版本，也不会看到任何异常。
    *
-   * 摘要只从 [LatestFacts.sha256] 里按**选中资产名**取：取不到就是 null（本次发布未提供校验值），
-   * 绝不用邻家资产或空串顶替——那会把"没提供"变成"提供了但校验失败"。
+   * 摘要只从 [LatestFacts.sha256] 里按**选中资产名**取。缺失或无效时拒绝提供可安装更新，
+   * 不用邻家资产或文件大小替代摘要校验。
    */
   internal fun classifyFacts(
     facts: LatestFacts,
@@ -470,11 +486,16 @@ object UpdateChecker {
     val hit = assetNameCandidates(tag, family).firstOrNull { facts.sizes.containsKey(it) }
       ?: return classifyAssetFailure(tag, family, deviceAbis, facts.sizes.keys.toList())
     if (!isNewer(tag, currentVersion)) return CheckResult.UpToDate
+    val sha256 = facts.sha256[hit]?.takeIf { SHA256_HEX.matches(it) }?.lowercase()
+      ?: return CheckResult.Failed(
+        "检查失败：发布数据异常——APK 资产缺少有效 SHA-256，已拒绝提供更新包",
+        CheckResult.FailureKind.RELEASE_DATA_BROKEN,
+      )
     return CheckResult.Available(
       tag,
       hit,
       assetDownloadUrl(tag, hit),
-      facts.sha256[hit],
+      sha256,
       facts.sizes[hit] ?: 0L,
     )
   }
@@ -509,9 +530,9 @@ object UpdateChecker {
         CheckResult.FailureKind.RELEASE_DATA_BROKEN,
       )
     }
-    // API 资产清单里没有摘要字段（发布链不产 .sha256 资产），故这里摘要恒为 null——如实说明，不编造。
+    // 保留 API 的真实下载地址，同时把 APK assets[].digest 纳入统一摘要判据。
     val verdict = classifyFacts(
-      LatestFacts(latest.tag, latest.assets.associate { it.name to it.sizeBytes }, emptyMap()),
+      factsFromRelease(latest),
       deviceAbis,
       family,
       currentVersion(),
@@ -778,7 +799,7 @@ object UpdateChecker {
 
   private fun probeApi(timeoutMs: Int, deadline: UpdateCheckDeadline): SourceProbe = try {
     val latest = parseLatestRelease(fetchText("$API/repos/$REPO/releases/latest", timeoutMs, "application/vnd.github+json", deadline))
-    SourceProbe.Parsed(LatestFacts(latest.tag, latest.assets.associate { it.name to it.sizeBytes }, emptyMap()))
+    SourceProbe.Parsed(factsFromRelease(latest))
   } catch (e: Exception) {
     probeFailure(e)
   }

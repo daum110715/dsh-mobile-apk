@@ -39,7 +39,7 @@ internal class ApkUpdateState {
   private var name: String? = null
   private var sizeBytes: Long = 0L
   /**
-   * 本次发布声明的产物摘要（小写十六进制）。null = 发布方**没有提供**校验值。
+   * 本次发布声明的产物摘要（小写十六进制）。可下载更新必须带有有效摘要。
    *
    * 为什么在这里留一份而不是每次回查 [UpdateChecker.CheckResult]：快照是渲染层唯一能读到的事实面，
    * 而 Available 只在检查那一瞬间在场。缺失时快照里直接不出现该字段——界面据此如实说明
@@ -277,7 +277,7 @@ internal class ApkUpdateController(private val activity: Activity) {
    * 安装器的是 T0 时刻的校验结论、T1 时刻的字节。所以这里把结论连同大小/摘要一起存下，
    * 拉起安装器**之前**重跑一次 [verifyApkArtifact]（成本是一次 169MB 的 SHA-256，1-2 秒）。
    */
-  private data class VerifiedArtifact(val file: File, val expectedBytes: Long, val expectedSha256: String?)
+  private data class VerifiedArtifact(val file: File, val expectedBytes: Long, val expectedSha256: String)
   @Volatile private var verifiedArtifact: VerifiedArtifact? = null
 
   /**
@@ -631,11 +631,10 @@ internal class ApkUpdateController(private val activity: Activity) {
       if (artifactVerdict() is ApkArtifactVerdict.Accept) {
         reused = true // 上次下完但没装成（授权中断/安装取消）→ 复用已验证的包，不重复拉 169MB
       } else {
-        // #513：元数据缺 sha256 时第三方镜像产物无摘要可校验——只允许官方直连（fail-closed）。
         val used = UpdateChecker.download(
           r.apkUrl, dest,
           { pct -> onDownloadProgress(pct, e) },
-          allowMirrors = expectedSha != null,
+          allowMirrors = true,
           isActive = { isCurrentEpoch(e) },
           publishIfActive = { publish ->
             synchronized(publicationLock) {
