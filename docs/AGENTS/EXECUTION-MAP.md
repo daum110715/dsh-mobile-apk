@@ -2357,6 +2357,7 @@ plugins/dsh-android-manage/src/detail-store.ts
 plugins/dsh-android-manage/src/ime-broadcast.ts
 plugins/dsh-android-manage/src/coord-basis.ts
 plugins/dsh-android-manage/src/screen-fields.ts
+plugins/dsh-android-manage/src/node-list.ts
 glob:plugins/dsh-android-manage/test/*.test.mjs
 glob:plugins/dsh-android-manage/test/*.mjs
 plugins/dsh-android-browser/src/tools.ts

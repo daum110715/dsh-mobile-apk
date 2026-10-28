@@ -28,6 +28,7 @@ import { join } from 'node:path'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { coordBasisNote, basisFields, COMPAT_NOTE } from './coord-basis.js'
 import { screenArgs, screenOut, coordinateMode } from './screen-fields.js'
+import { nodeListLines } from './node-list.js'
 import { parseUiTreeXml, pruneNodes, resolveRef, findActionableAncestor, checkUiTreeParse, type UiNode, actionableAncestorV2, scopePoolV2, treeFingerprint } from './ui-tree.js'
 import { cacheFromV2, decodeV2, isV2Payload, type V2Decoded } from './protocol-v2.js'
 import { detailRecord, pageRows, writeDetailStore } from './detail-store.js'
@@ -842,65 +843,6 @@ properties: {
   }
 
   /** 共用行渲染体：节点数组 → 模型可见清单文本（两工具唯一的行格式来源）。 */
-  const nodeListLines = (v: Record<string, unknown>): string => {
-      const value = v as Record<string, unknown>
-  const nodes = Array.isArray(value.nodes) ? value.nodes as Array<Record<string, unknown>> : []
-  // 同名/同描述节点**保留但标注序号**（#k，1 基，按 dump 顺序）——模型可用 text:X#k 精确引用；
-  // 解析层对歧义一律拒绝而非静默挑选（见 ui-tree.resolveRef）。
-  const dupCount = new Map<string, number>()
-  for (const n of nodes) {
-    const key = `${String(n.text || '').trim()}|${String(n.desc || '').trim()}`
-    if (key === '|') continue
-    dupCount.set(key, (dupCount.get(key) ?? 0) + 1)
-  }
-  const seenSoFar = new Map<string, number>()
-  let prevPkg = ''
-  let prevWin = ''
-  const lines = nodes.map((n) => {
-    const flags = [
-      n.clickable ? '可点' : '',
-      n.editable ? '可编辑' : '',
-      n.scrollable ? '可滚动' : '',
-      n.checked ? '已选中' : '',
-      n.visible === false ? '不可见' : '',
-    ].filter(Boolean).join('/')
-    const type = String(n.type || '') || 'View'
-    const rid = String(n.rid || '')
-    const parent = String(n.parentId || '')
-    const text = String(n.text || '').trim()
-    const desc = String(n.desc || '').trim()
-    const box = `${String(n.x ?? 0)},${String(n.y ?? 0)} ${String(n.w)}x${String(n.h)}`
-    const depth = typeof n.depth === 'number' ? n.depth : 0
-    // 分隔符必须是文本里不可能出现的字符：UI 文本里 `|` 很常见（「标题 | 副标题」），
-    // 用 `|` 会让 `text="a|b",desc="c"` 与 `text="a",desc="b|c"` 撞成同一个 key，
-    // 重复序号错乱（模型按 `#1/#2` 认目标时会指错）。与 `pruneNodes` / `protocol-v2` 统一用 `\u0000`。
-    const key = `${text}\u0000${desc}`
-    let occ = ''
-    if (key !== '|' && (dupCount.get(key) ?? 0) > 1) {
-      const k = (seenSoFar.get(key) ?? 0) + 1
-      seenSoFar.set(key, k)
-      occ = `#${k}`
-    }
-    const pkg = String(n.pkg || '')
-    const win = String(n.windowId || '')
-    const owner: string[] = []
-    if (pkg !== '' && pkg !== prevPkg) { owner.push(`pkg=${pkg}`); prevPkg = pkg }
-    if (win !== '' && win !== prevWin) { owner.push(`win=${win}`); prevWin = win }
-    const parts = [
-      '  '.repeat(Math.min(depth, 12)) + `${String(n.id)}`,
-      parent ? `^${parent}` : '',
-      `${type}${rid ? '#' + rid : ''}`,
-      `[${flags || '静态'}]`,
-      owner.join(' '),
-      text ? `text="${text}"${occ}` : '',
-      desc ? `desc="${desc}"` : '',
-      !text && !desc ? '(无文本)' : '',
-      `bounds=${box}`,
-    ].filter(Boolean)
-    return parts.join(' ')
-  })
-return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : '')
-  }
 
   /** 两个树工具共用的 output。render 的**参数类型写成 unknown**（逆变安全）；返回值用字面量类型。 */
   const treeOutput = () => ({
