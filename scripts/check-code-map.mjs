@@ -680,16 +680,27 @@ export function checkDoc(text, universe, fsView, anchorBaseline = ANCHOR_BASELIN
     }
     const key = path + '#' + symbol
     if (symbolHash !== undefined) {
-      const bodyHashes = new Set(hit.body.split('\n').map((l) => contentHashOf(l)))
       const expected = (anchorBaseline.symbolHashes ?? {})[key + '@' + symbolHash]
       if (expected === undefined) {
         push('symbol-unbaselined', 'Symbol-hash anchor has no baseline entry (run --refresh-anchor-baseline): '
           + key + '@' + symbolHash)
         return
       }
-      if (!bodyHashes.has(symbolHash)) {
+      // 判据：符号范围 + 行内容**唯一匹配**（2026-10-29 所有者裁定）。
+      //
+      // 早期只判「符号体内存在该 hash」，不判唯一性——那是假绿的温床：
+      // 内容为 `}` 的行在 applyRendererEvent 体内出现 12 次，改掉其中任何一处，
+      // 其余 11 处仍然匹配，锚点永远绿（实测 2026-10-29 体检抓到）。
+      //
+      // 三个方向都要对：上方插行 -> 绿；符号内别处改动 -> 不影响；目标行真被改 -> 红。
+      const matches = hit.body.split('\n').filter((l) => contentHashOf(l) === symbolHash).length
+      if (matches === 0) {
         push('symbol-content-drift', 'Anchored line content vanished from ' + key + '@' + symbolHash
           + '（定义行 ' + hit.line + '）; rerun --refresh-anchor-baseline after review')
+      } else if (matches > 1) {
+        push('symbol-content-ambiguous', 'Anchored line content matches ' + matches
+          + ' lines inside ' + key + '@' + symbolHash
+          + '（定义行 ' + hit.line + '）; anchor cannot pin a single line, use a more specific symbol')
       }
       return
     }
@@ -1036,6 +1047,15 @@ function selfTest() {
     // 反证：整符号锚点（不带 @hash）必须判红。文案是所有者裁定的原话——
     // `#ShellOps` 那种 5000 行 object 的整符号锚点，改任何一行都会红。
     ['SYM 整符号锚点（无 @hash）判红', symDoc.replace('app/c.kt#alpha@' + contentHashOf('  return 1'), 'app/c.kt#alpha'), symFs(symSrc), 1, sBase],
+    // 反证：锚点内容在符号体内重复出现时必须判红。
+    // 这是 2026-10-29 存量体检抓到的假绿——`}` 在 applyRendererEvent 体内出现 12 次，
+    // 改掉其中一处其余仍匹配，锚点永远绿。判据必须是「唯一匹配」，不是「存在匹配」。
+    ['SYM 锚点内容在符号体内重复判红',
+      symDoc.replace('app/c.kt#alpha@' + contentHashOf('  return 1'),
+        'app/c.kt#alpha@' + contentHashOf('}')),
+      symFs(['header', 'fun alpha() {', '  if (x) {', '  }', '  return 1', '}', '', 'fun beta() {', '  return 2', '}']),
+      1,
+      { ...sBase, symbolHashes: { ...sBase.symbolHashes, ['app/c.kt#alpha@' + contentHashOf('}')]: true } }],
   )
 
   let pass = 0
