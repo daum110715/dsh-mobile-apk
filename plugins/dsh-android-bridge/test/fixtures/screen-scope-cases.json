@@ -448,6 +448,27 @@
       "ownedTargets": ["7", "11529215046816944610"],
       "expect": "allow",
       "why": "与 S-14a 成对且更严格：展开后自带已注册 `-d 7` ⇒ 必须放行，防「见到 -o 就拒」。"
+    },
+    {
+      "name": "S-17a dumpsys activity top 会打出完整 View Hierarchy",
+      "command": "dumpsys activity top",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "deny-uncertified-target",
+      "why": "小米 14 Pro（SDK 37）实测 `dumpsys activity top` 输出里含 `View Hierarchy:`（DecorView → LinearLayout → FrameLayout → WebView，逐行带 `0,0-1440,3200` 这类 bounds）与 `android.widget.TextView{… 42,0-699,103}` 等控件行 —— 与 `uiautomator dump` 同级的「读真实屏 UI」。修前 `dumpsys` 家族只覆盖 `window|display|input` ⇒ 整条放行。"
+    },
+    {
+      "name": "S-17b dumpsys activity activities 同样泄漏屏几何",
+      "command": "dumpsys activity activities",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "deny-uncertified-target",
+      "why": "同族的 `activities` 子命令也会带每个 Task/Activity 的 `displayId` 与窗口 bounds ⇒ 一并按 `dumpsys` 档恒拒。"
+    },
+    {
+      "name": "对照 dumpsys battery 与屏无关，必须仍放行",
+      "command": "dumpsys battery",
+      "ownedTargets": ["7", "11529215046816944610"],
+      "expect": "allow",
+      "why": "扩大 `dumpsys` 子命令表时不得顺手把整个 `dumpsys` 都拒掉：`battery`/`meminfo` 这类与屏无关的 dump 不在射程内（判据仍是子命令，不是命令名本身）。"
     }
   ]
 }

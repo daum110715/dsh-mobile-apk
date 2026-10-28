@@ -554,7 +554,14 @@ const SCREEN_COMMAND_FAMILIES: readonly ScreenCommandFamily[] = [
   { name: 'wm', pattern: /\bwm[ \t]+(?:size|density|overscan)\b/i, targetFlags: ALL_DISPLAY_FLAGS },
   // `uiautomator dump` 没有目标屏参数：dump 的就是**默认屏**的语义树 ⇒ 无法自证，恒拒。
   { name: 'uiautomator', pattern: /\buiautomator\b/i, targetFlags: [] },
-  { name: 'dumpsys', pattern: /\bdumpsys[ \t]+(?:window|display|input)\b/i, targetFlags: [] },
+  // `dumpsys` 系列：这些子命令的输出里都带**真实屏**的 UI 结构或几何。
+  //
+  // `activity` 是 2026-10-28 自查补进来的：`dumpsys activity top` 会打出完整的
+  // `View Hierarchy:` 树（DecorView → LinearLayout → FrameLayout → WebView，逐个带 `0,0-1440,3200`
+  // 这类 bounds）以及 `android.widget.TextView{… 42,0-699,103}` 等控件行 —— 与 `uiautomator dump`
+  // 同级的「读真实屏 UI」，而修前它不匹配 `window|display|input` ⇒ 整条放行。
+  // `battery`/`meminfo` 这类与屏无关的子命令不受影响（见 fixture 里的对照用例）。
+  { name: 'dumpsys', pattern: /\bdumpsys[ \t]+(?:window|display|input|activity)\b/i, targetFlags: [] },
   // `am` 的显示参数是 `--display`；`-d` 是 Intent data，**不得**作为目标屏凭据（见上）。
   { name: 'am', pattern: /\bam[ \t]+(?:start|start-activity|force-stop|kill)\b/i, targetFlags: ['--display', '--display-id'] },
   { name: 'monkey', pattern: /\bmonkey\b/i, targetFlags: ['--display', '--display-id'] },
