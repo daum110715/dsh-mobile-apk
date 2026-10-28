@@ -7,9 +7,9 @@
 > 3. 想**先通读一遍** → §1 全局运行顺序（阶段 0-4 + 时序图）→ §2 主表 → §4 耦合矩阵。
 >
 > **当前源码登记**：v0.14.5基线 + 0.14.5-fx-1本地实施（详见下方实施补充）；上游官方639ed015（0.2.0-rc.2），新模块/fixtures与当前锚点见§6/§7；旧cc0c921/coord1f9852d审查条目仅历史溯源，非本轮运行证据。
-> 锚点格式 `path:line`，路径一律**相对 apk 仓根**；插件与三个子仓（`plugins/*`、`dsh-client-ui-responsive`、`dsh-host-web-compat`、`dsh-shell-termux`）在本仓是协调仓的**逐字节镜像**，行号以本仓副本为准。
+> Anchor syntax is `path:line#expect=<URI-encoded-substring>` with paths relative to the APK repository. Existing unannotated coordinates and their occurrence counts are pinned by `scripts/check-code-map-anchor-baseline.json`; a new or moved coordinate needs an explicit expected substring. The refresh command rejects new unannotated occurrences, including moves to an already-known coordinate. Review intentional source-line changes before running `node scripts/check-code-map.mjs --refresh-anchor-baseline`.
 >
-> **锚点会漂**：改了代码就跑 `node scripts/check-code-map.mjs`——它守「覆盖完整、锚点有效、编号一致」（详见 §7）。
+> **Anchor drift:** run `node scripts/check-code-map.mjs` after source edits. It checks coverage, source-line expectations, IDs, and coupling evidence (see §7).
 > **维护**：新增/删除块、调用顺序或耦合关系变化 → 改本文对应查点（`AGENTS.md` §5.1 已登记）。
 
 ## 0. 一次排查的推荐姿势
@@ -162,7 +162,7 @@ sequenceDiagram
 | 高 | K08 | 浏览器 op 在控制队列线程上自旋等导航：错误页路径必等满 10s 且仍回 `ok` | `app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1087`、`app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1101-1107` | 一次 `browser_open` 占住整条设备控制队列 10s，无障碍与特权命令全排队 | 未修（S-7/F-6） |
 | 高 | K08 | 浏览器截图只写不删、`health` 恒 `ok`、失败原因串上一轮 `lastError` | `app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1565`、`app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1581`、`app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:1589` | 长任务磁盘累积（全页 PNG）；截图失败原因误导 | 未修（S-6/F-7） |
 | 高 | K08 | 「隔离浏览器」没有存储隔离：无 `setDataDirectorySuffix` 与清理 op，且引擎鉴权 cookie 在**进程级** `CookieManager` | `app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt:815` | AI 访问过的站点 cookie/localStorage 持久驻留且用户无撤销入口；过滤一旦有缺口即带引擎 cookie 出网 | 未修（S-3/F-9） |
-| — | K06 | ~~双引号内的命令替换不被扫描~~ **已修（issue #674）**：`"` 分支对引号内的 `$(...)` 与反引号按原文递归扫描，两层同源 | `app/src/main/java/com/dsharnessmobile/shell/ShellOps.kt:398` · `plugins/dsh-android-bridge/src/screen-scope.ts:237`（两侧同算法） | fixture `S-4a`/`S-4b`/`S-4c` 三条反证 + `对照 双引号内纯文本不得误拦`（防过度拦截） |
+| — | K06 | ~~双引号内的命令替换不被扫描~~ **已修（issue #674）**：`"` 分支对引号内的 `$(...)` 与反引号按原文递归扫描，两层同源 | `app/src/main/java/com/dsharnessmobile/shell/ShellOps.kt:354#expect=interpreterPayloadUnparsed` · `plugins/dsh-android-bridge/src/screen-scope.ts:385#expect=text%5Bj%20%2B%201%5D`（两侧同算法） | fixture `S-4a`/`S-4b`/`S-4c` 三条反证 + `对照 双引号内纯文本不得误拦`（防过度拦截） |
 | — | K06 | **`eval` 载荷不被展开（漏拦）＋ shell 注释被当命令词面（误拦）**（2026-10-28 自查，issue #674 同类）：`eval "screencap -p …"` 的引号内容被引号抹除逻辑吃掉 ⇒ 命令词面看不到 `screencap` ⇒ 一路放行；反过来 `echo hi # screencap …` 把注释文本当命令 ⇒ 误拦合法命令。两层同源修法：`EVAL_PAYLOAD` 与 `sh -c` **并列进"再解释一层"的展开队列**（`;`/`&&`/`||`/管道后的 eval 同样展开），且 `#` 位于**词首**（行首或空白/`;`/`&`/`|` 之后）时剥到行尾 | `app/src/main/java/com/dsharnessmobile/shell/ShellOps.kt`（`EVAL_PAYLOAD`）· `plugins/dsh-android-bridge/src/screen-scope.ts`（`EVAL_PAYLOAD`） | fixture `S-5a`/`S-5b`/`S-5c`/`对照 eval 内无屏命令`/`S-6a` 五条 |
 | 高 | K06 | 壳侧无危险命令黑名单，`controlExec` 直连路径同样没有 | `app/src/main/aidl/com/dsharnessmobile/shell/ShizukuUserService.aidl:31` | AIDL 注释声称黑名单在壳侧，实现里没有；服务面「地板」只落了一半 | 未修（S-5 残留） |
 | 高 | K07 | `touch()` 全仓零调用点，「空闲回收」实为「建屏后 10 分钟必回收」 | `app/src/main/java/com/dsharnessmobile/shell/VdisplayController.kt:84`、`app/src/main/java/com/dsharnessmobile/shell/VdisplayController.kt:60` | 长任务看虚拟屏时中途黑屏 | 未修（F-10/V-R0） |
@@ -248,7 +248,7 @@ sequenceDiagram
 - [K08] 1. 【已确认，S-8 / R1】`workspaces` 与 `currentWorkspace` 跨线程。控制队列线程在 `workspaceFor` 里写 map（:187-192，由 :506 `switchTo(workspaceFor(session))` 每次 op 触发），主线程在 `applyVisibility`（:821）与看门狗（:871）里遍历同一张 `LinkedHashMap`；`currentWorkspace`（:184）无 `@Volatile`，而 `onMain`（:1661-1673）只有 `finally` 没有 `catch`。复现：模型连开新会话页面 + 用户侧栏展开（300ms 一拍 `setStageBounds` → `applyVisibility`）。一次 CME 即 uncaught on main Looper = 进程闪退，且 `workspaces` 可能停在半写状态。
 - [K08] 同族【已确认，R2 / H-1】：`workspaces` 无上限、无 LRU/TTL，全仓无 `onTrimMemory`（grep 零命中），`MAX_TABS=8` 只是每工作台上限，也没有「会话被删除 → `dropWorkspace`」的可信信号。每个新 session 开页即多一个 WebView，驻留到 Activity 销毁。
 - [K08] 2. 【已确认，S-7 / R3 / R6 / F-6】浏览器 op 在控制队列线程上忙等：`awaitNavigation`（:1101-1107）用 `Thread.sleep(40)` 自旋，冷启动预算 10s（:1087）；而内置错误页的 `onPageStarted` 被守卫 `return`（:670）不推进代次 → DNS 立即失败时必然等满预算再 `return ok:true`（:1088）。影响：一次 `browser_open` 最坏占住整条设备控制队列 10s（a11y / vd / `sh*` 全排队），回执仍是成功（`reason` 只有 `status()` 带出）。
-- [K08] 3. 【**删除点已补：issue #672**；以下为原始取证】截图生命周期与回执：`shotOp` 写 `filesDir/home/tmp/dsh-tmp/browser-shot-<ts>.png`（:1565），全仓 grep `browser-shot` 只命中这一处写入点、无任何删除点，而 :1590 的 note 与工具层文案都称「读完即删」；`health` 是字面量 `"ok"`（:1589，契约声明 `ok|suspect`）；失败分支 `lastError.ifBlank { "shot-failed" }`（:1581）会把上一次遗留的 `lastError`（如 `load-error:-2`）当成截图失败原因。影响：长任务磁盘累积（全页 ARGB_8888 PNG 100%）+ 失败原因误导。**现修法**：新增 `ShotCachePolicy`（`app/src/main/java/com/dsharnessmobile/shell/ShotCachePolicy.kt`），`shotDir()`（`BrowserHost.kt:2114`）每次取落点前按「1 小时 TTL → 数量上限 32 → 总量上限 128 MiB」清理历史 PNG，只认 `browser-shot-*.png`；壳侧 note 与工具层 description 同步改成与实现一致（不再写「读完即删」）。`DeviceControlService.pruneShots` 只管 `shot-` 前缀（screencap），与本策略互不覆盖。
+- [K08] 3. 【**删除点已补：issue #672**；以下为原始取证】截图生命周期与回执：`shotOp` 写 `filesDir/home/tmp/dsh-tmp/browser-shot-<ts>.png`（:1565），全仓 grep `browser-shot` 只命中这一处写入点、无任何删除点，而 :1590 的 note 与工具层文案都称「读完即删」；`health` 是字面量 `"ok"`（:1589，契约声明 `ok|suspect`）；失败分支 `lastError.ifBlank { "shot-failed" }`（:1581）会把上一次遗留的 `lastError`（如 `load-error:-2`）当成截图失败原因。影响：长任务磁盘累积（全页 ARGB_8888 PNG 100%）+ 失败原因误导。**现修法**：新增 `ShotCachePolicy`（`app/src/main/java/com/dsharnessmobile/shell/ShotCachePolicy.kt`），`shotDir()`（`BrowserHost.kt:2120#expect=private%20fun%20shotDir`）每次取落点前按「1 小时 TTL → 数量上限 32 → 总量上限 128 MiB」清理历史 PNG，只认 `browser-shot-*.png`；壳侧 note 与工具层 description 同步改成与实现一致（不再写「读完即删」）。`DeviceControlService.pruneShots` 只管 `shot-` 前缀（screencap），与本策略互不覆盖。
 - [K08] 4. 【已确认，H-7 / F-1 / F-4 / F-8】回执与能力不实四处：① `caps()` 的 `rendererProcesses:0`、`cdpEnabled:false`、`browserWebViewAvailable:true`、`androidxWebkitCompiled:true`、`densityOverrideSupported:false`（:1015-1017）与 `status().available:true`（:912）全是常量，被 P03 的 `facts.ts/tier.ts` 当设备事实消费；② `applyDocumentStartScript` 在能力门不过时静默 `return`（:1196），而 `viewportOp`/`setViewport` 成功体只有 `ok/route/width/height`（:1117、:1131），不报 `scriptApplied/degraded`（隔壁 `identityResult`:1182-1189 是如实上报的）→ 视口没生效也回 ok；③ 视口区间两侧不同源：面板 240..4096（dsh-client-ui-responsive/src/client/mobile/native-browser-adapter.ts:203、browser-tab.tsx:54）vs 壳侧 240..3840（:482、:1122、:1159），面板校验通过、壳侧拒、面板不渲染错误 → 用户看到「什么都没发生」；④ 隔离 WebView 无 `onReceivedHttpError`、无 `setDownloadListener`（grep 只命中可信 WebView：MainActivity.kt:565、:648），404/403/500 与「点了 PDF」在 `loadState` 上仍报 `loaded`、在工具回执上仍是 `ok:true, changed:false`。
 - [K08] 5. 【已确认，S-3 / F-9】「隔离」只是无桥，不是存储隔离：`app/src/main/java` 全域无 `setDataDirectorySuffix` / `removeAllCookies` / `WebStorage.deleteAllData`，也无 `browserClearData` 一类清理 op（grep 零命中），而引擎鉴权 cookie 注入的是进程级 `CookieManager`（MainActivity.kt:815）。影响：隔离 WebView 与引擎会话共用 cookie/存储池，AI 访问过的站点 cookie/localStorage 持久驻留且用户无撤销入口；请求级过滤一旦出现缺口，被解析到回环同源的请求会带引擎 cookie。
 - [K08] 未证实：请求级过滤把 `ws`/`wss` 也纳入 scheme 判定（BrowserHostNavigationPolicy.kt:87），似假定 WebSocket 握手会进 `shouldInterceptRequest`；Android 是否真把 WS 升级交进该回调，本轮未在设备上确认。若否，页面可用 `ws://127.0.0.1:3080/` 绕过 403 面（验证法：加载公网页后 `new WebSocket("ws://127.0.0.1:3080/")`，看 `blockedRequests` 是否 +1、logcat 是否出 `dsh-browser`）。
@@ -349,7 +349,7 @@ sequenceDiagram
 - [P02] 5. vdInput 分支把 displayId 塞进 `x` 键（已确认代码事实）：`plugins/dsh-android-manage/src/index.ts:1537` 返回 `x: data.displayId, y: 0`，而 schema 与工具描述里的 `x`/`y` 语义是点击坐标（真实坐标只在 `text` 里）。影响：模型若据返回值的 x/y 推算下一步点击会拿到无意义坐标。
 - [P02] 漂移：`docs/AGENTS/gotchas.md:178` 说坑 72 的锚点是 `plugins/dsh-android-manage/src/lossless-json.ts` 与 `plugins/dsh-android-manage/test/privilege-status.test.mjs`，源码里这两个文件只在 bridge 插件下（`plugins/dsh-android-bridge/src/lossless-json.ts:1`、`plugins/dsh-android-bridge/test/privilege-status.test.mjs:1`），manage 的 `src/` 只有 index/ui-tree/protocol-v2/detail-store/vd-shot 五个文件。
 - [P02] 漂移：`plugins/dsh-android-manage/src/index.ts:7` 的文件头工具集注释只列 8 个工具（screenshot/ui_tree/device_info/act_input/ui_dump/ui_click/ui_scroll/ui_input），源码 `plugins/dsh-android-manage/src/index.ts:2283` 实际注册 14 个（另有 screen_list/ui_detail/web_dump/env_prepare/app_launch/ui_global）。
-- [P02] 漂移：`scripts/check-code-map.mjs:152` 的注释说耦合边右端可以是「外部角色」文字，同文件 `scripts/check-code-map.mjs:103` 的解析正则却要求两端都形如查点 ID，凡右端写外部角色的边一律判 `bad-coupling`。（**已修·本轮**：解析已改为「右端只有形如查点 ID 时才要求登记」。）
+- [P02] Drift: the table parser allows a non-ID external role on the right (`scripts/check-code-map.mjs:308#expect=3.`), while the legacy `COUPLING` comment-block parser requires IDs on both sides (`scripts/check-code-map.mjs:202#expect=const%20mm`).
 - [P03] 1. 已确认（注释与壳侧事实相反，权限面）：`tools.ts:281-294` 以「壳侧 `bindOwner/requireOwner` 按 `args.session` 判定、非归属会话结构化拒绝」作为工具层不加校验的理由，而壳侧明写该锁已在 0.14.0 移除、`controlOp` 不再做归属校验（`BrowserHost.kt:396`、`:501`），改为按会话隔离 Workspace。影响：读者据此以为存在归属门，实际唯一边界是 URL 准入（`BrowserHost.kt:625-628`）；同时 `contract.ts:136-156` 的 `permission` 档（approval/full-access/confirm）没有任何执行点，与实现不符（H-8 已登记为本轮未做）。
 - [P03] 2. 已确认（跨会话/跨页记忆）：`tools.ts:33` 的 `lastSnapshot` 是模块级单槽（评审 §M5、H-6 未修），B 会话的 `browser_click` 会直接消费 A 会话的 ref + 代次；新页首快照都是 `bx1` 起、代次 1-2 极易相同，壳侧只验代次与 ref、自述不校验 tab（`BrowserHost.kt:1412-1415`、`:1432-1447`）。引擎侧 `SnapshotMemory.tabId/refs`（`tools.ts:26-30`、`:470`）从不被读，页维度全程无校验 → 症状是「点在了本会话的另一页上但仍报成功」。
 - [P03] 3. 已确认（同一事实两种读数）：`status.ts:135` 的 `ops` 恒为静态 `VD_OPS`（7 条），`snapshotFromRaw` 全程忽略壳侧回执里的 `ops`；面板路径 `mapStatusPayload:299` 读的却是壳侧值，而壳侧 `VdisplayController.ops():124` 只列 5 条（缺 `vdLaunchApp`/`vdInput`）。于是 `android_vdisplay_status` 报 7 条可用、面板报 5 条。F-13（`ops()` 由 `SUPPORTED_OPS` 派生、==7 条）本轮未做，H-14（消费 `caps.ops`）同源。
@@ -869,7 +869,7 @@ flowchart TD
   - 偏好键：`dsh-adb.xml`（`PREFS` :42）的 `a11yEnabled`/`controlToken`/`controlHeartbeat`（:246-258，token 18 字节 base64url，:235）；屏幕范围 `dsh_screen_scope`/`scope`（`ScreenScope.kt:49`，K05 只读：:672、:703，写面在设置页 `MainActivity.kt:772`）。
   - 路径：截图落 `filesDir/home/tmp/dsh-tmp`（:770），与引擎 `TMPDIR`（`EngineManager.kt:1442`）/`DSH_FILES_DIR`（:1439）同源；`pruneShots` 只认同目录下 `shot-` 前缀（:1175）；`AdbKeyboardService.nonceFile` = `filesDir/adb-keyboard-nonce`（`AdbKeyboardService.kt:122`，引擎 `adbKeyboardAuthArg` 读同一文件，`index.ts:42`）。
   - 常量与纯函数：`MAX_NODES=4000` / `MAX_DEPTH=40` / `TREE_BUDGET_MS=3000` / `TOKEN_BYTES=18`（:48-52）、`WindowPick.order`（:409，回归 `WindowPickTest.kt`）、`GlobalActionCatalog.TABLE`（`GlobalActionCatalog.kt:23`，回归 `GlobalActionCatalogTest.kt`）、`WEB_SNAPSHOT_JS`/`WEB_ACTION_JS`（:60/:131）依赖 `MainActivity.webViewRef`（:852）。
-  - 心跳口径：引擎 `a11ySource()`（`index.ts:924`）**只认 `heartbeat` 与 `off` 两态**——prefs 声明 `a11yEnabled=true` **且** `controlHeartbeat` 落在同一 20s 窗口（`A11Y_FRESH_MS`，`index.ts:313`）才算在线，否则 fail-closed 判 `off`。控制轮询的新鲜度（`pollAgeMs`）**不再是 a11y 证据**：两者是独立生命线，轮询按设计在 a11y 关闭时照跑，早期把它当在线判据正是 #648 的误报源；现以 `pollingFacts()`（`index.ts:945`）作为独立诊断面单独暴露，不参与该判定。
+  - A11y diagnostics: `a11yFacts()` reports `heartbeat` only when the shell declares `a11yEnabled=true` and `controlHeartbeat` is within the 20s window; explicit false is `disabled`, a missing or stale heartbeat after an explicit true is `stale`, and unreadable or undeclared preferences are `unknown`. `a11yEnabled()` remains fail-closed and returns true only for `heartbeat`. `a11yHeartbeatAgeMs` exposes a finite heartbeat age when available. Capability and route diagnostics preserve the source and omit a confirmed-unavailable boolean for stale/unknown states. Queue polling is independent and is never a11y evidence; `pollingFacts()` exposes it separately (the false-positive fixed by #648).
 - **关键坐标**：
   - `app/src/main/java/com/dsharnessmobile/shell/DeviceControlService.kt:607` — `handle` 唯一入口与 op 分支表（六面登记门禁的解析面）
   - `app/src/main/java/com/dsharnessmobile/shell/DeviceControlService.kt:678` — `REAL_SCREEN_OPS`（范围门覆盖面，含 state/webSnapshot/webAction）
@@ -1359,7 +1359,7 @@ flowchart TD
   5. vdInput 分支把 displayId 塞进 `x` 键（已确认代码事实）：`plugins/dsh-android-manage/src/index.ts:1537` 返回 `x: data.displayId, y: 0`，而 schema 与工具描述里的 `x`/`y` 语义是点击坐标（真实坐标只在 `text` 里）。影响：模型若据返回值的 x/y 推算下一步点击会拿到无意义坐标。
 - 漂移：`docs/AGENTS/gotchas.md:178` 说坑 72 的锚点是 `plugins/dsh-android-manage/src/lossless-json.ts` 与 `plugins/dsh-android-manage/test/privilege-status.test.mjs`，源码里这两个文件只在 bridge 插件下（`plugins/dsh-android-bridge/src/lossless-json.ts:1`、`plugins/dsh-android-bridge/test/privilege-status.test.mjs:1`），manage 的 `src/` 只有 index/ui-tree/protocol-v2/detail-store/vd-shot/ime-broadcast 六个文件。
 - 漂移：`plugins/dsh-android-manage/src/index.ts:7` 的文件头工具集注释只列 8 个工具（screenshot/ui_tree/device_info/act_input/ui_dump/ui_click/ui_scroll/ui_input），源码 `plugins/dsh-android-manage/src/index.ts:2283` 实际注册 14 个（另有 screen_list/ui_detail/web_dump/env_prepare/app_launch/ui_global）。
-- 漂移：`scripts/check-code-map.mjs:152` 的注释说耦合边右端可以是「外部角色」文字，同文件 `scripts/check-code-map.mjs:103` 的解析正则却要求两端都形如查点 ID，凡右端写外部角色的边一律判 `bad-coupling`。
+- Drift: the table parser allows a non-ID external role on the right (`scripts/check-code-map.mjs:308#expect=3.`), while the legacy `COUPLING` comment-block parser requires IDs on both sides (`scripts/check-code-map.mjs:202#expect=const%20mm`).
 
 ```mermaid
 flowchart TD
@@ -1852,7 +1852,7 @@ flowchart LR
   - `scripts/build-release.ps1:60`（注入前 `--run --require`）/`:147`（注入后产物级复跑）
   - `.github/workflows/pr-gate.yml:40`（apk CI 只跑 `check-patch-mirror.mjs --self`）/`:82`（语法下限只跑 `--self-test`）/`:138`（全量 Kotlin 单测接进 CI）
   - `scripts/check-boot-budget.mjs:681`（`SKIP(#1)(real-data)` 发射点）/`:684`（随即 `selfTest()` 退出，`SKIP=` 汇总不打印）
-  - `scripts/check-code-map.mjs:36`（UNIVERSE 覆盖全域；本门禁当前零调用点）
+  - `scripts/check-code-map.mjs:58#expect=const%20UNIVERSE`（UNIVERSE covers the APK source tree; the gate runs in APK CI and both APK build chains）
 - **不变量**：
   1. `GATES` 声明的每个脚本必须在 `scripts/` 在场，且被两条编排器（`scripts/build-apk-013.ps1` / `scripts/build-apk.mjs`）逐项调用（`scripts/check-gate-skips.mjs:62`）。违反症状：新门禁写在 `scripts/` 却从不执行——「假防线」。
   2. 两条编排器的门禁集差集必须为 0（`scripts/check-release-gates.mjs:212`）。违反症状：本地链绿、云端自包含链少跑一道，产物缺陷只在云端出现。
@@ -1959,7 +1959,6 @@ flowchart LR
 6. `check-snapshot-secrets.mjs`（两个 ABI，无 `--require`）→ MANIFEST + notes。
 
 - **门禁存在但从未被调用**：
-  - `scripts/check-code-map.mjs`——33 个 `check-*.mjs` 里**唯一零外部调用点**：不在 `GATES`、不在两条链、不在两仓 CI、不在 `MIRROR_TOP`（`scripts/check-patch-mirror.mjs:160`），且只存在于 apk 仓（协调仓 `scripts/` 无同名文件）；文档 `docs/AGENTS/EXECUTION-MAP.md` 未写时它会 `exit 2`。
   - `scripts/check-snapshot-secrets.ps1`——旧 PowerShell 实现，已被 `.mjs` 取代，零调用点（其旧缺陷正是「归档不可读时静默继续」）。
   - `scripts/tests/boot-pending.test.mjs`、`scripts/tests/pi-toolcall.test.mjs`——零调用点。
   - `scripts/patches/tests/` 的 16 个补丁回归测试里，只有 3 个被 pr-gate 硬编码（`.github/workflows/pr-gate.yml:41-43`），第 4 个经 `scripts/check-runtime-assets.mjs:96` 的行为回归间接执行，其余 12 个无执行路径（与评审 I-6 同族）。
@@ -1973,11 +1972,11 @@ flowchart LR
   5. `scripts/check-contract.mjs:165` 的版本钉只读 `peerDependencies` + `devDependencies`，`dependencies` 不在判据内（评审 I-10）→ `host-web-compat` 打绿但覆盖面为空。
   6. `scripts/check-plugin-tests.mjs:33`/`:35` 对「无 test 目录/无测试文件」的插件只 WARN；`scripts/check-kotlin-test-count.mjs` 可被整类删除绕过（可疑点 1）——两条同族「删掉即判绿」。
   7. `scripts/check-perf-instrumentation.mjs` 无快照时只计 SKIP（CI 常态如此），A1 面靠两条链的 `--require` 兜。
-- **门禁自身的自检（`--self-test`）覆盖**：33 个 `check-*.mjs` 中 **11 个**真支持 `--self-test`（`scripts/check-api-route-auth.mjs` / `scripts/check-boot-budget.mjs` / `scripts/check-browser-syntax-floor.mjs` / `scripts/check-build-chain-abort.mjs` / `scripts/check-build-parallel-cap.mjs` / `scripts/check-code-map.mjs` / `scripts/check-combo-cache.mjs` / `scripts/check-kotlin-comments.mjs` / `scripts/check-kotlin-test-count.mjs` / `scripts/check-snapshot-builder-output.mjs` / `scripts/check-strip-noop.mjs`），其中 `scripts/check-browser-syntax-floor.mjs:535` 是六向自证（反向必红 / 正向必绿 / 载荷不触发 / 工具链在场 / marker 保全 / 两链接线反回归），`scripts/check-code-map.mjs` 是 8 用例判别力自证。`scripts/check-release-gates.mjs` 与 `scripts/check-perf-instrumentation.mjs` **只在自己的注释里提到** `--self-test`（后者是去跑依赖脚本 `scripts/perf/count-compose.mjs --self-test`），本身没有自证模式——即这两条门禁的判别力无自证。CI 里只有一处显式自证调用（`scripts/check-browser-syntax-floor.mjs --self-test`），其余自证模式零调用点，靠人工跑。
+- **门禁自身的自检（`--self-test`）覆盖**：33 个 `check-*.mjs` 中 **11 个**真支持 `--self-test`（`scripts/check-api-route-auth.mjs` / `scripts/check-boot-budget.mjs` / `scripts/check-browser-syntax-floor.mjs` / `scripts/check-build-chain-abort.mjs` / `scripts/check-build-parallel-cap.mjs` / `scripts/check-code-map.mjs` / `scripts/check-combo-cache.mjs` / `scripts/check-kotlin-comments.mjs` / `scripts/check-kotlin-test-count.mjs` / `scripts/check-snapshot-builder-output.mjs` / `scripts/check-strip-noop.mjs`），其中 `scripts/check-browser-syntax-floor.mjs:535` 是六向自证（反向必红 / 正向必绿 / 载荷不触发 / 工具链在场 / marker 保全 / 两链接线反回归），`scripts/check-code-map.mjs` contains 17 self-test cases, including in-range content mismatch, moved-anchor and ambiguous-basename controls. `scripts/check-release-gates.mjs` 与 `scripts/check-perf-instrumentation.mjs` **只在自己的注释里提到** `--self-test`（后者是去跑依赖脚本 `scripts/perf/count-compose.mjs --self-test`），本身没有自证模式——即这两条门禁的判别力无自证。CI 里只有一处显式自证调用（`scripts/check-browser-syntax-floor.mjs --self-test`），其余自证模式零调用点，靠人工跑。
 
 - 漂移：`历史 BRIDGE-API 副本（当前契约见§6 K04）` 说聚合入口「`--list` 现数，当前 17 项」，源码 `scripts/check-release-gates.mjs:28`（`GATES` 数组）是 27 项（同仓 `docs/AGENTS/build-and-env.md:48` 写的是 27 项，两份文档自相矛盾）。
 - 漂移：5 个门禁脚本的两仓副本行尾不同（协调仓 CRLF、apk 仓 LF），`cmp` 字节不等、归一化后内容一致：`scripts/check-boot-budget.mjs`、`scripts/check-browser-syntax-floor.mjs`、`scripts/check-build-parallel-cap.mjs`、`scripts/check-snapshot-builder-output.mjs`、`scripts/check-tool-output-schema.mjs`；镜像门禁只按「仅行尾差异」告警放行（`scripts/check-patch-mirror.mjs:339`）——「逐字节镜像」在行尾层不成立。
-- 漂移：`scripts/check-code-map.mjs` 只在 apk 仓存在（协调仓 `scripts/` 无此文件），且未被列进 `scripts/check-patch-mirror.mjs:160` 起的 `MIRROR_TOP` → 这条新门禁自身没有镜像守护。
+- Resolved: `scripts/check-code-map.mjs` is registered in `MIRROR_TOP` (`scripts/check-patch-mirror.mjs:370#expect=scripts%2Fcheck-code-map.mjs`), the aggregate gate, both APK build chains, and APK CI. The coordination CI intentionally does not run this APK-specific map gate.
 
 ```mermaid
 flowchart TD
@@ -2088,11 +2087,14 @@ flowchart TD
 ## 7. 覆盖账本与校验
 
 ```bash
-node scripts/check-code-map.mjs           # 校验：覆盖完整 / 锚点有效 / 编号一致 / 无 emoji
-node scripts/check-code-map.mjs --list    # 只盘点，不判红
-node scripts/check-code-map.mjs --self-test   # 判别力自检（8 个用例，含故意失败样本）
+node scripts/check-code-map.mjs           # Check coverage, pinned source lines, IDs, and coupling evidence
+node scripts/check-code-map.mjs --list    # Inventory only
+node scripts/check-code-map.mjs --self-test   # 17 self-tests, including in-range and moved-anchor failures
+node scripts/check-code-map.mjs --refresh-anchor-baseline # Refresh reviewed legacy source-line snapshots
 node scripts/verify-client-plugin-fail-recovery.mjs --self-test   # 客户端插件失败链的离线自检（不碰 adb）
 ```
+
+Use `#expect=<URI-encoded-substring>` inside the inline code reference for new or moved anchors. The baseline refresh command rejects new unannotated coordinates and increases in legacy-coordinate occurrence counts; review its diff before committing source-line updates.
 
 覆盖全域（脚本里定义，构建产物与第三方目录除外）：`app/src/**/*.kt` 与 `AndroidManifest.xml`、`plugins/*/{src,test}/**`、三个子仓 src/lib、`scripts/{check-,verify-,build-,inject-}*` 与 `scripts/patches/**`、`scripts/snapshot-config/**`。
 
@@ -2516,7 +2518,7 @@ app/src/main/java/com/dsharnessmobile/shell/ApkUpdateAction.kt
 - [P01] 漂移：`dsh-mobile-apk/docs/AGENTS/ARCHITECTURE.md:151`（§9「0.13.5 设备控制面」）说 `adb → execAdbLine/execAdbShell（shell 执行、原图截图、pm/dumpsys 等系统面）`，源码 `plugins/dsh-android-bridge/src/index.ts:1034`/`:1070` 与 `plugins/dsh-android-bridge/src/shell-ops.ts:120` 已在 0.14.0 改成经控制队列投递壳侧 Shizuku、不再有 adb 客户端语义（该节自带 0.13.5 标注，属历史段落，按「以源码为准」记录）。
 - [P02] 漂移：`docs/AGENTS/gotchas.md:178` 说坑 72 的锚点是 `plugins/dsh-android-manage/src/lossless-json.ts` 与 `plugins/dsh-android-manage/test/privilege-status.test.mjs`，源码里这两个文件只在 bridge 插件下（`plugins/dsh-android-bridge/src/lossless-json.ts:1`、`plugins/dsh-android-bridge/test/privilege-status.test.mjs:1`），manage 的 `src/` 只有 index/ui-tree/protocol-v2/detail-store/vd-shot 五个文件。
 - [P02] 漂移：`plugins/dsh-android-manage/src/index.ts:7` 的文件头工具集注释只列 8 个工具（screenshot/ui_tree/device_info/act_input/ui_dump/ui_click/ui_scroll/ui_input），源码 `plugins/dsh-android-manage/src/index.ts:2283` 实际注册 14 个（另有 screen_list/ui_detail/web_dump/env_prepare/app_launch/ui_global）。
-- [P02] 漂移：`scripts/check-code-map.mjs:152` 的注释说耦合边右端可以是「外部角色」文字，同文件 `scripts/check-code-map.mjs:103` 的解析正则却要求两端都形如查点 ID，凡右端写外部角色的边一律判 `bad-coupling`。
+- Drift: the table parser allows a non-ID external role on the right (`scripts/check-code-map.mjs:308#expect=3.`), while the legacy `COUPLING` comment-block parser requires IDs on both sides (`scripts/check-code-map.mjs:202#expect=const%20mm`).
 - [P03] 漂移：`plugins/dsh-android-browser/src/tools.ts:407` 说壳侧 `reason` 在 `BrowserHost.kt:818` 的 `lastError`，同文件 `:160` 说 `tabSummaries()` 在 `BrowserHost.kt:80-91`；源码 `lastError` 声明在 `app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:304`、`tabSummaries()` 在 `:91`（`:818` 是 `ORPHAN_REFS`），注释锚点按 0.14.0 基线写死。
 - [P03] 漂移：`docs/AGENTS/ARCHITECTURE.md:17` 说 AndroidBridge.kt 383 行、`:90` 说 VdisplayController.kt 389 行、`:91` 说 VdisplayHost.kt 177 行；源码现数 422 / 766 / 214 行（`wc -l`，文件末行分别为 `app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:425`、`VdisplayController.kt:766`、`VdisplayHost.kt:214`），同文档 `:18` 自己注明「行数每次改都会漂、不要写死」。
 - [P03] 漂移：`历史 BRIDGE-API 副本（当前契约见§6 K04）` 与 `:195` 把虚拟屏桥面写成 `vdisplayStatus/create/destroy/launchSettingsProbe/backProbe/bounds`，未列 `vdisplaySelect`（`app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:333`）、`forceDestroyVdisplay`（`:348`）与 Scale/Float 四个存取（`:334/:337/:341/:344`），而面板侧正在调用前两个（`plugins/dsh-android-vdisplay/src/client/index.ts:84`、`:89`）。
@@ -2534,7 +2536,7 @@ app/src/main/java/com/dsharnessmobile/shell/ApkUpdateAction.kt
 - [B01] 漂移：`AGENTS.md:21` 说 `vendor/`（marketplace / undo-savepoint / dsh-model-sync），源码实际 `vendor/` 只有 `dsh-undo-savepoint` 与 `dshmarketplace-plugin`（model-sync 已随 0.14.1 整体摘除，见 `scripts/profile-web.cordis.patch.yml:128-138` 与 `scripts/check-patch-mirror.mjs:231-233`）。
 - [B02] 漂移：`历史 BRIDGE-API 副本（当前契约见§6 K04）` 说聚合入口「`--list` 现数，当前 17 项」，源码 `scripts/check-release-gates.mjs:28`（`GATES` 数组）是 27 项（同仓 `docs/AGENTS/build-and-env.md:48` 写的是 27 项，两份文档自相矛盾）。
 - [B02] 漂移：5 个门禁脚本的两仓副本行尾不同（协调仓 CRLF、apk 仓 LF），`cmp` 字节不等、归一化后内容一致：`scripts/check-boot-budget.mjs`、`scripts/check-browser-syntax-floor.mjs`、`scripts/check-build-parallel-cap.mjs`、`scripts/check-snapshot-builder-output.mjs`、`scripts/check-tool-output-schema.mjs`；镜像门禁只按「仅行尾差异」告警放行（`scripts/check-patch-mirror.mjs:339`）——「逐字节镜像」在行尾层不成立。
-- [B02] 漂移：`scripts/check-code-map.mjs` 只在 apk 仓存在（协调仓 `scripts/` 无此文件），且未被列进 `scripts/check-patch-mirror.mjs:160` 起的 `MIRROR_TOP` → 这条新门禁自身没有镜像守护。
+- [B02] Resolved: `scripts/check-code-map.mjs` is registered in `MIRROR_TOP` (`scripts/check-patch-mirror.mjs:370#expect=scripts%2Fcheck-code-map.mjs`), the aggregate gate, both APK build chains, and APK CI. The coordination CI intentionally does not run this APK-specific map gate.
 
 WebView verification locales (#600): scripts/verify-webview-015.mjs resolves Chinese and English accessible names, prioritizes the account-menu trigger and retains missing/disabled-control failures. scripts/verify-webview-settings.test.mjs covers both navigation paths and attachment labels; PR CI installs its declared UI test dependencies and runs the same self-test. Device invocation remains positional WebSocket with a fresh target per run.
 

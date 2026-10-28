@@ -363,8 +363,16 @@ function tools(ctx: Context, priv: PrivilegeFace) {
   /** 截图工具的规范返回值（与 output.schema 一致；image 在场即内联回图）。 */
   type ShotValue = {
     imagePath: string
-    width: number
-    height: number
+    /**
+     * 设备物理分辨率（截图像素坐标换算锚点）。
+     *
+     * 壳侧**没回显**时**不带这两个键**——不编造 0（2026-10-28 自查，与 #745 同族）：
+     * 旧实现写 `data.width ?? 0`，于是同一个返回体里两套口径——文案如实说「设备物理分辨率 ?x?」，
+     * 而 `width`/`height` 谎报 `0`。模型的坐标换算锚点（schema 描述原文）拿到 0 只会算出错的值，
+     * 且无法区分「真的 0」与「壳侧没回显」。schema 里这两个字段本来就不是 required，缺席合法。
+     */
+    width?: number
+    height?: number
     denied: boolean
     text: string
     image?: { attachmentId: string; mediaType: string; bytes: number; width: number; height: number; name?: string }
@@ -376,13 +384,19 @@ function tools(ctx: Context, priv: PrivilegeFace) {
    * 图像输入时启用；否则回退到「返回路径」的旧行为（文件已落引擎可读目录，read_image 可用）。
    */
   async function inlineShot(
-    filePath: string, width: number, height: number, exec: ExecLike, channelNote: string,
+    filePath: string, width: number | undefined, height: number | undefined, exec: ExecLike, channelNote: string,
   ): Promise<ShotValue> {
+    // 只有两个都拿到有限数值时才带尺寸键；否则整对省略（见 ShotValue 注释）。
+    const sizeFields: { width?: number; height?: number } =
+      typeof width === 'number' && Number.isFinite(width) && typeof height === 'number' && Number.isFinite(height)
+        ? { width, height }
+        : {}
+    const sizeNote = sizeFields.width === undefined ? '?' : String(sizeFields.width)
+    const sizeNoteH = sizeFields.height === undefined ? '?' : String(sizeFields.height)
     const fallback = (why: string): ShotValue => ({
       imagePath: filePath,
       denied: false,
-      width,
-      height,
+      ...sizeFields,
       text: `截图已保存：${filePath}（${channelNote}${why}）`,
     })
     const attachments = ctx.get('attachments') as AttachmentFace | undefined
@@ -415,8 +429,9 @@ function tools(ctx: Context, priv: PrivilegeFace) {
       return {
         imagePath: filePath,
         denied: false,
-        width: ref.width || width,
-        height: ref.height || height,
+        ...sizeFields,
+        width: ref.width,
+        height: ref.height,
         image: {
           attachmentId: ref.attachmentId,
           mediaType: ref.mediaType,
@@ -425,7 +440,7 @@ function tools(ctx: Context, priv: PrivilegeFace) {
           height: ref.height,
           ...(ref.name === undefined ? {} : { name: ref.name }),
         },
-        text: `截图已内联返回（${channelNote}；设备物理分辨率 ${width}x${height}，${ref.bytes} 字节，临时文件已删除）。`
+        text: `截图已内联返回（${channelNote}；设备物理分辨率 ${sizeNote}x${sizeNoteH}，${ref.bytes} 字节，临时文件已删除）。`
           + '图像就在本结果里，无需再调用 read_image；像素坐标换算用归一化 nx/ny。',
       }
     } catch (e) {
@@ -584,12 +599,16 @@ function tools(ctx: Context, priv: PrivilegeFace) {
             if (!priv.execAdbLine) return { imagePath: '', denied: false, text: '无障碍截屏未返回文件路径，且 ADB 通道未接通（无法回落）' }
             adbNote = '（无障碍截屏未返回文件路径——已回落 ADB 通道）'
           } else {
+            // 成对判定：只回一半时**整对省略**，文案也一起省略（否则又变成「文案说 1080、返回体没有 width」）。
+            const shotW = typeof data.width === 'number' && Number.isFinite(data.width) ? data.width : undefined
+            const shotH = typeof data.height === 'number' && Number.isFinite(data.height) ? data.height : undefined
+            const shotSize = shotW === undefined || shotH === undefined ? null : `${shotW}x${shotH}`
             return inlineShot(
               data.path,
-              data.width ?? 0,
-              data.height ?? 0,
+              shotW === undefined || shotH === undefined ? undefined : shotW,
+              shotW === undefined || shotH === undefined ? undefined : shotH,
               exec as ExecLike,
-              `无障碍通道，设备物理分辨率 ${data.width ?? '?'}x${data.height ?? '?'}`,
+              `无障碍通道，设备物理分辨率 ${shotSize ?? '?x?'}`,
             )
           }
         }
@@ -653,7 +672,12 @@ function tools(ctx: Context, priv: PrivilegeFace) {
           : isVirtualTarget
             ? `（目标屏 ${screenId}，SurfaceFlinger token）`
             : `（目标屏 ${screenId}，displayId ${targetDisplayId}）`
-        return inlineShot(local, size.w, size.h, exec as ExecLike, `ADB 通道，设备物理分辨率 ${size.w}x${size.h}${scopeNote}${adbNote}`)
+        // screenSize() 在 dumpsys 解析失败时会返回 0 —— 那不是分辨率，当作「没拿到」传给 inlineShot。
+        const adbOk = size.w > 0 && Number.isFinite(size.w) && size.h > 0 && Number.isFinite(size.h)
+        const adbW = adbOk ? size.w : undefined
+        const adbH = adbOk ? size.h : undefined
+        return inlineShot(local, adbW, adbH, exec as ExecLike,
+          `ADB 通道，设备物理分辨率 ${adbOk ? `${size.w}x${size.h}` : '?x?'}${scopeNote}${adbNote}`)
       } catch (e) {
         return { imagePath: '', denied: false, text: '截图失败：' + String((e as Error).message) }
       }
@@ -1730,12 +1754,25 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
         const verdict = await verifyClick(undefined, exec as ExecLike, false)
         // issue #258：回显壳侧所用的归一化基准（basis/basisWidth/basisHeight）。
         const basis = coordBasisNote(r.data)
+        // 实际点击坐标只在壳侧**真回显**时才带（2026-10-28 自查）。
+        //
+        // 修前写 `x: clicked.x ?? 0, y: clicked.y ?? 0`：老壳侧不回 x/y 时编造 0，模型据此
+        // 以为点在了屏幕左上角。更刺眼的是**同一个返回体里两套口径**——紧邻的 basisFields
+        // 遵守「不编造默认值」，文案会如实说「基准未回显：壳侧版本较旧」，而坐标却谎报 0,0
+        // （探针实测文案：「实际坐标 0,0，（基准未回显：壳侧版本较旧）」）。
+        // 顺带把非有限值一并拒：NaN/Infinity 不是合法 JSON，引擎 {type:'number'} 会整值拒绝
+        // （#204/#258 同族）。schema 里 x/y 非 required，缺席是合法的。
+        const clickedXY = typeof clicked.x === 'number' && Number.isFinite(clicked.x)
+          && typeof clicked.y === 'number' && Number.isFinite(clicked.y)
+          ? { x: clicked.x, y: clicked.y }
+          : null
         return {
           ok: true, denied: false, ref: '', id: `norm(${nx!.toFixed(3)},${ny!.toFixed(3)})`, label: '归一化坐标',
-          x: clicked.x ?? 0, y: clicked.y ?? 0,
+          ...(clickedXY ?? {}),
           ...basisFields(r.data),
           text: `已按归一化坐标 (${nx!.toFixed(3)},${ny!.toFixed(3)}) 点击（无障碍通道，实际坐标 `
-            + `${Math.round(clicked.x ?? 0)},${Math.round(clicked.y ?? 0)}，${basis}）；${verdict}`,
+            + (clickedXY === null ? '未回显' : `${Math.round(clickedXY.x)},${Math.round(clickedXY.y)}`)
+            + `，${basis}）；${verdict}`,
         }
       }
       let cx = 0; let cy = 0; let hitId = ''; let label = ''
@@ -2196,7 +2233,10 @@ return String(value.text ?? '') + (lines.length > 0 ? '\n' + lines.join('\n') : 
         ...(typeof data.url === 'string' ? { url: data.url } : {}),
         ...(typeof data.title === 'string' ? { title: data.title } : {}),
         nodes: nodes as WebNode[],
-        text: `WebView DOM 快照：${data.title ?? ''} ${data.url ?? ''}（视口 ${data.vw ?? '?'}x${data.vh ?? '?'}，滚动 ${data.scrollY ?? 0}；`
+        // 同一句文案里未知值的口径必须一致（2026-10-28 自查）：`vw`/`vh` 未知时报 `?`，
+        // 而 `scrollY` 未知时却报 `0` —— 模型会把「壳侧没回显」误读成「页面没滚动」
+        // （在长列表里恰好会导到「已到顶」的错判）。这里统一成 `?`。
+        text: `WebView DOM 快照：${data.title ?? ''} ${data.url ?? ''}（视口 ${data.vw ?? '?'}x${data.vh ?? '?'}，滚动 ${typeof data.scrollY === 'number' && Number.isFinite(data.scrollY) ? data.scrollY : '?'}；`
           + `命中 ${data.total ?? nodes.length} 个可交互元素，返回 ${nodes.length} 个）\n` + lines.join('\n')
           + '\n点击用 ref=wN，或 css:<选择器> / text:<文本> / role:<role>。',
       }
