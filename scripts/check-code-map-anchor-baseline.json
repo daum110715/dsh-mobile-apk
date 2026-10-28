@@ -1942,19 +1942,19 @@
       "} else {"
     ],
     "VdisplayController.kt:529": [
-      "fun releaseViewerSurface(context: Context, viewerId: String, surface: Surface? = null): JSONObject {"
+      "record.viewerId = id"
     ],
     "VdisplayController.kt:554": [
-      "*/"
+      ""
     ],
     "VdisplayController.kt:721": [
-      ".lineSequence().map { it.trim() }.lastOrNull { it.contains(\"/\") } ?: \"\""
+      "//"
     ],
     "VdisplayController.kt:753": [
-      ".put(\"guidance\", \"已请求把 \" + pkg + \" 拉起到 \" + record.alias + \"（displayId=\" + id + \"），但**落点回读不可用**\""
+      "// 用户的「在虚拟屏里启动软件却跳到真实屏」正是它。判据改为**设备事实**：按 displayId 分组"
     ],
     "VdisplayController.kt:766": [
-      ".put(\"guidance\", \"拉起未落在虚拟屏：\" + pkg + \" 实际出现在 displayId=\" + landed.joinToString(\",\")"
+      "}"
     ],
     "VdisplayController.kt:84": [
       "*"
@@ -2386,7 +2386,7 @@
       "val display: VirtualDisplay,"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/VdisplayController.kt:608": [
-      "* 一条不存在的路**。提示与能力不一致，比直接拒绝更糟。"
+      "}"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/VdisplayController.kt:84": [
       "*"
@@ -2722,10 +2722,10 @@
       "fun fxRevisionNumberIsCompared() {"
     ],
     "app/src/test/java/com/dsharnessmobile/shell/VdisplayArbitrationTest.kt:14": [
-      "@Test"
+      ""
     ],
     "app/src/test/java/com/dsharnessmobile/shell/VdisplayArbitrationTest.kt:30": [
-      "@Test"
+      ""
     ],
     "app/src/test/java/com/dsharnessmobile/shell/W3ShellContractTest.kt:107": [
       "// `AdbLiveProbeTest.kt`（TTL 内复用 / 过期重探 / 失败不冒充实测成功 / TCP 探测区分端口，4 项全绿）。"
@@ -3210,7 +3210,6 @@
     "index.js:2198": [
       "* @returns compact facts and child-local failures; complete child event arrays are released after extraction.",
       "* Collect each related child's own descriptor through existing historical codecs.",
-      "additionalProperties: false,",
       "const incidental = new Set([",
       "function signature(pattern) {",
       "let total = 0;",
