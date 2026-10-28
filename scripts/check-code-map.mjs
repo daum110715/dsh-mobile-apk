@@ -19,6 +19,7 @@
 //   node scripts/check-code-map.mjs --doc <path>    # 换文档（调试用）
 //   node scripts/check-code-map.mjs --self-test     # 无仓库依赖的判别力自检（含故意失败样本）
 //   node scripts/check-code-map.mjs --refresh-anchor-baseline # Refresh reviewed legacy anchor snapshots
+//   node scripts/check-code-map.mjs --refresh-anchor-baseline --force-drift # Explicitly allow and log content changes
 // 退出码：0 = 通过；1 = 有失败项；2 = 前置不满足（文档缺失/文档缺账本块）。
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve as resolvePath } from 'node:path'
@@ -46,6 +47,7 @@ const DOC_REL = argOf('doc', 'docs/AGENTS/EXECUTION-MAP.md')
 const LIST_ONLY = argv.includes('--list')
 const SELF_TEST = argv.includes('--self-test')
 const REFRESH_ANCHOR_BASELINE = argv.includes('--refresh-anchor-baseline')
+const FORCE_ANCHOR_DRIFT = argv.includes('--force-drift')
 /** CI 等价性检查：apk 仓在被独立检出时没有协调仓父目录，--no-parent 用来本地预演那种情形。 */
 const NO_PARENT = argv.includes('--no-parent')
 const ANCHOR_BASELINE_REL = 'scripts/check-code-map-anchor-baseline.json'
@@ -126,6 +128,42 @@ function countLegacyReferences(anchors) {
 function increasedLegacyReferences(anchors, baselineCounts) {
   return Object.entries(countLegacyReferences(anchors))
     .filter(([key, count]) => count > (baselineCounts[key] ?? 0))
+}
+
+function planAnchorBaselineRefresh(references, sourceLineBaseline, fsView, allowDrift) {
+  const currentKeys = [...references].sort()
+  const baselineKeys = Object.keys(sourceLineBaseline).sort()
+  const baselineKeySet = new Set(baselineKeys)
+  const currentKeySet = new Set(currentKeys)
+  const addedKeys = currentKeys.filter((key) => !baselineKeySet.has(key))
+  const removedKeys = baselineKeys.filter((key) => !currentKeySet.has(key))
+  const missingContentKeys = []
+  const contentDrift = []
+  const sourceLines = {}
+
+  for (const key of currentKeys) {
+    const split = key.lastIndexOf(':')
+    const contents = fsView.lineContents(key.slice(0, split), Number(key.slice(split + 1)))
+    if (contents.length === 0) {
+      missingContentKeys.push(key)
+      continue
+    }
+
+    const actual = [...new Set(contents.map((candidate) => candidate.text))].sort()
+    const expected = Array.isArray(sourceLineBaseline[key])
+      ? [...new Set(sourceLineBaseline[key])].sort()
+      : []
+    if (actual.some((line) => !expected.includes(line))) {
+      contentDrift.push({ key, expected, actual })
+    }
+    sourceLines[key] = actual
+  }
+
+  const keyCountChanged = currentKeys.length !== baselineKeys.length
+  const keySetChanged = addedKeys.length > 0 || removedKeys.length > 0
+  const canWrite = !keyCountChanged && !keySetChanged && missingContentKeys.length === 0
+    && (allowDrift || contentDrift.length === 0)
+  return { addedKeys, removedKeys, missingContentKeys, contentDrift, sourceLines, keyCountChanged, canWrite }
 }
 
 /** 按 `## <序号>. <标题前缀>` 切出章节正文（可见表格按章节解析，注释块作为兼容来源）。 */
@@ -509,8 +547,36 @@ function selfTest() {
     lines.push((ok ? '  ok   ' : '  FAIL ') + name + ': matched ' + issues.length + ' / expected ' + want
       + (ok ? '' : ' -> ' + issues.map((i) => i.kind).join(',')))
   }
-  const ok = pass === cases.length
-  console.log((ok ? 'CHECK-CODE-MAP SELF-TEST PASSED' : 'CHECK-CODE-MAP SELF-TEST FAILED'))
+
+  const refreshBaseline = { 'app/a.kt:3': ['fun other()'], 'app/a.kt:4': ['fun helper()'] }
+  const refreshReferences = new Set(Object.keys(refreshBaseline))
+  const changedSource = mk({ 'app/a.kt': ['header', 'fun ready()', 'changed body()', 'fun helper()'] })
+  const directRefresh = planAnchorBaselineRefresh(refreshReferences, refreshBaseline, changedSource, false)
+  const forcedRefresh = planAnchorBaselineRefresh(refreshReferences, refreshBaseline, changedSource, true)
+  const shortenedRefresh = planAnchorBaselineRefresh(new Set(['app/a.kt:3']), refreshBaseline, changedSource, true)
+  const narrowedBaseline = planAnchorBaselineRefresh(refreshReferences, {
+    ...refreshBaseline,
+    'app/a.kt:3': ['fun other()', 'obsolete duplicate candidate'],
+  }, fsFull, false)
+  const refreshCases = [
+    ['Direct refresh rejects source drift without --force-drift', !directRefresh.canWrite && directRefresh.contentDrift.length === 1],
+    ['--force-drift records expected and actual content', forcedRefresh.canWrite && forcedRefresh.contentDrift.length === 1
+      && forcedRefresh.contentDrift[0].key === 'app/a.kt:3'
+      && forcedRefresh.contentDrift[0].expected[0] === 'fun other()'
+      && forcedRefresh.contentDrift[0].actual[0] === 'changed body()'],
+    ['Refresh rejects a changed key count and reports the missing key', !shortenedRefresh.canWrite
+      && shortenedRefresh.keyCountChanged && shortenedRefresh.removedKeys.includes('app/a.kt:4')],
+    ['Removing an obsolete allowed basename candidate does not add drift', narrowedBaseline.canWrite
+      && narrowedBaseline.contentDrift.length === 0
+      && narrowedBaseline.sourceLines['app/a.kt:3'].length === 1],
+  ]
+  for (const [name, ok] of refreshCases) {
+    if (ok) pass += 1
+    lines.push((ok ? '  ok   ' : '  FAIL ') + name)
+  }
+  const total = cases.length + refreshCases.length
+  const ok = pass === total
+  console.log((ok ? 'CHECK-CODE-MAP SELF-TEST PASSED' : 'CHECK-CODE-MAP SELF-TEST FAILED') + ' (' + pass + '/' + total + ')')
   for (const l of lines) console.log(l)
   process.exit(ok ? 0 : 1)
 }
@@ -518,6 +584,10 @@ function selfTest() {
 // 仅作为主程序执行时跑校验；被 import 时只暴露纯函数（便于探针/其他门禁复用）。
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 if (isMain) {
+  if (FORCE_ANCHOR_DRIFT && !REFRESH_ANCHOR_BASELINE) {
+    console.error('--force-drift requires --refresh-anchor-baseline')
+    process.exit(1)
+  }
   if (SELF_TEST) selfTest()
 
   const docAbs = resolvePath(REPO, DOC_REL)
@@ -550,25 +620,39 @@ if (isMain) {
         references.add(norm(ev[1]) + ':' + Number(ev[2]))
       }
     }
-    const unknown = [...references].filter((key) => !Object.hasOwn(sourceLineBaseline, key))
-    if (unknown.length > 0) {
-      console.error('Cannot refresh baseline for new references; add #expect=<encoded-fragment>: ' + unknown.slice(0, 20).join(', '))
+    const plan = planAnchorBaselineRefresh(references, sourceLineBaseline, fsView, FORCE_ANCHOR_DRIFT)
+    if (plan.keyCountChanged || plan.addedKeys.length > 0 || plan.removedKeys.length > 0) {
+      console.error('Cannot refresh baseline: legacy reference keys changed (baseline '
+        + Object.keys(sourceLineBaseline).length + ', current ' + references.size + ')')
+      if (plan.addedKeys.length > 0) console.error('Added keys: ' + plan.addedKeys.join(', '))
+      if (plan.removedKeys.length > 0) console.error('Removed keys: ' + plan.removedKeys.join(', '))
       process.exit(1)
     }
-    const sourceLines = {}
-    for (const key of [...references].sort()) {
-      const split = key.lastIndexOf(':')
-      const contents = fsView.lineContents(key.slice(0, split), Number(key.slice(split + 1)))
-      if (contents.length === 0) {
-        console.error('Cannot refresh missing reference content: ' + key)
-        process.exit(1)
+    if (plan.missingContentKeys.length > 0) {
+      console.error('Cannot refresh missing reference content: ' + plan.missingContentKeys.join(', '))
+      process.exit(1)
+    }
+    if (plan.contentDrift.length > 0 && !FORCE_ANCHOR_DRIFT) {
+      console.error('Cannot refresh changed source content without --force-drift:')
+      for (const drift of plan.contentDrift) {
+        console.error('  - ' + drift.key + ': expected ' + JSON.stringify(drift.expected)
+          + ', actual ' + JSON.stringify(drift.actual))
       }
-      sourceLines[key] = [...new Set(contents.map((candidate) => candidate.text))].sort()
+      process.exit(1)
+    }
+    if (FORCE_ANCHOR_DRIFT) {
+      console.warn(plan.contentDrift.length > 0
+        ? 'Explicit --force-drift is allowing these reviewed source changes:'
+        : 'Explicit --force-drift supplied; no source content drift was found.')
+      for (const drift of plan.contentDrift) {
+        console.warn('  - ' + drift.key + ': expected ' + JSON.stringify(drift.expected)
+          + ', actual ' + JSON.stringify(drift.actual))
+      }
     }
     writeFileSync(ANCHOR_BASELINE_ABS, JSON.stringify({
       formatVersion: 1,
       legacyReferenceCounts: countLegacyReferences(parsed.anchors),
-      sourceLines,
+      sourceLines: plan.sourceLines,
     }, null, 2) + '\n')
     console.log('CHECK-CODE-MAP baseline refreshed: ' + references.size + ' legacy references')
     process.exit(0)

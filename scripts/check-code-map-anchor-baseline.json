@@ -1080,7 +1080,6 @@
     ".github/workflows/pr-gate.yml:11": 1,
     ".github/workflows/pr-gate.yml:113": 1,
     "scripts/build-snapshot-013.mjs:169": 1,
-    "scripts/check-patch-mirror.mjs:160": 3,
     "scripts/check-browser-syntax-floor.mjs:658": 1,
     "scripts/check-patch-mirror.mjs:347": 1,
     "scripts/check-release-gates.mjs:152": 1,
@@ -4327,9 +4326,6 @@
     ],
     "scripts/check-patch-mirror.mjs:109": [
       "const regSet = new Set(regIds)"
-    ],
-    "scripts/check-patch-mirror.mjs:160": [
-      "const full = join(dir, name)"
     ],
     "scripts/check-patch-mirror.mjs:170": [
       "const onlyMine = mineData.filter((r) => !peerData.includes(r))"

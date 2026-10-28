@@ -7,7 +7,7 @@
 > 3. 想**先通读一遍** → §1 全局运行顺序（阶段 0-4 + 时序图）→ §2 主表 → §4 耦合矩阵。
 >
 > **当前源码登记**：v0.14.5基线 + 0.14.5-fx-1本地实施（详见下方实施补充）；上游官方639ed015（0.2.0-rc.2），新模块/fixtures与当前锚点见§6/§7；旧cc0c921/coord1f9852d审查条目仅历史溯源，非本轮运行证据。
-> Anchor syntax is `path:line#expect=<URI-encoded-substring>` with paths relative to the APK repository. Existing unannotated coordinates and their occurrence counts are pinned by `scripts/check-code-map-anchor-baseline.json`; a new or moved coordinate needs an explicit expected substring. The refresh command rejects new unannotated occurrences, including moves to an already-known coordinate. Review intentional source-line changes before running `node scripts/check-code-map.mjs --refresh-anchor-baseline`.
+> Anchor syntax is `path:line#expect=<URI-encoded-substring>` with paths relative to the APK repository. Existing unannotated coordinates and their occurrence counts are pinned by `scripts/check-code-map-anchor-baseline.json`; a new or moved coordinate needs an explicit expected substring. Refresh rejects changed key sets and source content by default. Use `--force-drift` only after reviewing every logged expected/actual line pair.
 >
 > **Anchor drift:** run `node scripts/check-code-map.mjs` after source edits. It checks coverage, source-line expectations, IDs, and coupling evidence (see §7).
 > **维护**：新增/删除块、调用顺序或耦合关系变化 → 改本文对应查点（`AGENTS.md` §5.1 已登记）。
@@ -348,7 +348,7 @@ sequenceDiagram
 - [P02] 5. vdInput 分支把 displayId 塞进 `x` 键（已确认代码事实）：`plugins/dsh-android-manage/src/index.ts:1537` 返回 `x: data.displayId, y: 0`，而 schema 与工具描述里的 `x`/`y` 语义是点击坐标（真实坐标只在 `text` 里）。影响：模型若据返回值的 x/y 推算下一步点击会拿到无意义坐标。
 - [P02] 漂移：`docs/AGENTS/gotchas.md:178` 说坑 72 的锚点是 `plugins/dsh-android-manage/src/lossless-json.ts` 与 `plugins/dsh-android-manage/test/privilege-status.test.mjs`，源码里这两个文件只在 bridge 插件下（`plugins/dsh-android-bridge/src/lossless-json.ts:1`、`plugins/dsh-android-bridge/test/privilege-status.test.mjs:1`），manage 的 `src/` 只有 index/ui-tree/protocol-v2/detail-store/vd-shot 五个文件。
 - [P02] 漂移：`plugins/dsh-android-manage/src/index.ts:7` 的文件头工具集注释只列 8 个工具（screenshot/ui_tree/device_info/act_input/ui_dump/ui_click/ui_scroll/ui_input），源码 `plugins/dsh-android-manage/src/index.ts:2283` 实际注册 14 个（另有 screen_list/ui_detail/web_dump/env_prepare/app_launch/ui_global）。
-- [P02] Drift: the table parser allows a non-ID external role on the right (`scripts/check-code-map.mjs:308#expect=3.`), while the legacy `COUPLING` comment-block parser requires IDs on both sides (`scripts/check-code-map.mjs:202#expect=const%20mm`).
+- [P02] Drift: the table parser allows a non-ID external role on the right (`scripts/check-code-map.mjs:350#expect=ID_SHAPE.test(c.to)`), while the legacy `COUPLING` comment-block parser requires IDs on both sides (`scripts/check-code-map.mjs:240#expect=const%20mm`).
 - [P03] 1. 已确认（注释与壳侧事实相反，权限面）：`tools.ts:281-294` 以「壳侧 `bindOwner/requireOwner` 按 `args.session` 判定、非归属会话结构化拒绝」作为工具层不加校验的理由，而壳侧明写该锁已在 0.14.0 移除、`controlOp` 不再做归属校验（`BrowserHost.kt:396`、`:501`），改为按会话隔离 Workspace。影响：读者据此以为存在归属门，实际唯一边界是 URL 准入（`BrowserHost.kt:625-628`）；同时 `contract.ts:136-156` 的 `permission` 档（approval/full-access/confirm）没有任何执行点，与实现不符（H-8 已登记为本轮未做）。
 - [P03] 2. 已确认（跨会话/跨页记忆）：`tools.ts:33` 的 `lastSnapshot` 是模块级单槽（评审 §M5、H-6 未修），B 会话的 `browser_click` 会直接消费 A 会话的 ref + 代次；新页首快照都是 `bx1` 起、代次 1-2 极易相同，壳侧只验代次与 ref、自述不校验 tab（`BrowserHost.kt:1412-1415`、`:1432-1447`）。引擎侧 `SnapshotMemory.tabId/refs`（`tools.ts:26-30`、`:470`）从不被读，页维度全程无校验 → 症状是「点在了本会话的另一页上但仍报成功」。
 - [P03] 3. 已确认（同一事实两种读数）：`status.ts:135` 的 `ops` 恒为静态 `VD_OPS`（7 条），`snapshotFromRaw` 全程忽略壳侧回执里的 `ops`；面板路径 `mapStatusPayload:299` 读的却是壳侧值，而壳侧 `VdisplayController.ops():124` 只列 5 条（缺 `vdLaunchApp`/`vdInput`）。于是 `android_vdisplay_status` 报 7 条可用、面板报 5 条。F-13（`ops()` 由 `SUPPORTED_OPS` 派生、==7 条）本轮未做，H-14（消费 `caps.ops`）同源。
@@ -1358,7 +1358,7 @@ flowchart TD
   5. vdInput 分支把 displayId 塞进 `x` 键（已确认代码事实）：`plugins/dsh-android-manage/src/index.ts:1537` 返回 `x: data.displayId, y: 0`，而 schema 与工具描述里的 `x`/`y` 语义是点击坐标（真实坐标只在 `text` 里）。影响：模型若据返回值的 x/y 推算下一步点击会拿到无意义坐标。
 - 漂移：`docs/AGENTS/gotchas.md:178` 说坑 72 的锚点是 `plugins/dsh-android-manage/src/lossless-json.ts` 与 `plugins/dsh-android-manage/test/privilege-status.test.mjs`，源码里这两个文件只在 bridge 插件下（`plugins/dsh-android-bridge/src/lossless-json.ts:1`、`plugins/dsh-android-bridge/test/privilege-status.test.mjs:1`），manage 的 `src/` 只有 index/ui-tree/protocol-v2/detail-store/vd-shot/ime-broadcast 六个文件。
 - 漂移：`plugins/dsh-android-manage/src/index.ts:7` 的文件头工具集注释只列 8 个工具（screenshot/ui_tree/device_info/act_input/ui_dump/ui_click/ui_scroll/ui_input），源码 `plugins/dsh-android-manage/src/index.ts:2283` 实际注册 14 个（另有 screen_list/ui_detail/web_dump/env_prepare/app_launch/ui_global）。
-- Drift: the table parser allows a non-ID external role on the right (`scripts/check-code-map.mjs:308#expect=3.`), while the legacy `COUPLING` comment-block parser requires IDs on both sides (`scripts/check-code-map.mjs:202#expect=const%20mm`).
+- Drift: the table parser allows a non-ID external role on the right (`scripts/check-code-map.mjs:350#expect=ID_SHAPE.test(c.to)`), while the legacy `COUPLING` comment-block parser requires IDs on both sides (`scripts/check-code-map.mjs:240#expect=const%20mm`).
 
 ```mermaid
 flowchart TD
@@ -1851,7 +1851,7 @@ flowchart LR
   - `scripts/build-release.ps1:60`（注入前 `--run --require`）/`:147`（注入后产物级复跑）
   - `.github/workflows/pr-gate.yml:40`（apk CI 只跑 `check-patch-mirror.mjs --self`）/`:82`（语法下限只跑 `--self-test`）/`:138`（全量 Kotlin 单测接进 CI）
   - `scripts/check-boot-budget.mjs:681`（`SKIP(#1)(real-data)` 发射点）/`:684`（随即 `selfTest()` 退出，`SKIP=` 汇总不打印）
-  - `scripts/check-code-map.mjs:58#expect=const%20UNIVERSE`（UNIVERSE covers the APK source tree; the gate runs in APK CI and both APK build chains）
+  - `scripts/check-code-map.mjs:60#expect=const%20UNIVERSE`（UNIVERSE covers the APK source tree; the gate runs in APK CI and both APK build chains）
 - **不变量**：
   1. `GATES` 声明的每个脚本必须在 `scripts/` 在场，且被两条编排器（`scripts/build-apk-013.ps1` / `scripts/build-apk.mjs`）逐项调用（`scripts/check-gate-skips.mjs:62`）。违反症状：新门禁写在 `scripts/` 却从不执行——「假防线」。
   2. 两条编排器的门禁集差集必须为 0（`scripts/check-release-gates.mjs:212`）。违反症状：本地链绿、云端自包含链少跑一道，产物缺陷只在云端出现。
@@ -1971,7 +1971,7 @@ flowchart LR
   5. `scripts/check-contract.mjs:165` 的版本钉只读 `peerDependencies` + `devDependencies`，`dependencies` 不在判据内（评审 I-10）→ `host-web-compat` 打绿但覆盖面为空。
   6. `scripts/check-plugin-tests.mjs:33`/`:35` 对「无 test 目录/无测试文件」的插件只 WARN；`scripts/check-kotlin-test-count.mjs` 可被整类删除绕过（可疑点 1）——两条同族「删掉即判绿」。
   7. `scripts/check-perf-instrumentation.mjs` 无快照时只计 SKIP（CI 常态如此），A1 面靠两条链的 `--require` 兜。
-- **门禁自身的自检（`--self-test`）覆盖**：33 个 `check-*.mjs` 中 **11 个**真支持 `--self-test`（`scripts/check-api-route-auth.mjs` / `scripts/check-boot-budget.mjs` / `scripts/check-browser-syntax-floor.mjs` / `scripts/check-build-chain-abort.mjs` / `scripts/check-build-parallel-cap.mjs` / `scripts/check-code-map.mjs` / `scripts/check-combo-cache.mjs` / `scripts/check-kotlin-comments.mjs` / `scripts/check-kotlin-test-count.mjs` / `scripts/check-snapshot-builder-output.mjs` / `scripts/check-strip-noop.mjs`），其中 `scripts/check-browser-syntax-floor.mjs:535` 是六向自证（反向必红 / 正向必绿 / 载荷不触发 / 工具链在场 / marker 保全 / 两链接线反回归），`scripts/check-code-map.mjs` contains 17 self-test cases, including in-range content mismatch, moved-anchor and ambiguous-basename controls. `scripts/check-release-gates.mjs` 与 `scripts/check-perf-instrumentation.mjs` **只在自己的注释里提到** `--self-test`（后者是去跑依赖脚本 `scripts/perf/count-compose.mjs --self-test`），本身没有自证模式——即这两条门禁的判别力无自证。CI 里只有一处显式自证调用（`scripts/check-browser-syntax-floor.mjs --self-test`），其余自证模式零调用点，靠人工跑。
+- **门禁自身的自检（`--self-test`）覆盖**：33 个 `check-*.mjs` 中 **11 个**真支持 `--self-test`（`scripts/check-api-route-auth.mjs` / `scripts/check-boot-budget.mjs` / `scripts/check-browser-syntax-floor.mjs` / `scripts/check-build-chain-abort.mjs` / `scripts/check-build-parallel-cap.mjs` / `scripts/check-code-map.mjs` / `scripts/check-combo-cache.mjs` / `scripts/check-kotlin-comments.mjs` / `scripts/check-kotlin-test-count.mjs` / `scripts/check-snapshot-builder-output.mjs` / `scripts/check-strip-noop.mjs`），其中 `scripts/check-browser-syntax-floor.mjs:535` 是六向自证（反向必红 / 正向必绿 / 载荷不触发 / 工具链在场 / marker 保全 / 两链接线反回归），`scripts/check-code-map.mjs` contains 21 self-test cases, including source drift refresh rejection, explicit drift logging, key-count mismatch, stale candidate removal, in-range content mismatch, moved-anchor and ambiguous-basename controls. `scripts/check-release-gates.mjs` 与 `scripts/check-perf-instrumentation.mjs` **只在自己的注释里提到** `--self-test`（后者是去跑依赖脚本 `scripts/perf/count-compose.mjs --self-test`），本身没有自证模式——即这两条门禁的判别力无自证。CI 里只有一处显式自证调用（`scripts/check-browser-syntax-floor.mjs --self-test`），其余自证模式零调用点，靠人工跑。
 
 - 漂移：`历史 BRIDGE-API 副本（当前契约见§6 K04）` 说聚合入口「`--list` 现数，当前 17 项」，源码 `scripts/check-release-gates.mjs:28`（`GATES` 数组）是 27 项（同仓 `docs/AGENTS/build-and-env.md:48` 写的是 27 项，两份文档自相矛盾）。
 - 漂移：5 个门禁脚本的两仓副本行尾不同（协调仓 CRLF、apk 仓 LF），`cmp` 字节不等、归一化后内容一致：`scripts/check-boot-budget.mjs`、`scripts/check-browser-syntax-floor.mjs`、`scripts/check-build-parallel-cap.mjs`、`scripts/check-snapshot-builder-output.mjs`、`scripts/check-tool-output-schema.mjs`；镜像门禁只按「仅行尾差异」告警放行（`scripts/check-patch-mirror.mjs:339`）——「逐字节镜像」在行尾层不成立。
@@ -2088,12 +2088,13 @@ flowchart TD
 ```bash
 node scripts/check-code-map.mjs           # Check coverage, pinned source lines, IDs, and coupling evidence
 node scripts/check-code-map.mjs --list    # Inventory only
-node scripts/check-code-map.mjs --self-test   # 17 self-tests, including in-range and moved-anchor failures
+node scripts/check-code-map.mjs --self-test   # 21 self-tests, including refresh drift and key-count failures
 node scripts/check-code-map.mjs --refresh-anchor-baseline # Refresh reviewed legacy source-line snapshots
+node scripts/check-code-map.mjs --refresh-anchor-baseline --force-drift # Explicitly log and allow source-content changes
 node scripts/verify-client-plugin-fail-recovery.mjs --self-test   # 客户端插件失败链的离线自检（不碰 adb）
 ```
 
-Use `#expect=<URI-encoded-substring>` inside the inline code reference for new or moved anchors. The baseline refresh command rejects new unannotated coordinates and increases in legacy-coordinate occurrence counts; review its diff before committing source-line updates.
+Use `#expect=<URI-encoded-substring>` inside the inline code reference for new or moved anchors. Baseline refresh rejects changed key sets and source-line content by default. `--force-drift` logs every expected/actual pair before writing; it does not bypass the key-set check. Review the resulting diff before committing baseline updates.
 
 覆盖全域（脚本里定义，构建产物与第三方目录除外）：`app/src/**/*.kt` 与 `AndroidManifest.xml`、`plugins/*/{src,test}/**`、三个子仓 src/lib、`scripts/{check-,verify-,build-,inject-}*` 与 `scripts/patches/**`、`scripts/snapshot-config/**`。
 
@@ -2516,7 +2517,7 @@ app/src/main/java/com/dsharnessmobile/shell/ApkUpdateAction.kt
 - [P01] 漂移：`dsh-mobile-apk/docs/AGENTS/ARCHITECTURE.md:151`（§9「0.13.5 设备控制面」）说 `adb → execAdbLine/execAdbShell（shell 执行、原图截图、pm/dumpsys 等系统面）`，源码 `plugins/dsh-android-bridge/src/index.ts:1034`/`:1070` 与 `plugins/dsh-android-bridge/src/shell-ops.ts:120` 已在 0.14.0 改成经控制队列投递壳侧 Shizuku、不再有 adb 客户端语义（该节自带 0.13.5 标注，属历史段落，按「以源码为准」记录）。
 - [P02] 漂移：`docs/AGENTS/gotchas.md:178` 说坑 72 的锚点是 `plugins/dsh-android-manage/src/lossless-json.ts` 与 `plugins/dsh-android-manage/test/privilege-status.test.mjs`，源码里这两个文件只在 bridge 插件下（`plugins/dsh-android-bridge/src/lossless-json.ts:1`、`plugins/dsh-android-bridge/test/privilege-status.test.mjs:1`），manage 的 `src/` 只有 index/ui-tree/protocol-v2/detail-store/vd-shot 五个文件。
 - [P02] 漂移：`plugins/dsh-android-manage/src/index.ts:7` 的文件头工具集注释只列 8 个工具（screenshot/ui_tree/device_info/act_input/ui_dump/ui_click/ui_scroll/ui_input），源码 `plugins/dsh-android-manage/src/index.ts:2283` 实际注册 14 个（另有 screen_list/ui_detail/web_dump/env_prepare/app_launch/ui_global）。
-- Drift: the table parser allows a non-ID external role on the right (`scripts/check-code-map.mjs:308#expect=3.`), while the legacy `COUPLING` comment-block parser requires IDs on both sides (`scripts/check-code-map.mjs:202#expect=const%20mm`).
+- Drift: the table parser allows a non-ID external role on the right (`scripts/check-code-map.mjs:350#expect=ID_SHAPE.test(c.to)`), while the legacy `COUPLING` comment-block parser requires IDs on both sides (`scripts/check-code-map.mjs:240#expect=const%20mm`).
 - [P03] 漂移：`plugins/dsh-android-browser/src/tools.ts:407` 说壳侧 `reason` 在 `BrowserHost.kt:818` 的 `lastError`，同文件 `:160` 说 `tabSummaries()` 在 `BrowserHost.kt:80-91`；源码 `lastError` 声明在 `app/src/main/java/com/dsharnessmobile/shell/BrowserHost.kt:304`、`tabSummaries()` 在 `:91`（`:818` 是 `ORPHAN_REFS`），注释锚点按 0.14.0 基线写死。
 - [P03] 漂移：`docs/AGENTS/ARCHITECTURE.md:17` 说 AndroidBridge.kt 383 行、`:90` 说 VdisplayController.kt 389 行、`:91` 说 VdisplayHost.kt 177 行；源码现数 422 / 766 / 214 行（`wc -l`，文件末行分别为 `app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:425`、`VdisplayController.kt:766`、`VdisplayHost.kt:214`），同文档 `:18` 自己注明「行数每次改都会漂、不要写死」。
 - [P03] 漂移：`历史 BRIDGE-API 副本（当前契约见§6 K04）` 与 `:195` 把虚拟屏桥面写成 `vdisplayStatus/create/destroy/launchSettingsProbe/backProbe/bounds`，未列 `vdisplaySelect`（`app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:333`）、`forceDestroyVdisplay`（`:348`）与 Scale/Float 四个存取（`:334/:337/:341/:344`），而面板侧正在调用前两个（`plugins/dsh-android-vdisplay/src/client/index.ts:84`、`:89`）。
