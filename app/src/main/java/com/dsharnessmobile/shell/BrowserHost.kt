@@ -1004,6 +1004,9 @@ internal class BrowserHost(
       }
       rh.setProjectionSize(remoteTabId(workspace, tab), size.first, size.second)
       tab.remoteCreated = true
+      // 与本地 view 分支同口径记账：appliedViewport 是「这一页实际按哪个预设建的」，
+      // 漏记会让后续 viewport/identity 调用误判为「未变化」而跳过重建（0.14.10 实测的静默不生效）。
+      appliedViewport = tab.requestedViewport
       workspace.profileError = ""
       return null
     }
@@ -1424,8 +1427,16 @@ internal class BrowserHost(
     val stage = lastStageSize
     val uiW = dshWebView.width.coerceAtLeast(1)
     val uiH = dshWebView.height.coerceAtLeast(1)
-    val w = (stage?.first ?: preset?.width ?: uiW.coerceAtLeast(320)).coerceAtLeast(1)
-    val h = (stage?.second ?: preset?.height ?: uiH.coerceAtLeast(480)).coerceAtLeast(1)
+    // 优先级：**显式请求的分辨率档 > 上一次舞台尺寸** > 主 UI 可用尺寸。
+    //
+    // 为什么 preset 必须压过 stage（0.14.10 实测，CDP 层 verify-browser-host 判红）：
+    // 舞台不可见时（侧栏收起是常态）原来取 lastStageSize，于是用户/模型请求的 1280x720 被
+    // 「上一次舞台的 776x1680」顶掉，页面按手机竖屏排版；而 status() 上报的是 requestedViewport，
+    // **上报 1280x720、实排 776x1680**，协议撒谎且模型按上报值算坐标必然错位。
+    // 语义依据：舞台尺寸描述的是「人眼下这块可见区域」，分辨率档描述的是「AI 要的那块画布」——
+    // 后者是显式请求，不能被一个隐式的历史值覆盖。
+    val w = (preset?.width ?: stage?.first ?: uiW.coerceAtLeast(320)).coerceAtLeast(1)
+    val h = (preset?.height ?: stage?.second ?: uiH.coerceAtLeast(480)).coerceAtLeast(1)
     remote?.let { rh ->
       // tier-2：舞台不可见≠页面可以不排版——远端窗口同样保持非退化尺寸，只把投影藏起来。
       activeTab()?.let { tab ->
@@ -1668,7 +1679,11 @@ internal class BrowserHost(
       val next = RequestedViewport(id, width, height)
       val changed = next != appliedViewport
       requestedViewport = next
-      if (changed && view != null) recycleView() else applyStageBounds()
+      // 判据必须是「执行位已建立」而不是「本地 view 在场」：tier-2 的 WebView 在 :browser 进程，
+      // 本地 view 恒为 null。原先写 view != null 时，tier-2 设视口**永远走不到重建分支**——
+      // doc-start 的 viewport 脚本只在建页时注册，于是 CSS 视口停在旧值，而 status() 照报新值
+      // （0.14.10 实测：上报 1280x720、页面 innerWidth 仍是 776）。surfaceReady 对两档同语义。
+      if (changed && surfaceReady(activeTab())) recycleView() else applyStageBounds()
       status().put("route", route).put("width", width).put("height", height)
     }
   }
@@ -1784,6 +1799,17 @@ internal class BrowserHost(
       synchronized(tab.refs) { tab.refs.clear() }
       tab.loadState = "idle"
       ensureViewFor(tab)
+      // 建完远端页必须重算一次投影矩形。
+      //
+      // 为什么本地分支不用显式写：本地 ensureViewFor 末尾自己会调 applyStageBounds()；
+      // 而远端分支在上面 return null 前**没有**这一步，于是投影尺寸取的是 ensureViewFor 里
+      // 的 `lastStageSize ?: …`——那是**上一个预设**留下的 letterbox 物理矩形。
+      //
+      // 缺陷形态（0.14.10 实测，CDP verify-browser-host 判红）：先跑 390x844（投影 291x630），
+      // 再请求 1280x720 触发重建 → 新页仍按 291x630 建 → WebView 以最小缩放 0.25 排版 →
+      // window.innerWidth = 291/(0.25*1.5) = 776，而 status() 报 1280。上报与实排分叉。
+      // 补这一次重算后，投影按「新预设 + 当前舞台」重新 letterbox（1280x720 → 1120x630）。
+      applyStageBounds()
       if (reloadTarget != null && requireWorkspace().profileError.isEmpty()) {
         normalizeUrl(reloadTarget)?.let { loadInto(tab, it) }
       }
