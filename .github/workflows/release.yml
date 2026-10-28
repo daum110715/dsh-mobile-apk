@@ -389,7 +389,7 @@ jobs:
           ROTATED_CERT_SHA256="$(openssl x509 -in "$CERT" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
           node scripts/check-apk-signatures.mjs --dir "$OUT/apk" --keystore keystore/debug.keystore --rotation-certificate-sha256 "$ROTATED_CERT_SHA256"
           ( cd "$OUT" && find . -type f ! -name MANIFEST.txt ! -name MANIFEST.signed.json ! -name notes.md | sort | while read -r f; do
-              rel=$\{f#./}
+              rel=${f#./}
               echo "$(sha256sum "$f" | awk '{print $1}')  $rel  $(stat -c%s "$f")"
             done > MANIFEST.txt )
           node scripts/sign-release-manifest.mjs --manifest "$OUT/MANIFEST.txt" --private-key "$NEW_KEY" --out "$OUT/MANIFEST.signed.json"
