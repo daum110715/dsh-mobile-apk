@@ -125,6 +125,9 @@ dependencies {
   // 仪器测试（虚拟屏建屏矩阵）：只用于 P0 探针，不进产品面。
   androidTestImplementation("androidx.test.ext:junit:1.2.1")
   androidTestImplementation("androidx.test:runner:1.6.2")
+  // G4/G5/notify/vdisplay 的设备面断言需要 ActivityScenario 拉起 Activity 并读真实视图。
+  // 只加 core，不带 espresso（点击类断言如确需再加，单独论证）。
+  androidTestImplementation("androidx.test:core:1.6.1")
   // 本地单测用真实 org.json（android.jar 桩在 JVM 里抛 Stub!）——快照 profiles 合并（#167）测试需要
   testImplementation("org.json:json:20240303")
 }
