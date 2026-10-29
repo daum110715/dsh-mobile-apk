@@ -676,7 +676,7 @@ class OverlayService : Service() {
           // 这句最要紧的话就被 tick 覆写成「引擎离线」——用户正要作答的提示被抹掉。
           // 判据统一：有更具体的话要说（完成态 / 待答态）时，本处一律让位给分支链。
           if (completionLabel().isEmpty() && pendingKind.isEmpty()) {
-            panel.statusText?.let { ShimmerTextView::class.java.cast(it).setShimmering(false); it.setTextColor(0xFFE04848.toInt()); it.text = t("引擎离线", "Engine offline") }
+            panel.statusText?.let { ShimmerTextView::class.java.cast(it).setShimmering(false); it.setTextColor(0xFFE04848.toInt()); it.text = UiText.t(this@OverlayService, "引擎离线", "Engine offline") }
           }
         }
       }
