@@ -2767,10 +2767,10 @@
       "el('p', '{className:\"dshm-summary\"}', 'k(o,a)'),"
     ],
     "attachment-picker-menu.ts:184": [
-      "return node.matches(SLOT_SELECTOR) || node.querySelector(SLOT_SELECTOR) !== null"
+      ""
     ],
     "attachment-picker-menu.ts:215": [
-      "if (!entry.anchor.isConnected || !entry.trigger.isConnected) this.mounted.splice(index, 1)"
+      "private syncMounts(): void {"
     ],
     "back-stack.spec.ts:259": [
       ""
@@ -3067,7 +3067,7 @@
       "// Android general-settings rows (issue #59): immersive status-bar toggle."
     ],
     "dsh-client-ui-responsive/src/client/mobile/attachment-picker-menu.ts:184": [
-      "return node.matches(SLOT_SELECTOR) || node.querySelector(SLOT_SELECTOR) !== null"
+      ""
     ],
     "dsh-client-ui-responsive/src/client/mobile/back-stack.ts:334": [
       "private layers: BackLayer[] = []"
