@@ -192,4 +192,21 @@ class AppLanguageTest {
     return file.readText()
   }
 
+  /**
+   * 浮层面板是用户天天开的原生面（停止/发送/批准一次…），此前整页只有中文。
+   * 判据钉在源码形态上：面板必须走双语入口，且关键动作都有英文。
+   */
+  @Test
+  fun overlayPanelCopyCarriesBothLanguages() {
+    val panel = source("src/main/java/com/dsharnessmobile/shell/OverlayPanel.kt")
+    assertTrue("面板必须有双语入口", panel.contains("private fun t(zh: String, en: String): String = UiText.t(svc, zh, en)"))
+    assertTrue("停止必须双语", panel.contains("\"Stop current task\""))
+    assertTrue("批准一次必须双语", panel.contains("\"Allow once\""))
+    assertTrue("等待审批必须双语", panel.contains("\"Waiting for approval…\""))
+    assertFalse(
+      "不得回到只有中文的面板动作",
+      panel.contains("pendingChip(\"批准一次\""),
+    )
+  }
+
 }
