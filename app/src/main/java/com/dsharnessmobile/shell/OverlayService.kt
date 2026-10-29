@@ -346,6 +346,8 @@ class OverlayService : Service() {
     if (expanded) return
     val dp = resources.displayMetrics.density
     if (panel.unitView == null) panel.buildUnit()
+    // 语言可能在本次展开前被切换（设置页/桥）——缓存视图里的静态文案要按当前语言重刷一次。
+    panel.applyLanguage()
     val unit = panel.unitView ?: return
     expanded = true
     // 块H-A1「首次打开」：消费完成位——本次展开期常驻显示 A1 文案，下次收起再打开即回常态

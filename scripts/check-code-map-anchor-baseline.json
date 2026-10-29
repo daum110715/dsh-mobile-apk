@@ -1645,16 +1645,16 @@
       "fun startWatcher() {"
     ],
     "OverlayPanel.kt:1060": [
-      "if (entry != null) {"
+      "private fun respondQuestion(qe: PendingQuestion) {"
     ],
     "OverlayPanel.kt:112": [
       "private fun handleMuxFrame(text: String) {"
     ],
     "OverlayPanel.kt:1174": [
-      "if (svc.toolCount > 0) { it.text = t(\"工具 ×${svc.toolCount}\", \"Tools ×${svc.toolCount}\"); it.visibility = View.VISIBLE }"
+      "}"
     ],
     "OverlayPanel.kt:1177": [
-      "updateClock()"
+      "// 待答分支在前 → 待答时不得显示「已完成」（§6.3 回归面）；"
     ],
     "OverlayPanel.kt:177": [
       "pendingGen.remove(id)"
@@ -1681,10 +1681,10 @@
       "val unit = LinearLayout(svc).apply {"
     ],
     "OverlayPanel.kt:489": [
-      "/** 块H-A1：完成态常驻文案（并入 overlay_display prefs，与上述两个模板同族，可覆写）。"
+      "}"
     ],
     "OverlayPanel.kt:616": [
-      "marginEnd = (8 * dp).toInt()"
+      "pendingBox = this"
     ],
     "OverlayPanel.kt:69": [
       "//   emit = {type:\"emit\",event,args}（api-session/status → args:[agentId,running] 忙态锚点）。"
@@ -1693,22 +1693,22 @@
       "//   提问跳过 outcome={kind:\"rejected\",error:{name,message}}；审批无取消通道。"
     ],
     "OverlayPanel.kt:818": [
-      "textSize = 11f"
+      "val row = LinearLayout(svc).apply {"
     ],
     "OverlayPanel.kt:824": [
-      "text = label"
+      "setOnClickListener {"
     ],
     "OverlayPanel.kt:835": [
-      "}, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = (8 * dp).toInt() })"
+      "row.addView(TextView(svc).apply {"
     ],
     "OverlayPanel.kt:87": [
       "private val qOptsExpanded = HashSet<String>()"
     ],
     "OverlayPanel.kt:904": [
-      "orientation = LinearLayout.HORIZONTAL"
+      "qCustom[qid] = t"
     ],
     "OverlayPanel.kt:947": [
-      "foot.addView(pendingChip(t(\"跳过本题\", \"Skip this question\"), filled = false, red = false, dp) {"
+      "textSize = 12f"
     ],
     "OverlayReport.kt:164": [
       "* 为什么不直接量栏体：ScrollView 在栏内是 `weight=1`（要随拖拽伸缩），而 weight 子项在"
@@ -1756,70 +1756,70 @@
       "val halo = View(this).apply { background = this@OverlayService.halo.newHaloDrawable(Halo.IDLE) }"
     ],
     "OverlayService.kt:382": [
-      "}"
+      "if (sessionBusy) panel.statusText?.let { ShimmerTextView::class.java.cast(it).setShimmering(true) }"
     ],
     "OverlayService.kt:415": [
-      "// 块H-A1：结束本次完成态展示（完成位已在 showPanel 消费时清空，故下次打开回常态）。"
+      "report.hideReport()"
     ],
     "OverlayService.kt:427": [
-      "/**"
+      "// ── 隐藏 / 召回（0.14.9-preview 块J）────────────────────────────────"
     ],
     "OverlayService.kt:436": [
-      "*"
+      "*     一句话：留在 WindowManager 里的不可见窗口照样吃触摸）；"
     ],
     "OverlayService.kt:449": [
-      "emitFrame()"
+      "removeWindow(haloView)"
     ],
     "OverlayService.kt:470": [
-      "rp.y = spot[1]"
+      "if (rp != null && spot != null) {"
     ],
     "OverlayService.kt:473": [
-      "haloView?.let { h -> haloParams?.let { hp -> try { wm.addView(h, hp) } catch (_: Exception) {} } }"
+      "clampBallPos(rp)"
     ],
     "OverlayService.kt:499": [
-      "MotionEvent.ACTION_MOVE -> {"
+      "true"
     ],
     "OverlayService.kt:502": [
-      "if (moved) {"
+      "val dx = ev.rawX - downX; val dy = ev.rawY - downY"
     ],
     "OverlayService.kt:504": [
-      "p.y = (startY + dy).toInt()"
+      "if (moved) {"
     ],
     "OverlayService.kt:509": [
-      "}"
+      "syncHalo()"
     ],
     "OverlayService.kt:512": [
-      "MotionEvent.ACTION_UP -> {"
+      "true"
     ],
     "OverlayService.kt:547": [
       ""
     ],
     "OverlayService.kt:574": [
-      "* 临时工作区 workspaceId（0.13.5）：读 `home/.dsh/storages/workspace.json`，取 title=临时工作区 的条目"
+      ""
     ],
     "OverlayService.kt:580": [
-      "val file = java.io.File(filesDir, \"home/.dsh/storages/workspace.json\")"
+      "internal fun tempWorkspaceId(): String? {"
     ],
     "OverlayService.kt:621": [
-      "onTurnStart()"
+      "if (!sessionBusy) { sessionBusy = true; turnStartedAt = System.currentTimeMillis() }"
     ],
     "OverlayService.kt:669": [
-      "// S2-14（本批修）：**待答态同样要排除**。旧判据只看完成文案，于是球处在"
+      "// 而本处是绕过分支链的直接赋值——两者必须同口径，否则完成文案会被每 10s 的探活"
     ],
     "OverlayService.kt:683": [
-      "probeHandle?.let { main.removeCallbacks(it) }"
+      "private var probeHandle: Runnable? = null"
     ],
     "OverlayService.kt:737": [
-      "// 注释此前就写着「不再静默 return」，而代码里这一行一直在静默返回（P0-6 复核发现："
+      "/** 停止当前轮次：仅工作中可用（无轮次时按钮已置灰，不再静默 return——P4/P0-6）。 */"
     ],
     "OverlayService.kt:765": [
-      "if (code == 200) {"
+      "val send = Runnable {"
     ],
     "OverlayService.kt:775": [
-      "}"
+      "flashStatus(t(\"发送失败（HTTP $code）\", \"Send failed (HTTP $code)\"))"
     ],
     "OverlayService.kt:783": [
-      "if (code == 200) {"
+      "tempWorkspaceId()?.let { createReq.put(\"workspaceId\", it) }"
     ],
     "OverlayService.kt:85": [
       "// ── 引擎维/会话维状态（协作类经 internal 共享） ──────────────────"
@@ -2329,10 +2329,10 @@
       "val halo = View(this).apply { background = this@OverlayService.halo.newHaloDrawable(Halo.IDLE) }"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/OverlayService.kt:574": [
-      "* 临时工作区 workspaceId（0.13.5）：读 `home/.dsh/storages/workspace.json`，取 title=临时工作区 的条目"
+      ""
     ],
     "app/src/main/java/com/dsharnessmobile/shell/OverlayService.kt:706": [
-      "code = -1"
+      ".put(\"method\", method)"
     ],
     "app/src/main/java/com/dsharnessmobile/shell/PluginMounts.kt:41": [
       ""

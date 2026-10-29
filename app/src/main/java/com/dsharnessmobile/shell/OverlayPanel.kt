@@ -439,6 +439,25 @@ class OverlayPanel(private val svc: OverlayService) {
     return unit
   }
 
+  /**
+   * 语言切换后的静态文案刷新（2026-10-29 真机缺陷）。
+   *
+   * 缺陷现场：`hideEntryView` / `reportEntryView` 的文案在 [buildUnit] 里**只取一次** `t(...)`，
+   * 视图被缓存复用 ⇒ 用户在设置里切英文后打开面板，「隐藏」「查看汇报」仍是中文（要重启应用才变）；
+   * 而同一面板里动态渲染的状态行（空闲→Idle）却是英文 —— 混合语言比全中文更刺眼。
+   * 修法：每次展开面板前按当前语言重刷这几处缓存文案（与 [applyThemeColors] 同口径）。
+   */
+  internal fun applyLanguage() {
+    hideEntryView?.apply {
+      text = t("隐藏", "Hide")
+      contentDescription = t("隐藏悬浮球", "Hide floating ball")
+    }
+    reportEntryView?.apply {
+      text = t("查看汇报", "View report")
+      contentDescription = t("查看工作汇报", "View work report")
+    }
+  }
+
   /** 按当前主题刷新展开态配色（unit 背景/描边、状态文字、输入框、分隔线、箭头）。 */
   internal fun applyThemeColors() {
     val c = themeColors()
@@ -1262,7 +1281,7 @@ class OverlayPanel(private val svc: OverlayService) {
     val row = sessionPicker ?: return
     val current = pickerSessions.firstOrNull { it.id == svc.activeSessionId }
     row.text = if (svc.activeSessionId.isEmpty()) "\uff0b \u65b0\u4f1a\u8bdd"
-    else sessionRowText(current?.label)
+    else sessionRowText(current?.label, UiText.isEnglish(svc))
     refreshInputHint()
   }
 
@@ -1473,8 +1492,12 @@ internal fun inputHintFor(busy: Boolean, hasSession: Boolean): String = when {
  * 且截断后既认不出也搜不到。现在一律落到「未命名会话（当前）」：用户至少知道
  * 「这就是当前目标」，而不是面对一串 id。
  */
-internal fun sessionRowText(label: String?): String =
-  (label?.takeIf { it.isNotBlank() } ?: SESSION_UNKNOWN_LABEL) + "（当前）"
+internal fun sessionRowText(label: String?, english: Boolean = false): String =
+  (label?.takeIf { it.isNotBlank() } ?: if (english) SESSION_UNKNOWN_LABEL_EN else SESSION_UNKNOWN_LABEL) +
+    if (english) " (current)" else "（当前）"
+
+/** 未命名会话的英文占位（与 [SESSION_UNKNOWN_LABEL] 同义）。 */
+internal const val SESSION_UNKNOWN_LABEL_EN = "Untitled session"
 
 /** 审批二次确认的有效窗口：超窗即撤臂，避免陈旧待确认态把后来的一次单击变成放行。 */
 internal const val APPROVAL_ARM_MS = 10_000L
