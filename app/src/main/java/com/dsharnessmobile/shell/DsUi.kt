@@ -10,9 +10,27 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.animation.PathInterpolator
 
-/** Shared drawables, motion, and press feedback for the native shell UI. */
+/**
+ * Shared drawables, motion, and press feedback for the native shell UI.
+ *
+ * Enter eases out, exit eases in, and exit durations are 0.7× the matching enter.
+ * Skeleton motion does not overshoot. Call sites that already use [ease] follow [easeEnter].
+ */
 internal object DsUi {
-  val ease = PathInterpolator(0.32f, 0.72f, 0f, 1f)
+  const val PRESS_IN_MS = 112L
+  const val PRESS_OUT_MS = 160L
+  const val ENTER_MS = 240L
+  const val EXIT_MS = 168L
+  const val SLOW_MS = 340L
+  const val EXIT_SLOW_MS = 238L
+
+  /** Emphasized decelerate. Shared by entrances, press release, and [ease]. */
+  val easeEnter = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+
+  /** Emphasized accelerate. Shared by press-in and fade-out. */
+  val easeExit = PathInterpolator(0.3f, 0f, 0.8f, 0.15f)
+
+  val ease = easeEnter
 
   /**
    * 动效总开关（0.13.8 G3-M11，降级统一入口）：系统「关闭动画」三开关任一关闭、
@@ -68,15 +86,30 @@ internal object DsUi {
     }
   }
 
-  fun bindPressScale(view: View, scale: Float = 0.975f) {
+  /**
+   * Press scales the view down, then back, without a bounce.
+   * The listener returns false so the view still receives the click.
+   *
+   * @param view target of the press
+   * @param scale scale while the pointer is down
+   */
+  fun bindPressScale(view: View, scale: Float = 0.97f) {
     view.setOnTouchListener { v, event ->
       when (event.actionMasked) {
-        MotionEvent.ACTION_DOWN ->
-          v.animate().scaleX(scale).scaleY(scale).setDuration(90).setInterpolator(ease).start()
-        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-          v.animate().scaleX(1f).scaleY(1f).setDuration(160).setInterpolator(ease).start()
+        MotionEvent.ACTION_DOWN -> applyPressScale(v, scale, PRESS_IN_MS, easeExit)
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> applyPressScale(v, 1f, PRESS_OUT_MS, easeEnter)
       }
       false
     }
+  }
+
+  private fun applyPressScale(view: View, scale: Float, duration: Long, interpolator: android.view.animation.Interpolator) {
+    if (!animationsEnabled(view.context)) {
+      view.animate().cancel()
+      view.scaleX = scale
+      view.scaleY = scale
+      return
+    }
+    view.animate().scaleX(scale).scaleY(scale).setDuration(duration).setInterpolator(interpolator).start()
   }
 }
