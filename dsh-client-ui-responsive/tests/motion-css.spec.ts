@@ -27,6 +27,14 @@ describe('injected motion sheet', () => {
     expect(sheet).toContain('transform: scale(0.97)')
     expect(sheet).toContain('cubic-bezier(0.05, 0.7, 0.1, 1)')
     expect(sheet).toContain('cubic-bezier(0.3, 0, 0.8, 0.15)')
+    expect(sheet).toContain('data-dsh-motion-off~="transcript"')
+    expect(sheet).toContain('data-dsh-motion-off~="shared"')
+    expect(sheet).toContain('data-dsh-shell-enter="command"')
+    expect(sheet).toContain('data-dsh-shell-nav="forward"')
+    expect(sheet).toContain('data-dsh-shell-nav="back"')
+    expect(sheet).toContain('translateX(-12px)')
+    expect(sheet).toContain('translateX(16px)')
+    expect(sheet).toContain('translateX(-16px)')
   })
 
   it('retunes the drawer only while motion is on, and still drops the transition while dragging', () => {
@@ -38,5 +46,7 @@ describe('injected motion sheet', () => {
     expect(index).toContain("injectStyle('motion', MOTION_CSS)")
     expect(index).toContain('installMotionSwitch(globalThis.window)')
     expect(index).toContain('installMotionEntries(globalThis.document.body)')
+    expect(index).toContain('installMotionTranscript(globalThis.document.body)')
+    expect(index).toContain('installMotionScene(globalThis.document.body)')
   })
 })
