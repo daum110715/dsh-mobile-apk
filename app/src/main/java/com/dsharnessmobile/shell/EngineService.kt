@@ -444,7 +444,11 @@ class EngineService : Service() {
   private fun buildNotification(): android.app.Notification {
     val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
     if (Build.VERSION.SDK_INT >= 26) {
-      manager.createNotificationChannel(NotificationChannel("engine", UserCopy.APP_NAME + " 引擎", NotificationManager.IMPORTANCE_LOW))
+      // 常驻通知是**每个用户天天看见**的一块界面：文案必须跟随 UI 语言（2026-10-29 真机：
+      // 切英文后通知标题/正文仍是「DeepCode 引擎运行中 / DeepCode 正在后台工作」）。
+      manager.createNotificationChannel(
+        NotificationChannel("engine", UserCopy.APP_NAME + " " + UiText.t(this, "引擎", "engine"), NotificationManager.IMPORTANCE_LOW),
+      )
     }
     val pending = PendingIntent.getActivity(
       this, 0, Intent(this, MainActivity::class.java),
@@ -452,8 +456,8 @@ class EngineService : Service() {
     )
     return NotificationCompat.Builder(this, "engine")
       .setSmallIcon(android.R.drawable.stat_notify_chat)
-      .setContentTitle(UserCopy.APP_NAME + " 引擎运行中")
-      .setContentText(UserCopy.APP_NAME + " 正在后台工作")
+      .setContentTitle(UserCopy.APP_NAME + " " + UiText.t(this, "引擎运行中", "engine is running"))
+      .setContentText(UserCopy.APP_NAME + " " + UiText.t(this, "正在后台工作", "is working in the background"))
       .setContentIntent(pending)
       .setOngoing(true)
       .build()
