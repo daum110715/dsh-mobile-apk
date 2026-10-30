@@ -66,11 +66,6 @@ import { KeyboardBoundary } from './keyboard-boundary.ts'
 import { ExportResultChannel, reportUserFacingResult, type ExportResultPayload } from './export-result.ts'
 import { MobileFormMarker } from './mobile/form-marker.ts'
 import { MOBILE_FORM_CSS } from './mobile/mobile-form.css.ts'
-import { MOTION_CSS } from './mobile/motion.css.ts'
-import { installMotionEntries } from './mobile/motion-entries.ts'
-import { installMotionScene } from './mobile/motion-scene.ts'
-import { installMotionSwitch } from './mobile/motion-switch.ts'
-import { installMotionTranscript } from './mobile/motion-transcript.ts'
 import { MOBILE_TABLE_CSS } from './mobile/mobile-table.css.ts'
 import { MobileChrome, type MobileChromeInjected } from './mobile/MobileChrome.tsx'
 import { SidebarToggle, type SidebarToggleInjected } from './mobile/SidebarToggle.tsx'
@@ -187,11 +182,6 @@ export function apply(ctx: ClientContext): void {
   // The narrow-form stylesheet: track/drawer geometry plus the top-inset and
   // top-bar variables the other sheets consume.
   ctx.effect(() => injectStyle('mobile-form', MOBILE_FORM_CSS), 'ui-responsive: mobile form styles')
-  ctx.effect(() => injectStyle('motion', MOTION_CSS), 'ui-responsive: motion styles')
-  ctx.effect(() => installMotionSwitch(globalThis.window), 'ui-responsive: motion switch')
-  ctx.effect(() => installMotionEntries(globalThis.document.body), 'ui-responsive: motion entries')
-  ctx.effect(() => installMotionTranscript(globalThis.document.body), 'ui-responsive: motion transcript')
-  ctx.effect(() => installMotionScene(globalThis.document.body), 'ui-responsive: motion scene')
   ctx.effect(() => injectStyle('mobile-table', MOBILE_TABLE_CSS), 'ui-responsive: touch table reading')
 
   // The mobile-form marker publishes `data-dsh-mobile-form` on <html> and tags

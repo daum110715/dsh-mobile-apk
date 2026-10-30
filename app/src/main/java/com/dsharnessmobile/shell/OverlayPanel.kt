@@ -622,7 +622,7 @@ class OverlayPanel(private val svc: OverlayService) {
   /**
    * M4/M5/M6/M7（0.13.8 G3 余项）：悬浮球动效的四个落点，统一走 [DsUi.animationsEnabled]
    * 降级——系统关动画/省电模式下全部退化为瞬时切换（不闪、不卡、不消耗帧）。
-   * 设计口径：位移与透明度只用短时（≤240ms）一次性动画；呼吸/脉冲用无限循环但**只作用于
+   * 设计口径：位移与透明度只用短时（≤220ms）一次性动画；呼吸/脉冲用无限循环但**只作用于
    * 单行状态文本与光环**，避免整面板反复重绘（低端机上那才真卡）。
    */
   private fun animationsOn(): Boolean = DsUi.animationsEnabled(svc)
@@ -635,7 +635,7 @@ class OverlayPanel(private val svc: OverlayService) {
     view.alpha = 0f
     view.translationY = rise
     view.animate().alpha(1f).translationY(0f)
-      .setDuration(DsUi.ENTER_MS).setInterpolator(DsUi.easeEnter).start()
+      .setDuration(200L).setInterpolator(DsUi.ease).start()
   }
 
   /** M5：状态行配色在「空闲/工作/待答」之间平滑过渡（琥珀↔文本色），用 ArgbEvaluator 而非硬切。 */
@@ -646,8 +646,8 @@ class OverlayPanel(private val svc: OverlayService) {
     android.animation.ValueAnimator.ofObject(
       android.animation.ArgbEvaluator(), from, target,
     ).apply {
-      duration = DsUi.ENTER_MS
-      interpolator = DsUi.easeEnter
+      duration = 220L
+      interpolator = DsUi.ease
       addUpdateListener { tv.setTextColor(it.animatedValue as Int) }
       start()
     }
@@ -658,9 +658,9 @@ class OverlayPanel(private val svc: OverlayService) {
     if (tv.text?.toString() == next) return
     if (!animationsOn()) { tv.text = next; tv.alpha = 1f; return }
     tv.animate().cancel()
-    tv.animate().alpha(0f).setDuration(DsUi.PRESS_IN_MS).setInterpolator(DsUi.easeExit).withEndAction {
+    tv.animate().alpha(0f).setDuration(90L).withEndAction {
       tv.text = next
-      tv.animate().alpha(1f).setDuration(DsUi.PRESS_OUT_MS).setInterpolator(DsUi.easeEnter).start()
+      tv.animate().alpha(1f).setDuration(140L).start()
     }.start()
   }
 
