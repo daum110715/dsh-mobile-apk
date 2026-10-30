@@ -33,8 +33,8 @@ import java.net.URL
  * - 发送：session.prompt mode=steer（运行中插话）/queue（空闲）；目标会话 = 展开态顶部
  *   下拉选择器（session.list 投影，第一项恒为「新会话」，空目标自动 session.create）；
  *   停止：session.cancel，仅工作中可用（P4 修复）；
- * - 动效：展开 = 240ms 减速渐显（系统关闭动画时直接终态）；收起仍立即移除窗口。松手后
- *   球用 340ms 关键帧吸到最近水平边，途中向起点回 8% 再停住。Y 不动。四向仍留 BALL_EDGE_MARGIN_DP。
+ * - 动效：展开/收起 = 200ms 渐显；**无贴边 spring 吸附**（0.14.1 块I 拍板：松手即停在手指位置，
+ *   只做四向钳制，距屏幕四边恒留 BALL_EDGE_MARGIN_DP；旧「吸附 Spatial 380/0.8」已删除）。
  * - 回归修复（2026-09-02 模拟器实测）：①展开弹输入法禁止系统 pan 抬高窗口
  *   （SOFT_INPUT_ADJUST_NOTHING—球+面板不再整体上跳）；②busy 会话感知（仅当前目标
  *   会话的 tool_call/turn_end 驱动，其它会话/陈旧行不置忙，杜绝 Deep diving 卡死）；
@@ -63,7 +63,7 @@ class OverlayService : Service() {
   internal var haloParams: WindowManager.LayoutParams? = null
   private var panelParams: WindowManager.LayoutParams? = null   // 展开面板独立窗口（键盘可原生顶起）
   internal var expanded = false
-  private var edgeRelease: android.animation.ValueAnimator? = null
+
   // ── 球窗口尺寸（与球参数分离，供 clamping / halo 同步复用）──
   // 用 by lazy：Service 构造期 resources 尚为 null，字段初值若在构造时取会 NPE；
   // 首次访问（onCreate 后）才求值。
@@ -159,7 +159,7 @@ class OverlayService : Service() {
     halo.refreshTheme()
     // 块J：召回条的底色同源色板（切深浅色不能让它留在旧主题的灰）。
     recall.refreshTheme()
-    cancelEdgeRelease() // 旋转时停掉吸边，避免旧目标盖过随后的钳制（竖屏 y 转横屏会出屏）。
+    // 旋转后旧的 x/y 可能超出新屏幕（竖屏拖到 y≈1400，转横屏 1600×900 后 y>900 → 球出屏消失）。
     val p = rootParams ?: return
     clampBallPos(p)
     if (hidden) {
@@ -222,7 +222,7 @@ class OverlayService : Service() {
   }
 
   override fun onDestroy() {
-    cancelEdgeRelease(); if (instance === this) instance = null
+    if (instance === this) instance = null
     live.stopWatcher()
     panel.destroy()
     // 块H-A2：报告栏是独立顶层窗口，必须在此收口（纪律同 panel.closePicker/unitView）。
@@ -375,7 +375,7 @@ class OverlayService : Service() {
     try { wm.addView(unit, pp) } catch (_: Exception) {}
     unit.post { positionPanel() }   // 首帧拿到真实宽高后再精确对位一次
     unit.alpha = 0f
-    if (DsUi.animationsEnabled(this)) { unit.animate().alpha(1f).setDuration(DsUi.ENTER_MS).setInterpolator(DsUi.easeEnter).start() } else { unit.alpha = 1f }
+    unit.animate().alpha(1f).setDuration(200).start()
     renderPanelOnly()
     if (sessionBusy) panel.statusText?.let { ShimmerTextView::class.java.cast(it).setShimmering(true) }
     emitFrame()
@@ -439,7 +439,7 @@ class OverlayService : Service() {
    * 幂等：已在隐藏态时直接返回，重复触发不会在屏上留第二条。
    */
   internal fun hideBall() {
-    if (hidden) { return }; cancelEdgeRelease()
+    if (hidden) return
     val p = rootParams
     hidePanel()
     hidden = true
@@ -477,7 +477,7 @@ class OverlayService : Service() {
     emitFrame()
   }
 
-  // ── 拖动 / 四向钳制 / 松手吸到最近水平边（340ms，向起点回 8%） ──
+  // ── 拖动 / 四向钳制（0.14.1 块I：不再吸附边缘） ────────────────────
 
   private fun attachBallTouch(ball: View) {
     val touchSlop = android.view.ViewConfiguration.get(this).scaledTouchSlop
@@ -491,7 +491,7 @@ class OverlayService : Service() {
       val p = rootParams ?: return@setOnTouchListener false
       when (ev.actionMasked) {
         MotionEvent.ACTION_DOWN -> {
-          cancelEdgeRelease(); downX = ev.rawX; downY = ev.rawY
+          downX = ev.rawX; downY = ev.rawY
           startX = p.x; startY = p.y
           moved = false
           true
@@ -517,9 +517,9 @@ class OverlayService : Service() {
           try { wm.updateViewLayout(v.parent as View, p) } catch (_: Exception) {}
           syncHalo()
           positionPanel()
-          releaseToNearestEdge()
-          // 吸边自己写终态并发避让帧。Y 保持手指位置。
-          // 四向边距仍由上面的 clampBallPos 用 edgeMarginPx。
+          // 0.14.1 块I：松手停在手指处——吸附动画（springSnapToEdge）已删除，
+          // 唯一的边界约束是上面 clampBallPos 的四向 edgeMarginPx。
+          emitFrame()
           true
         }
         MotionEvent.ACTION_CANCEL -> { moved = false; true }
@@ -925,60 +925,6 @@ class OverlayService : Service() {
 
   private fun removeWindow(v: View?) {
     try { if (v != null) wm.removeView(v) } catch (_: Exception) {}
-  }
-
-  /** 停掉进行中的水平吸边，避免后续帧改写已经交给手指或旋转逻辑的坐标。 */
-  private fun cancelEdgeRelease() {
-    val running = edgeRelease
-    edgeRelease = null
-    running?.cancel()
-  }
-
-  /**
-   * 松手后把球的窗口 x 收到最近的水平边缘，y 保持当前值。
-   * 球的位置是窗口坐标：逐帧写 LayoutParams.x，触摸热区才跟着视觉走。
-   * 关键帧 0 → 1 → 0.92 → 1 先到边，再向起点回 8%，然后停住。
-   * 系统关闭动画，或已经贴在目标边上时，直接写终态。
-   */
-  private fun releaseToNearestEdge() {
-    val p = rootParams ?: return
-    val root = rootView ?: return
-    cancelEdgeRelease()
-    val screenW = resources.displayMetrics.widthPixels
-    val winW = if (p.width > 0) p.width else ballSizeDp
-    val margin = edgeMarginPx
-    val center = p.x + winW / 2
-    val targetX = if (center <= screenW / 2) margin else (screenW - winW - margin).coerceAtLeast(margin)
-    if (!DsUi.animationsEnabled(this) || p.x == targetX) {
-      p.x = targetX
-      clampBallPos(p)
-      try { wm.updateViewLayout(root, p) } catch (_: Exception) {}
-      syncHalo()
-      positionPanel()
-      emitFrame()
-      return
-    }
-    val startX = p.x
-    val anim = android.animation.ValueAnimator.ofFloat(0f, 1f, 0.92f, 1f).apply {
-      duration = DsUi.SLOW_MS
-      interpolator = android.view.animation.LinearInterpolator()
-      addUpdateListener {
-        val t = it.animatedValue as Float
-        p.x = (startX + (targetX - startX) * t).toInt()
-        clampBallPos(p)
-        try { wm.updateViewLayout(root, p) } catch (_: Exception) {}
-        syncHalo()
-        positionPanel()
-      }
-      addListener(object : android.animation.AnimatorListenerAdapter() {
-        override fun onAnimationEnd(animation: android.animation.Animator) {
-          if (edgeRelease === animation) edgeRelease = null
-          emitFrame()
-        }
-      })
-    }
-    edgeRelease = anim
-    anim.start()
   }
 
   companion object {

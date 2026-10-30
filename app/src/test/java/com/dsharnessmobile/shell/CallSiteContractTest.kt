@@ -182,21 +182,21 @@ class CallSiteContractTest {
     assertTrue("FX-210.1：恢复必须先于看门狗装配", watchdogAt < 0 || recoverAt < watchdogAt)
   }
 
-  // ── 松手吸边不得恢复 spring，状态描边 ring 仍走同源契约 ─────────────────
+  // ── 0.14.1 块I：取消强制吸附 + 状态描边 ring 的同源契约 ─────────────────
   // 详档 docs/0.14.1-preview-HALO-FREE-MOVE-AND-RING.md §4.3(a)/§6.1 的反证要求：
   // 把 springSnapToEdge 加回去、或新增第二张 ring 色表/第二入口，这里必须变红。
 
-  /** I-A1：松手吸到最近水平边，用关键帧向内回弹。不得恢复 spring 库或其旧入口。 */
+  /** I-A1：松手不得再吸附——ACTION_UP 分支内不得出现 springSnapToEdge，且 spring 面整体退役。 */
   @Test
-  fun ballReleaseUsesEdgeSettleWithoutASpring() {
+  fun ballReleaseNoLongerSnapsToTheEdge() {
     val code = codeOnly(source("OverlayService.kt"))
-    val touch = memberBody(code, "private fun attachBallTouch(ball: View)"); val release = memberBody(code, "private fun releaseToNearestEdge(")
-    assertTrue("I-A1：触摸处理必须调用 releaseToNearestEdge，按下必须 cancelEdgeRelease()", touch.contains("releaseToNearestEdge") && touch.contains("cancelEdgeRelease()"))
-    assertTrue("I-A1：吸边函数必须存在，并用向内回弹关键帧与共享慢时长", code.contains("private fun releaseToNearestEdge(") && release.contains("ofFloat(0f, 1f, 0.92f, 1f)") && release.contains("DsUi.SLOW_MS"))
-    assertFalse("I-A1：不得恢复 springSnapToEdge", code.contains("springSnapToEdge"))
-    assertFalse("I-A1：不得恢复 spring 动画字段或取消函数", code.contains("springAnim") || code.contains("cancelSpring"))
+    val touch = memberBody(code, "private fun attachBallTouch(ball: View)")
+    assertFalse("I-A1：ACTION_UP 分支不得再调 springSnapToEdge", touch.contains("springSnapToEdge"))
+    assertFalse("I-A1：吸附函数体必须删除", code.contains("springSnapToEdge"))
+    assertFalse("I-A1：spring 动画字段/取消函数必须一并删除", code.contains("springAnim") || code.contains("cancelSpring"))
     assertFalse("I-A1：dynamicanimation 在壳侧应无使用方", code.contains("SpringAnimation") || code.contains("SpringForce"))
-    assertTrue("I-A1：钳制必须保留并走同一具名常量", code.contains("edgeMarginPx") && code.contains("BALL_EDGE_MARGIN_DP"))
+    assertTrue("I-A1：钳制必须保留并走同一具名常量", code.contains("edgeMarginPx"))
+    assertTrue("I-A1：具名常量必须存在（供恒等式测试引用）", code.contains("BALL_EDGE_MARGIN_DP"))
   }
 
   /** I-A1：最小边距不得退化为字面量散落——clampBallPos 必须用 edgeMarginPx，不得再写 `8 * dp`。 */

@@ -1088,7 +1088,7 @@ flowchart TD
 - **一句话**：系统级悬浮球与展开面板的全套交互面——常态三窗口生命周期（块J 起隐藏态多一个懒建的召回条窗）、**隐藏/召回**、拖动钳制、状态行/待答卡渲染、应答回流引擎、完成态常驻文案与自动收起。
 - **入口/触发**：
   - 启停：设置页开关（桥 `androidBridge.setOverlayEnabled` → `MainActivity.kt:769` 的 λ）与回前台补启 `MainActivity.kt:306` 经 `OverlayController.setEnabled/ensureStarted`；停：`OverlayController.stop`、`EngineService.kt:70`（划掉后台=完整停机）。
-  - 球手势：球窗 `ACTION_UP` 未移动 → `togglePanel`（`OverlayService.kt:382`）；拖动中每帧钳制并同步光环，松手后吸到最近水平边。
+  - 球手势：球窗 `ACTION_UP` 未移动 → `togglePanel`（`OverlayService.kt:382`）；拖动中每帧钳制并同步光环。
   - 隐藏/召回（块J）：展开面板顶行 `隐藏` 入口（`OverlayPanel.kt:309`）→ `OverlayService.hideBall()`（`OverlayService.kt:415`，收面板 + 球/光环 `removeView` + 建召回条）；点召回条 → `OverlayService.recallBall()`（`OverlayService.kt:436`，收条 + 光环/球按 z 序重新 `addView`）。
   - 数据触发：10s 探活 `scheduleProbe`（`OverlayService.kt:547`）、MuxClient 的 `$events` WS 帧（`OverlayPanel.kt:87`）、FileObserver 的 `.live.ndjson`（`OverlayLiveFeed.kt:28`）。
   - 面板手势：状态行长按=报告栏、三击=跳应用（`OverlayPanel.kt:423`）；发送/停止=输入行两按钮（`OverlayPanel.kt:308/318`）。

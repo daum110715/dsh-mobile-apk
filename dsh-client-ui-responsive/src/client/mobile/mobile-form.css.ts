@@ -144,17 +144,6 @@ export const MOBILE_FORM_CSS: string = `
   html[data-dsh-drawer-dragging] [data-sidebar-right-panel='fullscreen'] > [data-dsh-bubble-nav] {
     transition: none !important;
   }
-
-  /* Open decelerates over 340ms. Close accelerates over 238ms (0.7 of 340).
-     The switch stays off under reduced motion, so the reduce rule below still wins
-     when data-dsh-motion is absent. Dragging keeps transition: none !important. */
-  html[data-dsh-motion]:not([data-dsh-motion-off~="drawer"]) [data-dsh-frame] > [class*='sidebarCol'] {
-    transition: transform 238ms cubic-bezier(0.3, 0, 0.8, 0.15);
-  }
-
-  html[data-dsh-motion]:not([data-dsh-motion-off~="drawer"]) [data-dsh-frame]:not([data-sidebar-collapsed]) > [class*='sidebarCol'] {
-    transition: transform 340ms cubic-bezier(0.05, 0.7, 0.1, 1);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
