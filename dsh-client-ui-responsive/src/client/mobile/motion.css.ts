@@ -43,6 +43,18 @@ export const MOTION_CSS: string = `
   html[data-dsh-motion]:not([data-dsh-motion-off~="list"]) [data-dsh-shell-stagger] > :nth-child(6) { animation-delay: 120ms; }
   html[data-dsh-motion]:not([data-dsh-motion-off~="list"]) [data-dsh-shell-stagger] > :nth-child(7) { animation-delay: 144ms; }
   html[data-dsh-motion]:not([data-dsh-motion-off~="list"]) [data-dsh-shell-stagger] > :nth-child(8) { animation-delay: 168ms; }
+
+  html[data-dsh-motion]:not([data-dsh-motion-off~="transcript"]) [data-dsh-shell-enter="command"] {
+    animation: dsh-shell-command 240ms cubic-bezier(0.05, 0.7, 0.1, 1) backwards;
+  }
+
+  html[data-dsh-motion]:not([data-dsh-motion-off~="shared"]) [data-dsh-shell-nav="forward"] {
+    animation: dsh-shell-forward 340ms cubic-bezier(0.05, 0.7, 0.1, 1);
+  }
+
+  html[data-dsh-motion]:not([data-dsh-motion-off~="shared"]) [data-dsh-shell-nav="back"] {
+    animation: dsh-shell-back 340ms cubic-bezier(0.05, 0.7, 0.1, 1);
+  }
 }
 
 @keyframes dsh-shell-pop {
@@ -57,6 +69,21 @@ export const MOTION_CSS: string = `
 
 @keyframes dsh-shell-rise {
   from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes dsh-shell-command {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes dsh-shell-forward {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes dsh-shell-back {
+  from { opacity: 0; transform: translateX(-16px); }
   to { opacity: 1; transform: none; }
 }
 `

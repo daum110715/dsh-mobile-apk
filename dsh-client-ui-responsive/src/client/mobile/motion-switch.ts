@@ -40,6 +40,20 @@ export function installMotionSwitch(view: Window | null): () => void {
   }
 }
 
+/**
+ * Whether one injected component may animate.
+ * The master attribute must be present, and the component name must not be listed in `data-dsh-motion-off`.
+ * @param doc - document that carries the switch.
+ * @param component - component token such as `shared` or `transcript`.
+ * @returns false when the master switch is off or this component is listed.
+ */
+export function motionComponentOn(doc: Document, component: string): boolean {
+  const root = doc.documentElement
+  if (!root.hasAttribute(MOTION_ATTR)) return false
+  const off = (root.getAttribute(OFF_ATTR) ?? '').split(/\s+/).filter((token) => token !== '')
+  return !off.includes(component)
+}
+
 /** Read one key. Private mode and a missing store leave the value empty. */
 function readStorage(view: Window, key: string): string {
   try {
